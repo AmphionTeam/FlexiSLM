@@ -1,5 +1,7 @@
 # FlexiSLM: A Dynamic and Controllable Frame Rate Spoken Language Model
 
+[![demo page](https://img.shields.io/badge/demo-page-blue)](https://flexislm.github.io)
+
 
 
 ## About

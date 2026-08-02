@@ -1,4 +1,4 @@
-# FlexiSLM: A Dynamic and Controllable Frame Rate Spoken Language Model
+# FlexiSLM: A Spoken Language Model with Dynamic and Controllable Frame Rate
 
 [![arXiv](https://img.shields.io/badge/arXiv-2606.31247-b31b1b)](https://arxiv.org/abs/2606.31247)
 [![demo page](https://img.shields.io/badge/demo-page-blue)](https://flexislm.github.io)
@@ -19,7 +19,7 @@ Overall FlexiSLM architecture is a Thinker-Talker model with dynamic frame-rate 
 <!-- The architecture of FlexiSLM is shown in the figure above.  -->
 
 ## News
-- **August 8, 2026: Code release**. We have released release training and inference code of FlexiSLM-7B.
+- **August 2, 2026: Code release**. We have released release training and inference code of FlexiSLM-7B.
 - September, 2026: Planned Reproduced FlexiSLM-Data and checkpoint release: We plan to release a reproduced version of FlexiSLM-7B and 5M samples of reproduced training data. We plan to release them around September 2026. 
 
 

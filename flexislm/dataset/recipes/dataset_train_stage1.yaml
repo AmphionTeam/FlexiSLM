@@ -8,3 +8,7 @@ dataset:
     ratio: 1.0
     data_paths:
       - path/to/TTS.with_durations.jsonl
+  ASR:
+    ratio: 1.0
+    data_paths:
+      - path/to/ASR.with_durations.jsonl

@@ -1,11 +1,26 @@
 # Copyright (c) 2025 ByteDance Ltd. and/or its affiliates
 # SPDX-License-Identifier: MIT
+# Stage2 training: v3 parallel model, full data, with early_diverge_talker
 
 if [ "$0" = "bash" ]; then exit; fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 cd "$REPO_ROOT"
+
+# Optional conda activation:
+# - If `conda` is available and CONDA_ENV_NAME is set, this script activates it.
+if command -v conda >/dev/null 2>&1; then
+    eval "$(conda shell.bash hook)"
+    if [ -n "${CONDA_ENV_NAME:-}" ]; then
+        conda activate "${CONDA_ENV_NAME}"
+    fi
+fi
+
+if [ -n "${CONDA_PREFIX:-}" ]; then
+    export LD_LIBRARY_PATH="${CONDA_PREFIX}/lib:${LD_LIBRARY_PATH:-}"
+fi
+export NCCL_DEBUG=WARN
 
 RUN_NAME=$(basename "$0" .sh)
 OUTPUT_DIR_BASE="${OUTPUT_DIR_BASE:-$REPO_ROOT/outputs/$RUN_NAME}"
@@ -27,8 +42,8 @@ source "$REPO_ROOT/flexislm/scripts/env.sh"
 
 echo RUN_NAME=$RUN_NAME
 echo OUTPUT_DIR_BASE=$OUTPUT_DIR_BASE
-export SWANLAB_API_KEY="${SWANLAB_API_KEY:-}"  # Set your key in environment; do not hard-code secrets.
-export USE_LORA="${USE_LORA:-True}"  # Set your key in environment; do not hard-code secrets.
+
+## NOTE: audio_config.json is copied from Qwen2.5-Omni official ckpt config.json
 
 ACCELERATE_BIN="${ACCELERATE_BIN:-$(command -v accelerate 2>/dev/null)}"
 if [ -z "$ACCELERATE_BIN" ]; then
@@ -56,27 +71,27 @@ fi
     --config_name "$BASE_MODEL" \
     --tokenizer_name "$BASE_MODEL" \
     --model_name_or_path "$BASE_MODEL" \
-    --dataset_name "dataset/jiaqi_recipes/dataset_train_v6_dialogonly_filtered_ourdata_ttsv6_moreasr_understanding.yaml" \
+    --dataset_name "dataset/recipes/dataset_train_stage2_3.yaml" \
     --dataset_name_eval "dataset/dataset_eval_0507.yaml" \
     --output_dir "$OUTPUT_DIR" \
-    --num_train_epochs 1 \
-    --per_device_train_batch_size 2 \
-    --max_tokens_per_batch 2200 \
+    --num_train_epochs 2 \
+    --per_device_train_batch_size 3 \
+    --max_tokens_per_batch 3000 \
     --per_device_eval_batch_size 4 \
     --gradient_accumulation_steps 1 \
     --auto_find_batch_size False \
     --save_strategy "steps" \
-    --save_steps 5000 \
+    --save_steps 10000 \
     --save_total_limit 120 \
     --max_grad_norm 1.0 \
-    --learning_rate 1e-6 \
+    --learning_rate 2e-5 \
     --weight_decay 0.01 \
     --adam_beta1 0.9 \
     --adam_beta2 0.95 \
     --adam_epsilon 1e-8 \
     --warmup_ratio 0.05 \
     --lr_scheduler_type "cosine_with_min_lr" \
-    --lr_scheduler_kwargs '{"min_lr": 1e-7}' \
+    --lr_scheduler_kwargs '{"min_lr": 1e-6}' \
     --logging_steps 100 \
     --model_max_length 1024 \
     --gradient_checkpointing False \
@@ -104,8 +119,9 @@ fi
     --use_joint_text_audio_vocab False \
     --early_diverge_talker False \
     --only_train_talker False \
-    --use_lora $USE_LORA \
-    --force_use_combined_embedding True \
+    --use_lora True \
+    --force_use_combined_embedding False \
+    --no_use_combined_embedding \
     --use_qwen25o_feature True \
     --qwen25o_encoder_path "$QWEN25O_ENCODER_PATH" \
     --qwen25o_encoder_config_path "$QWEN25O_ENCODER_CONFIG_PATH" \
@@ -115,16 +131,11 @@ fi
     --use_sinusoidal True \
     --per_sample_frame_rate_embed True \
     --text_loss_weight 2 \
-    --length_loss_weight 0.1 \
     --lora_rank 32 \
     --lora_alpha 64 \
     --use_omni_token True \
     --no_pad False \
     --use_input_merging_transformer True \
     --use_learnable_audio_boundary True \
-    --extend_lm_head False \
-    --talker_learning_rate 2e-4 \
-    --finetune_speech_encoder False \
-    --combine_proj_learning_rate 2e-5 \
-    --use_input_merging_transformer_v2 True \
-    --input_merging_transformer_d_model 768
+    --extend_lm_head False
+

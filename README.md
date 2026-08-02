@@ -78,7 +78,7 @@ torchrun --nproc_per_node=8 train.py \
   --model_name_or_path path/to/base_qwen_checkpoint \
   --config_name path/to/base_qwen_checkpoint \
   --tokenizer_name path/to/base_qwen_checkpoint \
-  --dataset_name flexislm/dataset/jiaqi_recipes/dataset_train_stage1.yaml \
+  --dataset_name flexislm/dataset/recipes/dataset_train_stage1.yaml \
   --dataset_name_eval flexislm/dataset/dataset_eval.yaml \
   --output_dir outputs/flexislm_stage1 \
   --num_train_epochs 1 \

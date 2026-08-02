@@ -1,0 +1,36 @@
+# Copyright (c) 2025 ByteDance Ltd. and/or its affiliates
+# SPDX-License-Identifier: MIT
+# FlexiSLM Python dependencies (PyPI-installable only).
+# This file is derived from imports used in the current codebase.
+#
+# Notes:
+# 1) Some modules referenced by the code are not standard PyPI packages and
+#    must be installed from source or provided via PYTHONPATH, e.g.:
+#    - flexicodec
+#    - zero_shot_tts_training
+#    - qwen_asr
+# 2) `flash-attn` is optional and environment-specific; install it manually
+#    when your CUDA/PyTorch toolchain supports it.
+
+accelerate>=0.30.0
+datasets>=2.18.0
+deepspeed>=0.14.0
+huggingface_hub>=0.23.0
+inflect>=7.0.0
+librosa>=0.10.0
+loguru>=0.7.0
+matplotlib>=3.7.0
+num2words>=0.5.13
+numpy>=1.24.0,<2.0
+peft>=0.11.0
+PyYAML>=6.0
+requests>=2.31.0
+safetensors>=0.4.0
+sentencepiece>=0.1.99
+soundfile>=0.12.1
+swanlab>=0.3.0
+torch>=2.1.0
+torchaudio>=2.1.0
+torchvision>=0.16.0
+tqdm>=4.66.0
+transformers>=4.41.0

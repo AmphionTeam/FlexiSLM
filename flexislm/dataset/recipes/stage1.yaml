@@ -1,0 +1,10 @@
+
+xlsx_sample_num: 5
+
+audio_root: path/to/VoiceAssistant-400K/audio
+
+dataset:
+  TTS:
+    ratio: 1.0
+    data_paths:
+      - path/to/TTS.with_durations.jsonl

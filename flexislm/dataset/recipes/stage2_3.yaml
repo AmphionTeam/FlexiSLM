@@ -1,0 +1,11 @@
+
+xlsx_sample_num: 5
+
+audio_root: path/to/VoiceAssistant-400K/audio
+
+dataset:
+  # Here we use voiceassistant dataset as example. For actual training we use FSLM-Data instead of VoiceAssistant-400K
+  voiceassistant_400k:
+    ratio: 1.0
+    data_paths:
+      - path/to/voiceassistant_400k.filtered.with_durations.jsonl

@@ -1,0 +1,2 @@
+{"messages": [{"content": "<|audio|>", "role": "user"}, {"content": "Joakim Noah plays for the Chicago Bulls.\n<|audio|>", "role": "assistant"}], "audios": ["/path/to/user2.wav", "/path/to/ans2"]}
+{"messages": [{"content": "<|audio|>", "role": "user"}, {"content": "The NFL Redskins are from Washington.\n<|audio|>", "role": "assistant"}], "audios": ["/path/to/user.wav", "/path/to/ans"]}

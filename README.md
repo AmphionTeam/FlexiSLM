@@ -108,8 +108,9 @@ torchrun --nproc_per_node=8 train.py \
 Prepare your dataset in three steps.
 
 Step 1: format your JSONL like the provided examples:
-- `flexislm/dataset/example_data.jsonl`
-- `flexislm/dataset/example_data_voiceassistant.jsonl`
+- `flexislm/dataset/example_data_asr.jsonl`
+- `flexislm/dataset/example_data_tts.jsonl`
+- `flexislm/dataset/example_data_dialog.jsonl`
 
 The common JSONL format is:
 
@@ -126,6 +127,8 @@ The common JSONL format is:
   ]
 }
 ```
+(system message are always overwritten by Qwen-Omni's system message in our setting. Configure this behavior in flexislm/dataset/dataset_override/dataset_interleaved.py)
+
 
 Important constraints:
 - `messages[*].content` containing `<|audio|>` means one audio item should be consumed.
@@ -270,14 +273,6 @@ Minimal notebook example (imports inference module and runs T2T/S2T/TTS):
 ```bash
 inference_minimal.ipynb
 ```
-
-## Security
-
-If you discover potential security issues, please report through ByteDance SRC:
-- https://security.bytedance.com/src
-- mailto:src@bytedance.com
-
-Please do not disclose vulnerabilities publicly before remediation.
 
 ## License
 

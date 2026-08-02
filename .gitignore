@@ -1,0 +1,80 @@
+
+dist
+*.whl
+dualcodec_ckpts
+*.safetensors
+w2v-bert-2.0
+.DS_Store
+__pycache__/
+*.wav
+output_checkpoints
+
+
+.DS_Store
+
+*.o
+*.png
+outputs
+*.log
+*.wav
+*.zip
+*.tar
+*.tar.gz
+nohup.out
+VoiceCraft
+output-wavs
+# Virtualenv
+/.venv/
+/venv/
+*.pdf
+*.DS_Store
+*.safetensors
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+
+# C extensions
+*.so
+
+# Distribution / packaging
+/bin/
+/build/
+/develop-eggs/
+/dist/
+/eggs/
+/lib/
+/lib64/
+/output/
+/parts/
+/sdist/
+/var/
+/*.egg-info/
+/.installed.cfg
+/*.egg
+/.eggs
+
+# AUTHORS and ChangeLog will be generated while packaging
+/AUTHORS
+/ChangeLog
+
+# BCloud / BuildSubmitter
+/build_submitter.*
+/logger_client_log
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+.tox/
+.coverage
+.cache
+.pytest_cache
+nosetests.xml
+coverage.xml
+
+# Translations
+*.mo
+
+# Sphinx documentation
+/docs/_build/

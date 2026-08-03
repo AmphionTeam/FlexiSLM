@@ -34,7 +34,7 @@ from .base import BaseDataset
 
 IGNORE_TOKEN_ID = LabelSmoother.ignore_index
 
-from src.third_party.flexicodec.flexicodec.feature_extractors import FBankGen
+from flexicodec.feature_extractors import FBankGen
 
 from transformers.models.whisper import WhisperFeatureExtractor
 

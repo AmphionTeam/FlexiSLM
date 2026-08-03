@@ -37,15 +37,12 @@ import random
 import math
 import deepspeed
 import torch.distributed as dist
-import sys
 import os
 from src.models.configuration_flexislm import MultimodalQwen2Config
 from accelerate import init_empty_weights
-# Add partent folder to import flexicodec
-sys.path.append(os.path.dirname(os.getcwd()))
-from src.third_party.flexicodec.flexicodec.infer import prepare_model, encode_flexicodec
-import src.third_party.flexicodec.flexicodec.model_blocks.mimi.transformer as Stransformer
-import src.third_party.flexicodec.flexicodec.model_blocks.mimi.transformer_windowed as Stransformer_windowed
+from flexicodec.infer import prepare_model, encode_flexicodec
+import flexicodec.model_blocks.mimi.transformer as Stransformer
+import flexicodec.model_blocks.mimi.transformer_windowed as Stransformer_windowed
 import loguru
 logger = loguru.logger
 IGNORE_TOKEN_ID = -100

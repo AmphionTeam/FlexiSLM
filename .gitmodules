@@ -1,4 +1,0 @@
-[submodule "src/third_party/flexicodec"]
-	path = src/third_party/flexicodec
-	url = https://github.com/AmphionTeam/FlexiCodec
-	branch = main

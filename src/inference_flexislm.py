@@ -113,16 +113,16 @@ except ImportError:
     AUDIO_AVAILABLE = False
     print("Warning: Audio libraries not available. Audio I/O will be disabled.")
 
-# Prefer the in-repo FlexiCodec implementation used by the model itself.
-from src.third_party.flexicodec.flexicodec.infer import (
+# FlexiCodec is installed as an external Python package.
+from flexicodec.infer import (
     prepare_model,
     encode_flexicodec,
 )
 FLEXICODEC_AVAILABLE = True
 
 try:
-    from src.third_party.flexicodec.flexicodec.nar_tts.modeling_voicebox import VoiceboxWrapper
-    from src.third_party.flexicodec.flexicodec.feature_extractors import FBankGen
+    from flexicodec.nar_tts.modeling_voicebox import VoiceboxWrapper
+    from flexicodec.feature_extractors import FBankGen
     FLOW_MATCHING_AVAILABLE = True
 except:
     FLOW_MATCHING_AVAILABLE = False
@@ -689,7 +689,7 @@ class InterleavedS2SInference:
         
         # Load vocoder
         logger.info("Loading vocoder for flow matching decoder...")
-        from src.third_party.flexicodec.flexicodec.nar_tts.inference_voicebox import load_vocoder
+        from flexicodec.nar_tts.inference_voicebox import load_vocoder
 
         self.vocoder_decode_func, _ = load_vocoder(self.device, vocoder_path=self.config.flow_matching_vocoder_path)
         

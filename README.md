@@ -32,23 +32,18 @@ Overall FlexiSLM architecture is a Thinker-Talker model with dynamic frame-rate 
 
 ### Environment Setup
 
-This repository depends on a git submodule: `src/third_party/flexicodec`.
-
-1. Clone with submodules:
+1. Clone the repository:
 ```bash
-git clone --recurse-submodules <repo_url>
+git clone <repo_url>
 cd FlexiSLM
 ```
 
-2. If you already cloned without submodules:
-```bash
-git submodule update --init --recursive
-```
-
-3. Install dependencies:
+2. Install dependencies:
 ```bash
 pip install -r requirements.txt
 ```
+
+FlexiCodec is installed as a Python package from the repository specified in `requirements.txt`.
 
 ### Training Scripts
 FlexiSLM training progresses in 3 stages:

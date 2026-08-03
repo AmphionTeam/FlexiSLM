@@ -37,7 +37,7 @@ This repository depends on a git submodule: `flexislm/third_party/flexicodec`.
 1. Clone with submodules:
 ```bash
 git clone --recurse-submodules <repo_url>
-cd flexislm_opensource
+cd FlexiSLM
 ```
 
 2. If you already cloned without submodules:
@@ -50,7 +50,7 @@ git submodule update --init --recursive
 pip install -r requirements.txt
 ```
 
-### 1) Which scripts to use
+### Training Scripts
 FlexiSLM training progresses in 3 stages:
 1. **Talker pre-training.** Freeze the LLM backbone and train only the randomly initialized Talker end to end on about 100K hours of English TTS. We also add ASR data to pretrain the input merging transformer.
 2. **Multi-task LoRA fine-tuning.** Activate the input-side Frame Merging Module, Thinker, and Talker; apply LoRA to the Thinker and train on mixed speech tasks.
@@ -70,9 +70,9 @@ Notes:
 <!-- - Copy a script and edit paths before use.
 - If an old script still has deprecated args (for example `--load_from_stage1`), remove them. -->
 
-<!-- ### 2) Recommended direct launch (minimal)
+<!-- ### Recommended Direct Launch (Minimal)
 
-Run from repo root (`flexislm_opensource/`):
+Run from repo root:
 
 ```bash
 torchrun --nproc_per_node=8 train.py \
@@ -106,7 +106,7 @@ torchrun --nproc_per_node=8 train.py \
   --dataset_name_eval path/to/eval_recipe.yaml
 ``` -->
 
-### 3) Dataset Preparation Workflow (JSONL -> durations -> YAML)
+### Dataset Preparation Workflow
 
 Prepare your dataset in three steps.
 
@@ -194,7 +194,7 @@ Supported `data_paths` types:
 - local directory / file containing WebDataset `.tar` shards (`data_format: webdataset`)
 - parquet/local HF dataset path or HF dataset id
 
-### 4) Inference entry
+## Inference Guide
 
 Primary inference script: `flexislm/inference_flexislm.py`.
 
@@ -204,7 +204,7 @@ Use:
 python flexislm/inference_flexislm.py --help
 ```
 
-Minimal API examples (TTS -> T2S -> S2S -> S2T -> T2T):
+Minimal API examples:
 
 ```python
 from flexislm.inference_flexislm import InterleavedInferenceConfig, InterleavedS2SInference
@@ -221,13 +221,13 @@ engine = InterleavedS2SInference(cfg, device="cuda")
 debug_sentence = "And henry the eighth appropriated to himself the religious house of grey ladies and all the properties appertaining thereto."
 debug_audio_path = "/path/to/input_audio.wav"
 
-# 1) TTS
+# Text-to-Speech Synthesis
 tts = engine.generate_tts(
     sentence=debug_sentence,
     framerate=1.0,
 )
 
-# 2) T2S
+# Text-to-Speech
 t2s = engine.generate_from_text(
     text_input=f"Please read the following text: {debug_sentence}",
     history="",
@@ -235,7 +235,7 @@ t2s = engine.generate_from_text(
     output_text_only=False,
 )
 
-# 3) S2S
+# Speech-to-Speech
 s2s = engine.generate_from_audio(
     audio_path=debug_audio_path,
     text_query="Please respond naturally to the audio in speech.",
@@ -244,7 +244,7 @@ s2s = engine.generate_from_audio(
     output_text_only=False,
 )
 
-# 4) S2T
+# Speech-to-Text
 s2t = engine.generate_from_audio(
     audio_path=debug_audio_path,
     text_query="Please transcribe the speech in the audio.",
@@ -253,7 +253,7 @@ s2t = engine.generate_from_audio(
     output_text_only=True,
 )
 
-# 5) T2T
+# Text-to-Text
 t2t = engine.generate_from_text(
     text_input="What is dynamic frame rate in speech modeling? Answer in one sentence.",
     history="",
@@ -275,6 +275,20 @@ Minimal notebook example (imports inference module and runs T2T/S2T/TTS):
 
 ```bash
 inference_minimal.ipynb
+```
+
+## Citation
+
+```bibtex
+@misc{li2026flexislmdynamiccontrollableframe,
+      title={FlexiSLM: A Dynamic and Controllable Frame Rate Spoken Language Model},
+      author={Jiaqi Li and Chaoren Wang and Xiaohai Tian and Mingjie Chen and Xinyu Liang and Xu Li and Yufan Lin and Junwen Qiu and Jun Zhang and Lu Lu and Haizhou Li and Zhizheng Wu},
+      year={2026},
+      eprint={2606.31247},
+      archivePrefix={arXiv},
+      primaryClass={cs.SD},
+      url={https://arxiv.org/abs/2606.31247},
+}
 ```
 
 ## License

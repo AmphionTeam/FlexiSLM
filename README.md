@@ -6,7 +6,10 @@
 
 
 ## About
-Existing spoken language models (SLMs) typically use a fixed speech-token frame rate (for example, 25 Hz or 12.5 Hz). This fixed-rate design cannot adapt to time-varying speech complexity and does not offer a direct speed-quality trade-off at inference time. We introduce **FlexiSLM**, the first SLM that supports *dynamic* and *controllable* frame rates on both speech input and output. A single trained model can be steered from 12.5 Hz down to 4.0 Hz without retraining.
+This repository contains the code for FlexiSLM paper. Reproduced data and checkpoints, along with complete guide to train with the data, will be released soon this month.
+
+
+About FlexiSLM: FlexiSLM is the first SLM that supports *dynamic* and *controllable* frame rates on both speech input and output. A single trained model can be steered between 12.5 Hz down to 4.0 Hz without retraining, and its dynamic frame rate mechanism adapts to the varying complexity of speech.
 Key contributions include: 
 - **Dynamic frame rate SLM framework and validation.** We introduce FlexiSLM, the first dynamic frame rate SLM framework, with dynamic frame compression on both speech input and output. Experiments show strong performance at 12.5 Hz and 6.25 Hz, with graceful degradation at 5.0 Hz and 4.0 Hz.
 - **Accurate and practical frame rate control.** We propose direct frame rate conditioning, letting users specify the average output frame rate instead of indirectly tuning a merging threshold. This makes FlexiSLM, to our knowledge, the first SLM with frame rate controllability.
@@ -19,15 +22,15 @@ Overall FlexiSLM architecture is a Thinker-Talker model with dynamic frame-rate 
 <!-- The architecture of FlexiSLM is shown in the figure above.  -->
 
 ## News
-- **August 2, 2026: Code release**. We have released release training and inference code of FlexiSLM-7B.
-- September, 2026: Planned Reproduced FlexiSLM-Data and checkpoint release: We plan to release a reproduced version of FlexiSLM-7B and 5M samples of reproduced training data. We plan to release them around September 2026. 
+- **August 2, 2026: Code release**. We have released the training and inference code of FlexiSLM-7B.
+- Before September 1, 2026: Planned Reproduced FlexiSLM-Data and checkpoint release: We plan to release a reproduced version of FlexiSLM-7B and 5M samples of reproduced speech-to-speech dialog training data. We plan to release them before September 2026. 
 
 
 
 ## Training Guide
 
 
-## Environment Setup
+### Environment Setup
 
 This repository depends on a git submodule: `flexislm/third_party/flexicodec`.
 

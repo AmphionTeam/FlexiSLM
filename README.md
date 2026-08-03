@@ -32,7 +32,7 @@ Overall FlexiSLM architecture is a Thinker-Talker model with dynamic frame-rate 
 
 ### Environment Setup
 
-This repository depends on a git submodule: `flexislm/third_party/flexicodec`.
+This repository depends on a git submodule: `src/third_party/flexicodec`.
 
 1. Clone with submodules:
 ```bash
@@ -57,63 +57,48 @@ FlexiSLM training progresses in 3 stages:
 3. **Full fine-tuning.** Continue from Stage 2, merge the LoRA updates into the LLM, train all parameters, and enable the Talker-to-Thinker connection to improve speech perception and generation quality.
 
 
-Use scripts under `exps/` as launch templates:
+Training arguments are stored in YAML files under `config/`, while the launch scripts live under `scripts/`:
 
-- `exps/train_stage1.sh`: stage-1 training
-- `exps/train_stage2.sh`: stage-2 training
-<!-- - `exps/train_stage2_v2merging.sh`: stage-2 with input-merging-v2 options -->
-- `exps/train_stage3.sh`: stage-3 training
-<!-- - `exps/train_stage3_v2merging.sh`: wrapper that calls `train_stage2_v2merging.sh` -->
+| Stage | Configuration | Launcher |
+| --- | --- | --- |
+| Stage 1 | `config/train_stage1.yaml` | `scripts/train_stage1.sh` |
+| Stage 2 (v2 merging) | `config/train_stage2.yaml` | `scripts/train_stage2.sh` |
+| Stage 2 (v1 merging) | `config/train_stage2_v1merging.yaml` | `scripts/train_stage2_v1merging.sh` |
+| Stage 3 (v2 merging) | `config/train_stage3.yaml` | `scripts/train_stage3.sh` |
+| Stage 3 (v1 merging) | `config/train_stage3_v1merging.yaml` | `scripts/train_stage3_v1merging.sh` |
 
-Notes:
-- These scripts are environment-specific templates and contain cluster/internal absolute paths.
-<!-- - Copy a script and edit paths before use.
-- If an old script still has deprecated args (for example `--load_from_stage1`), remove them. -->
-
-<!-- ### Recommended Direct Launch (Minimal)
-
-Run from repo root:
+Set the Qwen2.5-Omni encoder paths before launching:
 
 ```bash
-torchrun --nproc_per_node=8 train.py \
-  --do_train \
-  --log_level info \
-  --model_name_or_path path/to/base_qwen_checkpoint \
-  --config_name path/to/base_qwen_checkpoint \
-  --tokenizer_name path/to/base_qwen_checkpoint \
-  --dataset_name flexislm/dataset/recipes/dataset_train_stage1.yaml \
-  --dataset_name_eval flexislm/dataset/dataset_eval.yaml \
-  --output_dir outputs/flexislm_stage1 \
-  --num_train_epochs 1 \
-  --per_device_train_batch_size 1 \
-  --gradient_accumulation_steps 1 \
-  --model_max_length 1024 \
-  --learning_rate 2e-5 \
-  --bf16 True \
-  --torch_dtype bfloat16 \
-  --use_parallel True \
-  --enable_flexible_framerate True \
-  --use_omni_token True
+export QWEN25O_ENCODER_PATH=/path/to/qwen25o_encoder
+export QWEN25O_ENCODER_CONFIG_PATH=/path/to/audio_config.json
+bash scripts/train_stage1.sh
 ```
 
-Resume training:
+The YAML values can be overridden from the command line:
 
 ```bash
-torchrun --nproc_per_node=8 train.py \
-  --do_train \
-  --resume_from_checkpoint path/to/checkpoint-dir \
-  --dataset_name path/to/train_recipe.yaml \
-  --dataset_name_eval path/to/eval_recipe.yaml
-``` -->
+bash scripts/train_stage2.sh \
+  --learning_rate 2e-6 \
+  --output_dir outputs/custom_stage2
+```
+
+Use the shared launcher to run a custom configuration:
+
+```bash
+bash scripts/train.sh config/train_stage2.yaml
+```
+
+The scripts detect local or distributed GPU settings through `scripts/env.sh`. They are launch templates, so adjust environment-specific paths and cluster settings before use.
 
 ### Dataset Preparation Workflow
 
 Prepare your dataset in three steps.
 
 Step 1: format your JSONL like the provided examples:
-- `flexislm/dataset/example_data_asr.jsonl`
-- `flexislm/dataset/example_data_tts.jsonl`
-- `flexislm/dataset/example_data_dialog.jsonl`
+- `examples/data/asr.jsonl`
+- `examples/data/tts.jsonl`
+- `examples/data/dialog.jsonl`
 
 The common JSONL format is:
 
@@ -130,7 +115,7 @@ The common JSONL format is:
   ]
 }
 ```
-(system message are always overwritten by Qwen-Omni's system message in our setting. Configure this behavior in flexislm/dataset/dataset_override/dataset_interleaved.py)
+(system message are always overwritten by Qwen-Omni's system message in our setting. Configure this behavior in src/dataset/interleaved.py)
 
 
 Important constraints:
@@ -141,12 +126,12 @@ Important constraints:
 Step 2: use the precompute script to append audio duration/token metadata.
 
 Script path:
-- `flexislm/dataset/scripts/precompute_audio_durations.py`
+- `src/dataset/precompute_audio_durations.py`
 
 Single JSONL:
 
 ```bash
-python flexislm/dataset/scripts/precompute_audio_durations.py \
+python src/dataset/precompute_audio_durations.py \
   --input path/to/train.jsonl \
   --audio-root path/to/audio_root \
   --workers 32
@@ -155,7 +140,7 @@ python flexislm/dataset/scripts/precompute_audio_durations.py \
 Batch mode (process all `data_paths` listed in a YAML file):
 
 ```bash
-python flexislm/dataset/scripts/precompute_audio_durations.py \
+python src/dataset/precompute_audio_durations.py \
   --yaml path/to/train_recipe.yaml \
   --workers 32
 ```
@@ -196,18 +181,18 @@ Supported `data_paths` types:
 
 ## Inference Guide
 
-Primary inference script: `flexislm/inference_flexislm.py`.
+Primary inference script: `src/inference_flexislm.py`.
 
 Use:
 
 ```bash
-python flexislm/inference_flexislm.py --help
+python -m src.inference_flexislm --help
 ```
 
 Minimal API examples:
 
 ```python
-from flexislm.inference_flexislm import InterleavedInferenceConfig, InterleavedS2SInference
+from src.inference_flexislm import InterleavedInferenceConfig, InterleavedS2SInference
 
 cfg = InterleavedInferenceConfig(
     model_path="/path/to/flexislm_checkpoint",
@@ -265,7 +250,7 @@ t2t = engine.generate_from_text(
 Quick debug run (same five modes in script):
 
 ```bash
-python flexislm/inference_flexislm.py \
+python -m src.inference_flexislm \
   --model_path /path/to/flexislm_checkpoint \
   --debug \
   --debug_audio_path /path/to/input_audio.wav
@@ -274,7 +259,7 @@ python flexislm/inference_flexislm.py \
 Minimal notebook example (imports inference module and runs T2T/S2T/TTS):
 
 ```bash
-inference_minimal.ipynb
+examples/inference.ipynb
 ```
 
 ## Citation

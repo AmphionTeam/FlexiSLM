@@ -8,6 +8,7 @@ w2v-bert-2.0
 __pycache__/
 *.wav
 output_checkpoints
+/Agents.md
 
 
 .DS_Store

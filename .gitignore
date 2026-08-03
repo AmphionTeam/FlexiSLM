@@ -79,3 +79,7 @@ coverage.xml
 
 # Sphinx documentation
 /docs/_build/
+
+# Local files
+scripts/yutong
+config/yutong

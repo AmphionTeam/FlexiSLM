@@ -3,14 +3,19 @@
 # SPDX-License-Identifier: MIT
 # coding=utf-8
 
+import argparse
 import json
 import logging
 import math
 import os
 import sys
 import time
+from dataclasses import fields
+
 import datasets
 import torch
+import yaml
+
 from src.models.utils import (
     load_flexislm_model_and_tokenizer,
 )
@@ -449,15 +454,44 @@ class InterleavedDataCollator:
 def make_inputs_require_grad(module, input, output):
     output.requires_grad_(True)
 
+def parse_training_args(argv=None):
+    """Parse a YAML config and allow explicit CLI arguments to override it."""
+    argv = list(sys.argv[1:] if argv is None else argv)
+
+    config_parser = argparse.ArgumentParser(add_help=False)
+    config_parser.add_argument("--config", type=str, help="Path to a YAML training config.")
+    config_args, remaining_args = config_parser.parse_known_args(argv)
+
+    argument_types = (ModelArguments, DataTrainingArguments, TrainingArguments)
+    parser = HfArgumentParser(argument_types)
+
+    if config_args.config:
+        config_path = os.path.abspath(config_args.config)
+        with open(config_path, "r", encoding="utf-8") as config_file:
+            config = yaml.safe_load(config_file) or {}
+        if not isinstance(config, dict):
+            raise ValueError(f"Training config must contain a YAML mapping: {config_path}")
+
+        valid_keys = {field.name for argument_type in argument_types for field in fields(argument_type)}
+        unknown_keys = sorted(set(config) - valid_keys)
+        if unknown_keys:
+            raise ValueError(
+                f"Unknown training config keys in {config_path}: {', '.join(unknown_keys)}"
+            )
+
+        # argparse applies explicit CLI values after defaults, so command-line
+        # arguments can override values loaded from YAML.
+        parser.set_defaults(**config)
+
+    if not config_args.config and len(remaining_args) == 1 and remaining_args[0].endswith(".json"):
+        return parser.parse_json_file(json_file=os.path.abspath(remaining_args[0]))
+
+    return parser.parse_args_into_dataclasses(args=remaining_args)
+
+
 @logger.catch(onerror=lambda _: sys.exit(1))
 def main():
-    parser = HfArgumentParser((ModelArguments, DataTrainingArguments, TrainingArguments))
-    if len(sys.argv) == 2 and sys.argv[1].endswith(".json"):
-        # If we pass only one argument to the script and it's the path to a json file,
-        # let's parse it to get our arguments.
-        model_args, data_args, training_args = parser.parse_json_file(json_file=os.path.abspath(sys.argv[1]))
-    else:
-        model_args, data_args, training_args = parser.parse_args_into_dataclasses()
+    model_args, data_args, training_args = parse_training_args()
 
     # Setup logging
     logging.basicConfig(

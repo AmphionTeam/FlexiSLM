@@ -3,13 +3,12 @@
 # SPDX-License-Identifier: MIT
 # Common setup file for training scripts
 # This file contains shared environment variables and setup logic
-# Source this file in training scripts: source flexislm/scripts/env.sh
+# Source this file in training scripts: source scripts/env.sh
 
 # Resolve repository paths relative to this file, so no user-specific absolute
 # path is required.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-FLEXISLM_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
-REPO_ROOT="$(cd "${FLEXISLM_DIR}/.." && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 # Set Python path
 export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
@@ -137,8 +136,8 @@ fi
 
 # Common paths
 WORK_DIR="${WORK_DIR:-$REPO_ROOT}"
-TORCHRUN_BIN="${TORCHRUN_BIN:-$(command -v torchrun 2>/dev/null)}"
-DEEPSPEED_CONFIG="${DEEPSPEED_CONFIG:-$REPO_ROOT/ds_config_zero2.json}"
+TORCHRUN_BIN="${TORCHRUN_BIN:-$(command -v torchrun 2>/dev/null || true)}"
+DEEPSPEED_CONFIG="${DEEPSPEED_CONFIG:-$REPO_ROOT/config/ds_config_zero2.json}"
 
 if [ -z "${TORCHRUN_BIN}" ]; then
     echo "Warning: torchrun not found in PATH. Falling back to 'torchrun'."

@@ -809,7 +809,7 @@ class DataTrainingArguments:
         metadata={
             "help": (
                 "If True, skip processor text_normalize_llm in interleaved dataset preprocess "
-                "(Qwen2Dataset / dataset_interleaved.py); text is tokenized as stored in the data."
+                "(Qwen2Dataset / interleaved.py); text is tokenized as stored in the data."
             )
         },
     )

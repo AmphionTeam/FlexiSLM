@@ -46,7 +46,7 @@ if _REPO_ROOT not in sys.path:
 if _THIS_DIR not in sys.path:
     sys.path.insert(0, _THIS_DIR)
 
-# from flexislm.models.modeling_flexislm import ParallelS2SForCausalLM
+# from src.models.modeling_flexislm import ParallelS2SForCausalLM
 
 
 import importlib.util, sys, os
@@ -65,7 +65,7 @@ ParallelS2SForCausalLM = mod.ParallelS2SForCausalLM
 
 
 
-from flexislm.processor.constants import (
+from src.processor.constants import (
     AUD_START_TOKEN,
     AUD_END_TOKEN,
     AUD_START_TOKEN_OMNI,
@@ -114,15 +114,15 @@ except ImportError:
     print("Warning: Audio libraries not available. Audio I/O will be disabled.")
 
 # Prefer the in-repo FlexiCodec implementation used by the model itself.
-from flexislm.third_party.flexicodec.flexicodec.infer import (
+from src.third_party.flexicodec.flexicodec.infer import (
     prepare_model,
     encode_flexicodec,
 )
 FLEXICODEC_AVAILABLE = True
 
 try:
-    from flexislm.third_party.flexicodec.flexicodec.nar_tts.modeling_voicebox import VoiceboxWrapper
-    from flexislm.third_party.flexicodec.flexicodec.feature_extractors import FBankGen
+    from src.third_party.flexicodec.flexicodec.nar_tts.modeling_voicebox import VoiceboxWrapper
+    from src.third_party.flexicodec.flexicodec.feature_extractors import FBankGen
     FLOW_MATCHING_AVAILABLE = True
 except:
     FLOW_MATCHING_AVAILABLE = False
@@ -403,7 +403,7 @@ class InterleavedS2SInference:
     def _load_model(self) -> Tuple[ParallelS2SForCausalLM, AutoTokenizer]:
         """Load the Interleaved S2S model and tokenizer.
 
-        When `model.config.use_lora` is True (set by train.py), the saved
+        When `model.config.use_lora` is True (set by src/train.py), the saved
         checkpoint contains the full state dict with PEFT-style key names because
         training wraps `model.model` with `get_peft_model()` before training and the
         HF Trainer saves the complete outer model via `model.save_pretrained()`.
@@ -426,7 +426,7 @@ class InterleavedS2SInference:
         # ------------------------------------------------------------------
         # Step 1: read config to determine whether LoRA was used
         # ------------------------------------------------------------------
-        from flexislm.models.modeling_flexislm import ParallelS2SConfig
+        from src.models.modeling_flexislm import ParallelS2SConfig
         saved_config = ParallelS2SConfig.from_pretrained(model_path)
         # override
         saved_config.max_tokens_per_group = 16
@@ -521,7 +521,7 @@ class InterleavedS2SInference:
                 modules_to_save=None,
             )
             model.model = get_peft_model(model.model, lora_config)
-            logger.info("Applied LoRA config to model.model (matches train.py)")
+            logger.info("Applied LoRA config to model.model (matches src/train.py)")
 
             # ------------------------------------------------------------------
             # Step 5: load the full checkpoint – keys now match the LoRA model
@@ -689,7 +689,7 @@ class InterleavedS2SInference:
         
         # Load vocoder
         logger.info("Loading vocoder for flow matching decoder...")
-        from flexislm.third_party.flexicodec.flexicodec.nar_tts.inference_voicebox import load_vocoder
+        from src.third_party.flexicodec.flexicodec.nar_tts.inference_voicebox import load_vocoder
 
         self.vocoder_decode_func, _ = load_vocoder(self.device, vocoder_path=self.config.flow_matching_vocoder_path)
         
@@ -786,7 +786,7 @@ class InterleavedS2SInference:
             prompt = f"{IM_START}{SYSTEM}\n{sys_prompt}{IM_END}\n{IM_START}{USER}\n{user_content}"
         elif use_sys:
             raise
-            # Dataset format: system block + user block (matches dataset_interleaved.py)
+            # Dataset format: system block + user block (matches interleaved.py)
             prompt = f"{IM_START}{SYSTEM}\n{DEFAULT_TTS_SYSTEM_PROMPT}{IM_END}\n{IM_START}{USER}\n{user_content}"
         else:
             # No system block; user block only
@@ -852,7 +852,7 @@ class InterleavedS2SInference:
         use_whisper = getattr(self.model.config, "use_whisper_fetaure", False)
         use_qwen25o = getattr(self.model.config, "use_qwen25o_feature", False)
         if use_qwen3 or use_qwen25o or use_whisper:
-            from flexislm.dataset.dataset_override.dataset_interleaved import Qwen3FbankExtractor, Qwen25OFbankExtractor
+            from src.dataset.interleaved import Qwen3FbankExtractor, Qwen25OFbankExtractor
 
             # Lazily construct fbank extractor
             if use_qwen3 or use_whisper:
@@ -1803,7 +1803,7 @@ class InterleavedS2SInference:
             Dict with generated text, audio, audio_ids, length_ids, and other metadata
         """
         tts_system_prompt = ""
-        from flexislm.processor.constants import text_normalize
+        from src.processor.constants import text_normalize
         # sentence = text_normalize(sentence)
         # TODO remove this constraint when training on emilia dataset
         sentence = sentence.replace(':', ',')

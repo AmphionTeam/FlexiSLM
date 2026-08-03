@@ -10,7 +10,7 @@ DEFAULT_INPUT = os.environ.get("VOICEASSISTANT_INPUT_JSONL", "data/VoiceAssistan
 DEFAULT_AUDIO_ROOT = os.environ.get("VOICEASSISTANT_AUDIO_ROOT", "data/VoiceAssistant-400K/audio")
 DEFAULT_OUTPUT = os.environ.get(
     "VOICEASSISTANT_OUTPUT_JSONL",
-    "flexislm/dataset/voiceassistant_400k_processed.jsonl",
+    "data/VoiceAssistant-400K/voiceassistant_400k_processed.jsonl",
 )
 
 

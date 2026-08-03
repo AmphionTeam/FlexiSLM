@@ -11,8 +11,7 @@ import sys
 import time
 import datasets
 import torch
-
-from flexislm.models.utils import (
+from src.models.utils import (
     load_flexislm_model_and_tokenizer,
 )
 # torch.cuda.memory._set_allocator_settings("expandable_segments:False")
@@ -42,10 +41,10 @@ except ImportError:
     print("Warning: PEFT not available. LoRA will not work.")
 
 
-from flexislm.arguments import ModelArguments, DataTrainingArguments, TrainingArguments
-from flexislm.dataset.data_collator.data_collator import collate_fn_deepspeed, get_collator
-from flexislm.dataset.dataset_override.dataset_interleaved import Qwen2Dataset
-from flexislm.trainer.self_trainer import ATrainer
+from src.arguments import ModelArguments, DataTrainingArguments, TrainingArguments
+from src.dataset.collator import collate_fn_deepspeed, get_collator
+from src.dataset.interleaved import Qwen2Dataset
+from src.trainer.self_trainer import ATrainer
 # from sampler.TokenBatchSampler import TokenBatchSampler
 import loguru
 
@@ -206,7 +205,7 @@ class InterleavedDataCollator:
             else:
                 # No assistant turn found - this shouldn't happen but handle gracefully
                 raise ValueError(f"Sample {batch_idx} has no assistant turn")
-        from flexislm.processor.constants import (
+        from src.processor.constants import (
             AUD_START_TOKEN,
             AUD_END_TOKEN,
             AUD_START_TOKEN_OMNI,

@@ -24,18 +24,17 @@ import torchaudio
 import torchaudio.transforms as T
 import transformers
 from transformers.trainer_pt_utils import LabelSmoother
-from flexislm.processor.constants import (
+from src.processor.constants import (
     DEFAULT_TTS_SYSTEM_PROMPT,
     T2T_TTS_SYSTEM_PROMPT_OMNI,
 )
 import torch.nn.functional as F
 
-from .dataset_base import BaseDataset
-# from dataset_base import BaseDataset
+from .base import BaseDataset
 
 IGNORE_TOKEN_ID = LabelSmoother.ignore_index
 
-from flexislm.third_party.flexicodec.flexicodec.feature_extractors import FBankGen
+from src.third_party.flexicodec.flexicodec.feature_extractors import FBankGen
 
 from transformers.models.whisper import WhisperFeatureExtractor
 
@@ -490,7 +489,7 @@ class Qwen2Dataset(BaseDataset):
         Priority order (fastest → slowest fallback):
 
         1. ``num_tokens_est`` column – single pre-computed int per sample written
-           by ``scripts/precompute_audio_durations.py``; zero Python computation.
+           by ``src/dataset/precompute_audio_durations.py``; zero Python computation.
         2. ``audio_tokens`` + ``messages`` columns – sum pre-computed per-audio
            int token counts, add char-based text estimate.
         3. ``audio_durations`` + ``messages`` columns – derive audio tokens via
@@ -827,7 +826,7 @@ def preprocess(
     # <|im_start|>user
     # I'd like to show off how chat templating works!<|im_end|>
 
-    from flexislm.processor.constants import (
+    from src.processor.constants import (
         AUD_START_TOKEN as AUD_START_TOKEN_DEFAULT,
         AUD_END_TOKEN as AUD_END_TOKEN_DEFAULT,
         AUD_START_TOKEN_OMNI,

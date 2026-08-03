@@ -34,16 +34,9 @@ def _jsonl_with_durations_path(jsonl_path: str) -> str:
 
 
 def _precompute_audio_durations_script_path() -> str:
-    # Repo root: amphion-audio2-main/dataset/dataset_override/ → ../../../scripts/
-    return os.path.normpath(
-        os.path.join(
-            os.path.dirname(os.path.abspath(__file__)),
-            "..",
-            "..",
-            "..",
-            "scripts",
-            "precompute_audio_durations.py",
-        )
+    return os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "precompute_audio_durations.py",
     )
 
 
@@ -192,7 +185,7 @@ def resolve_jsonl_path_with_durations(
     """
     When ``training_args.max_tokens_per_batch`` is set (see ``arguments.py``), prefer
     ``data.with_durations.jsonl`` over ``data.jsonl`` when it exists. If only the base
-    JSONL exists, start ``scripts/precompute_audio_durations.py`` once in the background
+    JSONL exists, start ``src/dataset/precompute_audio_durations.py`` once in the background
     (rank 0 only under distributed) and load the base JSONL; the sidecar is picked up on
     a later run when present.
 

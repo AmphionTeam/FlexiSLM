@@ -8,12 +8,12 @@ from transformers.modeling_outputs import CausalLMOutputWithPast, BaseModelOutpu
 from typing import Optional, Tuple, Union, List
 import warnings
 
-# from flexislm.models.modeling_speechLM_one_batch import MultimodalQwen2ForCausalLM
-# from flexislm.models.modeling_speechLM_flexicodec_s2s import FlexiCodecS2SForCausalLM as MultimodalQwen2ForCausalLM
+# from src.models.modeling_speechLM_one_batch import MultimodalQwen2ForCausalLM
+# from src.models.modeling_speechLM_flexicodec_s2s import FlexiCodecS2SForCausalLM as MultimodalQwen2ForCausalLM
 import loguru
 
 logger = loguru.logger
-from flexislm.processor.constants import (
+from src.processor.constants import (
     AUD_START_TOKEN,
     AUD_END_TOKEN,
     AUD_TAG_TOKEN,
@@ -23,7 +23,7 @@ from flexislm.processor.constants import (
 def _aud_boundary_token_strings(model_args) -> tuple:
     """Resolve audio start/end string tokens (default vs Omni) from model_args."""
     if getattr(model_args, "use_omni_token", False):
-        from flexislm.processor.constants import AUD_START_TOKEN_OMNI, AUD_END_TOKEN_OMNI
+        from src.processor.constants import AUD_START_TOKEN_OMNI, AUD_END_TOKEN_OMNI
 
         return AUD_START_TOKEN_OMNI, AUD_END_TOKEN_OMNI
     raise NotImplementedError
@@ -38,7 +38,7 @@ def add_audio_tokens_if_needed(tokenizer) -> int:
     Add AUD_START_TOKEN, AUD_END_TOKEN, AUD_TAG_TOKEN to the tokenizer vocabulary
     if they are not already present. Returns the number of tokens added.
     """
-    from flexislm.processor.constants import AUD_START_TOKEN_OMNI, AUD_END_TOKEN_OMNI
+    from src.processor.constants import AUD_START_TOKEN_OMNI, AUD_END_TOKEN_OMNI
     special_audio_tokens = [AUD_START_TOKEN_OMNI, AUD_END_TOKEN_OMNI, AUD_TAG_TOKEN]
     vocab = tokenizer.get_vocab()
     tokens_to_add = [t for t in special_audio_tokens if t not in vocab]
@@ -54,7 +54,7 @@ def load_train_flexislm_model_and_tokenizer(
     model_args,
     audio_vocab_size: int = 32768,
     max_length_classes: int = 32,
-    model_impl_module: str = "flexislm.models.modeling_flexislm",
+    model_impl_module: str = "src.models.modeling_flexislm",
 ):
     """
     Load FlexiSLM model and tokenizer for training (single supported model).
@@ -327,5 +327,5 @@ def load_flexislm_model_and_tokenizer(
         model_args=model_args,
         audio_vocab_size=audio_vocab_size,
         max_length_classes=max_length_classes,
-        model_impl_module="flexislm.models.modeling_flexislm",
+        model_impl_module="src.models.modeling_flexislm",
     )

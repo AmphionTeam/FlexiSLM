@@ -8,8 +8,8 @@ tokenizer_name: Qwen/Qwen2.5-7B-Instruct
 use_v3: true
 use_parallel: true
 use_joint_text_audio_vocab: false
-freeze_llm: false
-only_train_talker: true
+freeze_llm: true
+only_train_talker: false
 
 # Audio encoder and frame-rate control
 use_sensevoice_feature: false

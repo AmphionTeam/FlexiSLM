@@ -13,7 +13,9 @@ only_train_talker: false
 
 # Audio encoder and frame-rate control
 use_sensevoice_feature: false
-use_qwen25o_feature: true
+use_qwen25omni_feature: true
+qwen25omni_encoder_path: path/to/Qwen2.5-Omni-7B
+qwen25omni_encoder_config_path: path/to/Qwen2.5-Omni-7B/config.json
 finetune_speech_encoder: false
 enable_flexible_framerate: true
 training_framerate_options: "0.86,0.87,0.88,0.90,0.91,1.0,1.0"

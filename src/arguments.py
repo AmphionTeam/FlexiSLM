@@ -429,7 +429,7 @@ class ModelArguments:
         default=False,
         metadata={"help": "Whether to use Whisper-large-v3 encoder features for user audio encoding instead of SenseVoice"}
     )
-    use_qwen25o_feature: bool = field(
+    use_qwen25omni_feature: bool = field(
         default=False,
         metadata={"help": "Whether to use Qwen2.5 Omni encoder (with projection) for user audio encoding"}
     )
@@ -456,13 +456,13 @@ class ModelArguments:
             "help": "Optional path to a local Whisper-large-v3 checkpoint directory. If unset, openai/whisper-large-v3 is used."
         },
     )
-    qwen25o_encoder_path: Optional[str] = field(
+    qwen25omni_encoder_path: Optional[str] = field(
         default=None,
-        metadata={"help": "Path to Qwen2.5 Omni checkpoint. Required when use_qwen25o_feature=True."}
+        metadata={"help": "Path to Qwen2.5 Omni checkpoint. Required when use_qwen25omni_feature=True."}
     )
-    qwen25o_encoder_config_path: Optional[str] = field(
+    qwen25omni_encoder_config_path: Optional[str] = field(
         default=None,
-        metadata={"help": "Path to Qwen2.5 Omni config .json. Required when use_qwen25o_feature=True."}
+        metadata={"help": "Path to Qwen2.5 Omni config .json. Required when use_qwen25omni_feature=True."}
     )
     thinker_concat_user_speech: bool = field(
         default=False,
@@ -497,7 +497,7 @@ class ModelArguments:
         metadata={
             "help": (
                 "If True, train a deep copy of SenseVoice (sensevoice_finetune_copy) when use_sensevoice_feature — "
-                "FlexiCodec's built-in SenseVoice stays frozen. If use_qwen3_feature or use_whisper_fetaure or use_qwen25o_feature, "
+                "FlexiCodec's built-in SenseVoice stays frozen. If use_qwen3_feature or use_whisper_fetaure or use_qwen25omni_feature, "
                 "trains the selected speech encoder. "
                 "Ignored when only_train_llm=True. Default False (encoders frozen)."
             )

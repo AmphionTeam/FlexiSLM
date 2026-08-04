@@ -36,32 +36,14 @@ if [ -z "$ACCELERATE_BIN" ]; then
     exit 1
 fi
 
-QWEN25O_ENCODER_PATH="${QWEN25O_ENCODER_PATH:-}"
-QWEN25O_ENCODER_CONFIG_PATH="${QWEN25O_ENCODER_CONFIG_PATH:-}"
-if [ -n "$QWEN25O_ENCODER_PATH" ] && [ -z "$QWEN25O_ENCODER_CONFIG_PATH" ]; then
-    QWEN25O_ENCODER_CONFIG_PATH="$QWEN25O_ENCODER_PATH/audio_config.json"
-fi
-if [ -z "$QWEN25O_ENCODER_PATH" ] || [ -z "$QWEN25O_ENCODER_CONFIG_PATH" ]; then
-    echo "Error: QWEN2.5-Omni encoder paths are required." >&2
-    echo "Set QWEN25O_ENCODER_PATH and QWEN25O_ENCODER_CONFIG_PATH." >&2
-    exit 1
-fi
-
+# Model and encoder paths are declared in the YAML config. Keep this shared
+# launcher limited to runtime-specific overrides such as output and resume state.
 TRAINING_OVERRIDES=(
-    --qwen25o_encoder_path "$QWEN25O_ENCODER_PATH"
-    --qwen25o_encoder_config_path "$QWEN25O_ENCODER_CONFIG_PATH"
     --output_dir "$OUTPUT_DIR"
     --run_name "$RUN_NAME"
     --dataloader_num_workers "$DATALOADER_NUM_WORKERS"
 )
 
-if [ -n "${BASE_MODEL:-}" ]; then
-    TRAINING_OVERRIDES+=(
-        --model_name_or_path "$BASE_MODEL"
-        --config_name "$BASE_MODEL"
-        --tokenizer_name "$BASE_MODEL"
-    )
-fi
 if [ -n "$RESUME_CHECKPOINT" ]; then
     TRAINING_OVERRIDES+=(--resume_from_checkpoint "$RESUME_CHECKPOINT")
 fi

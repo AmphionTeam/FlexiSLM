@@ -81,14 +81,6 @@ Training arguments are stored in YAML files under `config/`, while the launch sc
 | Stage 3 (v2 merging) | `config/train_stage3.yaml` | `scripts/train_stage3.sh` |
 | Stage 3 (v1 merging) | `config/train_stage3_v1merging.yaml` | `scripts/train_stage3_v1merging.sh` |
 
-Set the Qwen2.5-Omni encoder paths before launching:
-
-```bash
-export QWEN25O_ENCODER_PATH=/path/to/qwen25o_encoder
-export QWEN25O_ENCODER_CONFIG_PATH=/path/to/audio_config.json
-bash scripts/train_stage1.sh
-```
-
 The YAML values can be overridden from the command line:
 
 ```bash

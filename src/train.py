@@ -567,10 +567,10 @@ def main():
         ) and not getattr(
             model_args, "use_whisper_fetaure", False
         ) and not getattr(
-            model_args, "use_qwen25o_feature", False
+            model_args, "use_qwen25omni_feature", False
         ):
             raise ValueError(
-                "finetune_speech_encoder=True requires use_sensevoice_feature, use_qwen3_feature, use_whisper_fetaure, or use_qwen25o_feature"
+                "finetune_speech_encoder=True requires use_sensevoice_feature, use_qwen3_feature, use_whisper_fetaure, or use_qwen25omni_feature"
             )
         if getattr(model_args, "only_train_llm", False):
             logger.warning(
@@ -581,13 +581,13 @@ def main():
         bool(getattr(model_args, "use_sensevoice_feature", False)),
         bool(getattr(model_args, "use_qwen3_feature", False)),
         bool(getattr(model_args, "use_whisper_fetaure", False)),
-        bool(getattr(model_args, "use_qwen25o_feature", False)),
+        bool(getattr(model_args, "use_qwen25omni_feature", False)),
     ]
     if sum(user_encoder_flags) > 1:
         raise ValueError(
             "Please enable only one user audio encoder feature flag among: "
             "use_sensevoice_feature / use_qwen3_feature / use_whisper_fetaure / "
-            "use_qwen25o_feature."
+            "use_qwen25omni_feature."
         )
     convert_from_lora = getattr(model_args, "convert_from_lora", False)
     if convert_from_lora:
@@ -951,7 +951,7 @@ def main():
         dataset_joint=data_args.dataset_joint,
         use_megatron=False,
         use_qwen3_feature=getattr(model_args, "use_qwen3_feature", False),
-        use_qwen25o_feature=getattr(model_args, "use_qwen25o_feature", False),
+        use_qwen25o_feature=getattr(model_args, "use_qwen25omni_feature", False),
         use_whisper_fetaure=getattr(model_args, "use_whisper_fetaure", False),
         use_omni_token=getattr(model_args, "use_omni_token", False),
         disable_text_normalize_llm=data_args.disable_text_normalize,
@@ -979,7 +979,7 @@ def main():
             dataset_joint=data_args.dataset_joint,
             use_megatron=False,
             use_qwen3_feature=getattr(model_args, "use_qwen3_feature", False),
-            use_qwen25o_feature=getattr(model_args, "use_qwen25o_feature", False),
+            use_qwen25o_feature=getattr(model_args, "use_qwen25omni_feature", False),
             use_whisper_fetaure=getattr(model_args, "use_whisper_fetaure", False),
             use_omni_token=getattr(model_args, "use_omni_token", False),
             disable_text_normalize_llm=data_args.disable_text_normalize,
@@ -1101,7 +1101,7 @@ def main():
         if getattr(model_args, "use_qwen3_feature", False) and hasattr(model, "qwen3_encoder_and_projection"):
             _ = model.qwen3_encoder_and_projection
             logger.info("Eagerly loaded Qwen3 encoder for DeepSpeed checkpoint compatibility.")
-        if getattr(model_args, "use_qwen25o_feature", False) and hasattr(model, "qwen25o_encoder_and_projection"):
+        if getattr(model_args, "use_qwen25omni_feature", False) and hasattr(model, "qwen25o_encoder_and_projection"):
             _ = model.qwen25o_encoder_and_projection
             logger.info("Eagerly loaded Qwen25o encoder for DeepSpeed checkpoint compatibility.")
         if getattr(model_args, "use_whisper_fetaure", False) and hasattr(model, "whisper_encoder_and_projection"):

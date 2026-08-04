@@ -44,7 +44,7 @@ class ModelArguments:
         metadata={"help": "Whether to use v2 model"},
     )
     use_v3: bool = field(
-        default=False,
+        default=True,
         metadata={"help": "Whether to use v3 parallel model"},
     )
     use_v5: bool = field(
@@ -122,16 +122,6 @@ class ModelArguments:
     )
     add_length_embeddings: bool = field(default=True, metadata={"help": ""})
 
-    use_parallel: bool = field(default=False, metadata={"help": "Whether to use parallel model"})
-    no_pad: bool = field(
-        default=False,
-        metadata={
-            "help": (
-                "Disable padding text tokens up to the audio length in the parallel sequence (v4). "
-                "Allows text/audio length mismatch; thinker hiddens are zero-padded before building talker conditioning."
-            )
-        },
-    )
     extend_lm_head: bool = field(
         default=False,
         metadata={

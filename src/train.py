@@ -472,6 +472,14 @@ def parse_training_args(argv=None):
         if not isinstance(config, dict):
             raise ValueError(f"Training config must contain a YAML mapping: {config_path}")
 
+        # Keep the SwanLab credential out of dataclasses, logs, and the uploaded run config.
+        swanlab_api_key = config.pop("swanlab_api_key", None)
+        if swanlab_api_key is not None:
+            if not isinstance(swanlab_api_key, str) or not swanlab_api_key.strip():
+                raise ValueError("swanlab_api_key must be a non-empty string")
+            os.environ["SWANLAB_API_KEY"] = swanlab_api_key.strip()
+            os.environ["SWANLAB_MODE"] = "cloud"
+
         valid_keys = {field.name for argument_type in argument_types for field in fields(argument_type)}
         unknown_keys = sorted(set(config) - valid_keys)
         if unknown_keys:

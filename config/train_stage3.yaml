@@ -5,7 +5,6 @@
 model_name_or_path: Qwen/Qwen2.5-7B-Instruct
 config_name: Qwen/Qwen2.5-7B-Instruct
 tokenizer_name: Qwen/Qwen2.5-7B-Instruct
-use_v3: true
 use_joint_text_audio_vocab: false
 freeze_llm: false
 only_train_talker: false

@@ -39,18 +39,6 @@ class ModelArguments:
         default='qwen2',
         metadata={"help": "If training from scratch, pass a model type from the list: " + ", ".join(MODEL_TYPES)},
     )
-    use_v2: bool = field(
-        default=False,
-        metadata={"help": "Whether to use v2 model"},
-    )
-    use_v3: bool = field(
-        default=True,
-        metadata={"help": "Whether to use v3 parallel model"},
-    )
-    use_v5: bool = field(
-        default=False,
-        metadata={"help": "Whether to use v5 parallel model (Qwen2.5-Omni thinker + audio encoder backbone)"},
-    )
     use_joint_text_audio_vocab: bool = field(
         default=False,
         metadata={"help": "Whether to use joint text and audio vocab"},

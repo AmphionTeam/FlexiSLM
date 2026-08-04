@@ -14,7 +14,7 @@
 accelerate>=0.30.0
 datasets>=2.18.0
 deepspeed>=0.14.0
-flexicodec @ git+https://github.com/petrichor20211/FlexiCodec.git@a870a98096d7c7219523b66d374b520e95a3695a
+flexicodec==0.1.0
 huggingface_hub>=0.23.0
 inflect>=7.0.0
 librosa>=0.10.0

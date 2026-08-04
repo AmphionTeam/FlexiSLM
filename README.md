@@ -43,8 +43,6 @@ cd FlexiSLM
 pip install -r requirements.txt
 ```
 
-FlexiCodec is installed as a Python package from the repository specified in `requirements.txt`.
-
 ### Training Scripts
 FlexiSLM training progresses in 3 stages:
 1. **Talker pre-training.** Freeze the LLM backbone and train only the randomly initialized Talker end to end on about 100K hours of English TTS. We also add ASR data to pretrain the input merging transformer.

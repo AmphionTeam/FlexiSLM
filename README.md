@@ -267,8 +267,8 @@ Minimal notebook example (imports inference module and runs T2T/S2T/TTS):
 examples/inference.ipynb
 ```
 
-## Citation
-
+## Citation and Acknowledgements
+If you find our work useful, please consider citing:
 ```bibtex
 @misc{li2026flexislmdynamiccontrollableframe,
       title={FlexiSLM: A Dynamic and Controllable Frame Rate Spoken Language Model},
@@ -281,6 +281,12 @@ examples/inference.ipynb
 }
 ```
 
+Acknowledgements:
+- Our work uses Qwen 2.5 as the backbone and [Qwen 2.5-Omni](https://github.com/qwenlm/qwen2.5-omni) as audio encoder. 
+- Our training framework is largely based on Huggingface [Transformers](https://github.com/huggingface/transformers).
+- Our previous open-source works [FlexiCodec](https://github.com/AmphionTeam/FlexiCodec) and [DualCodec](https://github.com/jiaqili3/DualCodec) are foundational to this work.
+
+
 ## License
 
-This project is licensed under the MIT License. See [LICENSE](LICENSE) for details.
+This project is licensed under the MIT License. 

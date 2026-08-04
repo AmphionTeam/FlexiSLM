@@ -802,18 +802,6 @@ class InterleavedS2SInference:
             wav = resampler(wav)
         return wav
 
-    def _semantic_model_override_for_encode(self):
-        """FlexiCodec semantic encoder override when training used ``finetune_speech_encoder`` (matches modeling forward)."""
-        cfg = self.model.config
-        if not getattr(cfg, "finetune_speech_encoder", False):
-            return None
-        if not getattr(cfg, "use_sensevoice_feature", False):
-            return None
-        if getattr(cfg, "only_train_llm", False):
-            return None
-        _ = self.model.flexicodec_dict
-        return getattr(self.model, "sensevoice_finetune_copy", None)
-    
     def _encode_audio(self, audio_tensor: torch.Tensor, framerate: float = 1.0) -> Union[Dict, torch.Tensor]:
         """Encode audio for user input, matching the model's training-time implementation.
 
@@ -1013,8 +1001,6 @@ class InterleavedS2SInference:
         audio_features_lens = torch.tensor([x.shape[0] for x in features_list], device=device, dtype=torch.long)
         audio_features = torch.nn.utils.rnn.pad_sequence(features_list, batch_first=True).to(device)
 
-        semantic_override = self._semantic_model_override_for_encode()
-
         with torch.no_grad():
             if self.model.config.use_sensevoice_feature:
                 codec_output = encode_flexicodec(
@@ -1026,7 +1012,6 @@ class InterleavedS2SInference:
                     num_quantizers=1,
                     merging_threshold=1.0,
                     return_semantic_feature=True,
-                    semantic_model_override=semantic_override,
                 )
                 semantic_features = codec_output.squeeze(0).transpose(0, 1).to(torch.bfloat16)  # [T, H]
                 
@@ -1088,7 +1073,6 @@ class InterleavedS2SInference:
                     num_quantizers=1,
                     merging_threshold=framerate,
                     return_semantic_feature=False,
-                    semantic_model_override=semantic_override,
                 )
                 return {
                     "semantic_codes": codec_output["semantic_codes"],
@@ -1148,7 +1132,6 @@ class InterleavedS2SInference:
                     framerate = 0.90
                 else:
                     framerate = 0.90
-            semantic_override = self._semantic_model_override_for_encode()
             with torch.no_grad():
                 codec_output = encode_flexicodec(
                     audio_16k,
@@ -1159,7 +1142,6 @@ class InterleavedS2SInference:
                     num_quantizers=1,
                     merging_threshold=framerate,
                     return_semantic_feature=False,
-                    semantic_model_override=semantic_override,
                 )
             semantic_codes = codec_output["semantic_codes"].squeeze()  # [T]
             token_lengths = codec_output["token_lengths"].squeeze()  # [T]

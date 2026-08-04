@@ -63,11 +63,6 @@ def _resolve_text_alignment_pad_loss_weight(config) -> float:
 
 # Talker vocab: first 3 tokens are special (AUD_START, AUD_END, AUD_TAG), then audio codes
 AUDIO_TOKEN_OFFSET = 3  # offset for audio codes in talker vocab (indices 0,1,2 = special tokens)
-# Global variable to control batch repetition for encode_flexicodec to increase GPU SM usage
-# Set to 1 for no repetition (default), or higher values (e.g., 3) to repeat batches
-ENCODE_FLEXICODEC_REPEAT = 1
-
-
 def _patch_qwen3_audio_encoder_forward(encoder):
     """Patch Qwen3ASRAudioEncoder.forward so chunking is along time axis (not mel).
     See AmphionASR/src/qwen3_aut/qwen3_encoder_adapter.py for rationale.
@@ -3055,7 +3050,6 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
                     assert u_codec.shape[2] == self._get_qwen25o_encoder_dim(), f"u_codec shape: {u_codec.shape}"
             elif self.config.use_sensevoice_feature:
                 debug_print(f"    - Encoding user audio with sensevoice features", rank=rank)
-                _sv_ft = self._finetune_sensevoice_semantic()
                 u_codec = encode_flexicodec(
                     user_audio_tensors[u_rows],
                     self.flexicodec_dict,
@@ -3064,9 +3058,6 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
                     num_quantizers=1,
                     merging_threshold=1.0 if use_uniform_input_merging else selected_framerate_input,
                     return_semantic_feature=True,
-                    repeat=2 if batch_size < 6 else ENCODE_FLEXICODEC_REPEAT,
-                    semantic_model_override=self.sensevoice_finetune_copy if _sv_ft else None,
-                    grad_enabled=_sv_ft,
                 ).transpose(1,2).to(user_audio_tensors.dtype) # [B, T, H]
                     
                 assert u_codec.shape[2] == self.config.codec_hidden_size, f"u_codec shape: {u_codec.shape}"
@@ -3169,9 +3160,6 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
                         num_quantizers=1,
                         merging_threshold=1.0,
                         return_semantic_feature=True,
-                        repeat=1,
-                        semantic_model_override=self.sensevoice_finetune_copy,
-                        grad_enabled=True,
                     )
                     dummy = dummy_u_codec.mean() * 0.0 if dummy_u_codec.numel() > 0 else dummy_u_codec.sum() * 0.0
                     u_codec = u_codec + dummy
@@ -3236,7 +3224,6 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
             for k, r in enumerate(a_rows.tolist()):
                 assistant_audio_row_to_subidx[r] = k
 
-            _sv_grad = self._finetune_sensevoice_semantic()
             debug_print(f"  - Encoding assistant audio for {len(a_rows)} samples", rank=rank)
             debug_print(f"    - assistant_audio_tensors[a_rows] shape: {assistant_audio_tensors[a_rows].shape}", rank=rank)
             debug_print(f"    - assistant_audio_features[a_rows] shape: {assistant_audio_features[a_rows].shape}", rank=rank)
@@ -3252,10 +3239,6 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
                     if use_uniform_output_merging
                     else selected_framerate
                 ),
-                dynamic_merging=(not use_uniform_output_merging),
-                repeat=1 if getattr(self.config, "use_flow_matching_depth", False) else ENCODE_FLEXICODEC_REPEAT,
-                semantic_model_override=self.sensevoice_finetune_copy if _sv_grad else None,
-                grad_enabled=_sv_grad,
             )
             debug_print(f"  - Assistant audio encoding complete", rank=rank)
             debug_print(f"    - codec output keys: {a_codec.keys()}", rank=rank)
@@ -3324,8 +3307,6 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
             debug_print(f"    - assistant_code_lens: {assistant_code_lens}", rank=rank)
         else:
             debug_print(f"  - No assistant audio to process", rank=rank)
-            _sv_grad = self._finetune_sensevoice_semantic()
-            
             # Ensure dummy_audio has non-zero variance to prevent LayerNorm nan
             dummy_audio = torch.randn((1, 16000), device=device, dtype=torch.float) * 1e-5
             dummy_a_codec = encode_flexicodec(
@@ -3335,9 +3316,6 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
                 audio_features_lens=None,
                 num_quantizers=1,
                 merging_threshold=1.0,
-                repeat=1,
-                semantic_model_override=self.sensevoice_finetune_copy if _sv_grad else None,
-                grad_enabled=_sv_grad,
             )
 
             _sc = dummy_a_codec["semantic_codes"].float()
@@ -4049,8 +4027,9 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
             if self.config.force_use_combined_embedding:
                 loss = text_loss + speech_loss + len_loss + _acoustic_loss_term
             elif self.config.freeze_llm:
-                # Only optimize text loss; speech and length losses are not used for gradients
-                loss = text_loss
+                # Stage 1 trains the Talker from TTS losses and the audio-input
+                # adapters from ASR text loss while the main LLM remains frozen.
+                loss = text_loss + speech_loss + len_loss + _acoustic_loss_term
             elif getattr(self.config, "freeze_talker", False):
                 # Freeze talker: exclude talker loss; only text loss is used for gradients
                 loss = text_loss

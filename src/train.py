@@ -832,40 +832,72 @@ def main():
             "with a second-audio-token prediction head (group size 2 ablation)."
         )
 
+    def configure_stage1_parameters(model):
+        """Freeze everything, then expose only modules used by Stage 1 losses."""
+        for param in model.parameters():
+            param.requires_grad = False
+        for name in (
+            "talker_model", "input_merging_transformer", "audio_embed_transform",
+            "depth_transformer", "framerate_embeddings",
+        ):
+            module = getattr(model, name, None)
+            if module is not None:
+                for param in module.parameters():
+                    param.requires_grad = True
+        # These embeddings adapt user-audio boundaries for ASR through the frozen LLM.
+        for name in ("audio_start_embedding", "audio_end_embedding"):
+            param = getattr(model, name, None)
+            if param is not None:
+                param.requires_grad = True
+
+    def validate_stage1_parameters(model, check_speech_encoders=False):
+        """Fail fast if Stage 1's trainable parameter scope is incorrect."""
+        trainable = [name for name, p in model.named_parameters() if p.requires_grad]
+        prefixes = (
+            "talker_model.", "input_merging_transformer.", "audio_embed_transform.",
+            "depth_transformer.", "framerate_embeddings.",
+        )
+        exact = {"audio_start_embedding", "audio_end_embedding"}
+        unexpected = [name for name in trainable if name not in exact and not name.startswith(prefixes)]
+        if unexpected:
+            raise RuntimeError(f"Unexpected Stage 1 trainable parameters: {unexpected[:20]}")
+        llm_trainable = [name for name, p in model.model.named_parameters() if p.requires_grad]
+        if llm_trainable:
+            raise RuntimeError(f"Main LLM is not frozen: {llm_trainable[:20]}")
+        talker_count = sum(p.numel() for p in model.talker_model.parameters() if p.requires_grad)
+        merger_count = sum(p.numel() for p in model.input_merging_transformer.parameters() if p.requires_grad)
+        if talker_count == 0:
+            raise RuntimeError("Stage 1 requires a trainable talker_model")
+        if getattr(model.config, "use_input_merging_transformer", False) and merger_count == 0:
+            raise RuntimeError("Stage 1 requires a trainable input_merging_transformer")
+        if check_speech_encoders:
+            for attr in ("_qwen3_encoder", "_qwen25o_encoder", "_whisper_encoder"):
+                encoder = getattr(model, attr, None)
+                bad = [] if encoder is None else [n for n, p in encoder.named_parameters() if p.requires_grad]
+                if bad:
+                    raise RuntimeError(f"Speech encoder {attr} is not frozen: {bad[:20]}")
+        logger.info(
+            f"Validated Stage 1 scope: LLM frozen, talker={talker_count:,}, "
+            f"input merger={merger_count:,}, total={sum(p.numel() for p in model.parameters() if p.requires_grad):,}"
+        )
+
     if model_args.freeze_llm:
         assert not getattr(model_args, "only_train_talker", False), "only_train_talker and freeze_llm cannot be True at the same time"
         assert not getattr(model_args, "only_train_llm", False), "only_train_llm and freeze_llm cannot be True at the same time"
         if not model_args.use_lora:
-            logger.info("Freezing LLM parameters, keeping audio_embed_transform, length_decoder, length_embedding trainable (and talker embed/lm_head when using separate embeddings)...")
-            # 1. Freeze everything by default (includes embed_tokens and lm_head - text vocab)
-            for param in model.parameters():
-                param.requires_grad = False
-            
-            # 2. Unfreeze audio-specific components
-            # Handle both Linear and MLP for audio_embed_transform
-            if hasattr(model, "audio_embed_transform"):
-                if hasattr(model.audio_embed_transform, 'weight'):
-                    # Linear layer
-                    model.audio_embed_transform.weight.requires_grad = True
-                    if hasattr(model.audio_embed_transform, 'bias') and model.audio_embed_transform.bias is not None:
-                        model.audio_embed_transform.bias.requires_grad = True
-                elif hasattr(model.audio_embed_transform, 'fc1'):
-                    # MLP layer
-                    model.audio_embed_transform.fc1.weight.requires_grad = True
-                    if model.audio_embed_transform.fc1.bias is not None:
-                        model.audio_embed_transform.fc1.bias.requires_grad = True
-                    model.audio_embed_transform.fc2.weight.requires_grad = True
-                    if model.audio_embed_transform.fc2.bias is not None:
-                        model.audio_embed_transform.fc2.bias.requires_grad = True
-                else:
-                    for param in model.audio_embed_transform.parameters():
-                        param.requires_grad = True
-            
-            
-            # Log trainable parameters
-            for name, p in model.named_parameters():
-                if p.requires_grad:
-                    logger.info(f"Trainable: {name} with shape {p.shape}")
+            logger.info(
+                "Configuring Stage 1: train Talker, input merger, audio adapter, and "
+                "enabled acoustic head; freeze the main LLM and speech encoder."
+            )
+            if getattr(model.config, "finetune_speech_encoder", False):
+                logger.warning("freeze_llm overrides finetune_speech_encoder; speech encoders stay frozen.")
+            model.config.finetune_speech_encoder = False
+            model_args.finetune_speech_encoder = False
+            configure_stage1_parameters(model)
+            validate_stage1_parameters(model)
+            for name, param in model.named_parameters():
+                if param.requires_grad:
+                    logger.info(f"Trainable (freeze_llm Stage 1): {name} with shape {tuple(param.shape)}")
         else:
             logger.info("freeze_llm skipped due to LoRA usage")
 
@@ -1111,8 +1143,8 @@ def main():
             _ = model.flexicodec_dict
             logger.info("Eagerly loaded FlexiCodec for DeepSpeed checkpoint compatibility.")
 
-     
-
+        if model_args.freeze_llm and not model_args.use_lora:
+            validate_stage1_parameters(model, check_speech_encoders=True)
 
         # Initialize our Trainer - pass model by reference; Trainer must NOT re-initialize weights
         # (no model_init) so loaded/merged weights are preserved

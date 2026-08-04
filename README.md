@@ -55,7 +55,7 @@ Keep datasets, model checkpoints, training outputs, logs, and temporary files ou
 
 1. Clone the repository:
 ```bash
-git clone <repo_url>
+git clone https://github.com/AmphionTeam/FlexiSLM.git
 cd FlexiSLM
 ```
 

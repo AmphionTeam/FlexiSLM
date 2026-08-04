@@ -137,8 +137,17 @@ class ModelArguments:
     vision_model_freeze: bool = field(default=False, metadata={"help": ""})
 
     language_model_freeze: bool = field(default=False, metadata={"help": ""})
-    freeze_llm: bool = field(default=False, metadata={"help": "Freeze LLM and only train aligner/adaptor components (length_decoder, length_embedding)"})
+    freeze_llm: bool = field(default=False, metadata={"help": "Freeze the main LLM backbone and text LM head."})
     freeze_adaptor: bool = field(default=False, metadata={"help": "Freeze adaptor and only train aligner components (length_decoder, length_embedding)"})
+    only_train_modules: Optional[str] = field(
+        default=None,
+        metadata={
+            "help": (
+                "Comma-separated top-level model module/parameter names. When set, freeze every parameter "
+                "and then unfreeze only the listed components."
+            )
+        },
+    )
     only_train_talker: bool = field(
         default=False,
         metadata={

@@ -2077,7 +2077,7 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
         Notes:
         - Unlike Qwen3 path, we DO keep encoder.proj.
         - Therefore encoder output dim is config.output_dim, not d_model.
-        - qwen25o_encoder_path is expected to be a .safetensors file.
+        - qwen25o_encoder_path is expected to be a sharded checkpoint directory.
         - qwen25o_encoder_config_path should point to either:
             (1) audio encoder config json, or
             (2) full omni config json containing "audio_config".
@@ -2095,7 +2095,7 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
             if not path:
                 raise ValueError(
                     "use_qwen25o_feature=True requires qwen25o_encoder_path "
-                    "(path to .safetensors file)."
+                    "(path to the checkpoint directory)."
                 )
             if not config_path:
                 raise ValueError(
@@ -2139,29 +2139,61 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
                 index_data = _json.load(f)
 
             weight_map = index_data.get("weight_map", {})
-            prefix = "audio_tower."
-            
-            # Load on demand: only locate shards containing the "audio_tower." prefix.
-            required_shards = set()
-            for k, shard in weight_map.items():
-                if k.startswith(prefix):
-                    required_shards.add(shard)
+            if not weight_map:
+                raise ValueError(f"Checkpoint index has no weight_map entries: {index_file}")
 
+            expected_keys = set(encoder.state_dict())
+            checkpoint_keys = set(weight_map)
+            longest_key_length = max(map(len, expected_keys))
+            anchor_keys = {
+                key for key in expected_keys if len(key) == longest_key_length
+            }
+            candidate_prefixes = {
+                checkpoint_key[:-len(anchor_key)]
+                for checkpoint_key in checkpoint_keys
+                for anchor_key in anchor_keys
+                if checkpoint_key.endswith(anchor_key)
+            }
+            matching_prefixes = []
+            for prefix in candidate_prefixes:
+                remapped_keys = {
+                    key[len(prefix):]
+                    for key in checkpoint_keys
+                    if key.startswith(prefix)
+                }
+                if remapped_keys == expected_keys:
+                    matching_prefixes.append(prefix)
+
+            if len(matching_prefixes) != 1:
+                raise ValueError(
+                    "Could not uniquely infer the Qwen2.5-Omni audio encoder "
+                    "weight prefix from the checkpoint index: "
+                    f"found {len(matching_prefixes)} complete matches "
+                    f"({sorted(matching_prefixes)!r})."
+                )
+            weight_prefix = matching_prefixes[0]
+
+            # Load on demand: only open shards containing audio encoder weights.
+            required_shards = {
+                shard for key, shard in weight_map.items()
+                if key.startswith(weight_prefix)
+            }
             remapped_dict = {}
             for shard in sorted(required_shards):
                 shard_path = os.path.join(path, shard)
                 part = load_file(shard_path, device="cpu")
-                for k, v in part.items():
-                    if k.startswith(prefix):
-                        nk = k[len(prefix):]
-                        remapped_dict[nk] = v
+                for key, value in part.items():
+                    if key.startswith(weight_prefix):
+                        remapped_key = key[len(weight_prefix):]
+                        remapped_dict[remapped_key] = value
 
             # IMPORTANT: keep proj weights, so do NOT filter out "proj.*"
             missing, unexpected = encoder.load_state_dict(remapped_dict, strict=False)
-            if missing:
-                print(f"  - Qwen2.5-Omni load missing keys: {missing}")
-            if unexpected:
-                print(f"  - Qwen2.5-Omni load unexpected keys: {unexpected}")
+            if missing or unexpected:
+                raise RuntimeError(
+                    "Qwen2.5-Omni audio encoder weights did not load completely: "
+                    f"missing keys={missing}, unexpected keys={unexpected}."
+                )
 
             # Since we KEEP proj, output dim is output_dim
             encoder_dim = getattr(encoder.config, "output_dim", None)

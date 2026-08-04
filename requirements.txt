@@ -23,12 +23,13 @@ matplotlib>=3.7.0
 num2words>=0.5.13
 numpy>=1.24.0,<2.0
 peft>=0.11.0
+peewee>=3.17,<4
 PyYAML>=6.0
 requests>=2.31.0
 safetensors>=0.4.0
 sentencepiece>=0.1.99
 soundfile>=0.12.1
-swanlab>=0.3.0
+swanlab[dashboard]==0.6.0
 torch>=2.1.0
 torchaudio>=2.1.0
 torchvision>=0.16.0

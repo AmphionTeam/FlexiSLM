@@ -71,7 +71,7 @@ save_strategy: steps
 save_steps: 5000
 save_total_limit: 120
 max_grad_norm: 1.0
-learning_rate: 1.0e-6
+learning_rate: 2.0e-5
 weight_decay: 0.01
 adam_beta1: 0.9
 adam_beta2: 0.95

@@ -293,7 +293,7 @@ class ModelArguments:
         metadata={"help": "Use FlexiCodec-style v2 input merging transformer: process an interleaved sequence of pre-merge frames + per-group query tokens (instead of v1's aggregate-then-refine). Requires use_input_merging_transformer=True and enable_flexible_framerate=True."}
     )
     use_learnable_audio_boundary: bool = field(
-        default=False,
+        default=True,
         metadata={"help": "Use learnable embeddings for audio start/end instead of token ID embeddings."}
     )
     use_sinusoidal: bool = field(

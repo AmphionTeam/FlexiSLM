@@ -119,6 +119,10 @@ class ModelArguments:
             )
         },
     )
+    no_pad: bool = field(
+        default=False,
+        metadata={"help": "Use the no-padding text/audio alignment path."},
+    )
 
     attn_implementation: Optional[str] = field(default="flash_attention_2", metadata={"help": ""})
 
@@ -505,6 +509,18 @@ class ModelArguments:
     flexicodec_ckpt_path: Optional[str] = field(
         default=None,
         metadata={"help": "Path to FlexiCodec checkpoint file"}
+    )
+    sensevoice_small_path: Optional[str] = field(
+        default=None,
+        metadata={"help": "Path to the local SenseVoiceSmall checkpoint used by FlexiCodec"}
+    )
+    flow_matching_decoder_ckpt_path: Optional[str] = field(
+        default=None,
+        metadata={"help": "Path to the FlexiCodec flow-matching decoder checkpoint"}
+    )
+    flow_matching_vocoder_path: Optional[str] = field(
+        default=None,
+        metadata={"help": "Path to the Vocos checkpoint used by the flow-matching decoder"}
     )
     audio_vocab_size: int = field(
         default=32768,

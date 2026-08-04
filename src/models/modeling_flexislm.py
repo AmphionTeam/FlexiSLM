@@ -539,7 +539,7 @@ class ParallelS2SConfig(MultimodalQwen2Config):
         # instead of a separate aggregate_features + refine transformer pipeline).
         use_input_merging_transformer_v2: bool = False,
         # Learnable audio boundary embeddings (replace audio_start/end token IDs)
-        use_learnable_audio_boundary: bool = False,
+        use_learnable_audio_boundary: bool = True,
         # Depth transformer for acoustic code prediction (Moshi-style)
         use_depth_transformer: bool = False,
         depth_transformer_num_layers: int = 6,

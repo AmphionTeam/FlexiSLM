@@ -85,7 +85,7 @@ The YAML values can be overridden from the command line:
 
 ```bash
 bash scripts/train_stage2.sh \
-  --learning_rate 2e-6 \
+  --learning_rate 2e-5 \
   --output_dir outputs/custom_stage2
 ```
 

@@ -25,7 +25,28 @@ Overall FlexiSLM architecture is a Thinker-Talker model with dynamic frame-rate 
 - **August 2, 2026: Code release**. We have released the training and inference code of FlexiSLM-7B.
 - Before September 1, 2026: Planned Reproduced FlexiSLM-Data and checkpoint release: We plan to release a reproduced version of FlexiSLM-7B and 5M samples of reproduced speech-to-speech dialog training data. We plan to release them before September 2026. 
 
+## Repository Layout
 
+```text
+FlexiSLM/
+├── assets/                 # Static images and other documentation assets
+├── config/                 # Declarative training and runtime configurations
+│   └── datasets/           # Dataset recipes referenced by training configs
+├── examples/               # Small example data and runnable notebooks
+│   └── data/               # Minimal ASR, TTS, and dialogue JSONL samples
+├── local/                  # Offline data preparation, conversion, and audit tools
+├── scripts/                # Thin shell launchers and shared runtime environment setup
+├── src/                    # Reusable training, inference, and model implementation
+│   ├── dataset/            # Dataset loading, preprocessing, and collation
+│   ├── models/             # FlexiSLM model definitions, configs, and loading utilities
+│   ├── processor/          # Text and input processing utilities
+│   └── trainer/            # Trainer implementation and training helpers
+├── README.md               # Installation, training, data, and inference guide
+├── LICENSE                 # Project license
+└── requirements.txt        # Python dependencies
+```
+
+Keep datasets, model checkpoints, training outputs, logs, and temporary files outside the repository. Place reusable runtime code under `src/`; reserve `local/` for offline or corpus-specific utilities, and keep `scripts/` limited to executable shell entrypoints.
 
 ## Training Guide
 

@@ -79,7 +79,6 @@ Training arguments are stored in YAML files under `config/`, while the launch sc
 | Stage 2 | `config/train_stage2.yaml` | `scripts/train_stage2.sh` |
 <!-- | Stage 2 (v1 merging) | `config/train_stage2_v1merging.yaml` | `scripts/train_stage2_v1merging.sh` | -->
 | Stage 3 | `config/train_stage3.yaml` | `scripts/train_stage3.sh` |
-<!-- | Stage 3 (v1 merging) | `config/train_stage3_v1merging.yaml` | `scripts/train_stage3_v1merging.sh` | -->
 
 The YAML values can be overridden from the command line:
 

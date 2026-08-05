@@ -15,7 +15,7 @@ output_checkpoints
 
 *.o
 *.png
-outputs
+/outputs/
 *.log
 *.wav
 *.zip

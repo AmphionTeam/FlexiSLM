@@ -141,12 +141,10 @@ class TokenBudgetBatchSampler(torch.utils.data.Sampler):
 class ATrainer(Trainer):
     def create_optimizer(self):
         talker_lr = getattr(self.args, "talker_learning_rate", None)
-        depth_lr = getattr(self.args, "depth_transformer_learning_rate", None)
         audio_encoder_lr = getattr(self.args, "audio_encoder_learning_rate", None)
         combine_proj_lr = getattr(self.args, "combine_proj_learning_rate", None)
         if (
             talker_lr is None
-            and depth_lr is None
             and audio_encoder_lr is None
             and combine_proj_lr is None
         ):
@@ -162,7 +160,6 @@ class ATrainer(Trainer):
         def is_talker_param(name):
             return (
                 "talker" in name
-                or "depth_transformer" in name
                 or "input_merging_transformer" in name
             )
 
@@ -186,8 +183,6 @@ class ATrainer(Trainer):
                 return "combine_proj"
             if talker_lr is not None and is_talker_param(name):
                 return "talker"
-            if depth_lr is not None and "depth_transformer" in name:
-                return "depth"
             return "base"
 
         group_specs = [
@@ -195,8 +190,6 @@ class ATrainer(Trainer):
             ("base_no_decay", "base", False, self.args.learning_rate, 0.0),
             ("talker_decay", "talker", True, talker_lr, self.args.weight_decay),
             ("talker_no_decay", "talker", False, talker_lr, 0.0),
-            ("depth_decay", "depth", True, depth_lr, self.args.weight_decay),
-            ("depth_no_decay", "depth", False, depth_lr, 0.0),
             ("audio_encoder_decay", "audio_encoder", True, audio_encoder_lr, self.args.weight_decay),
             ("audio_encoder_no_decay", "audio_encoder", False, audio_encoder_lr, 0.0),
             ("combine_proj_decay", "combine_proj", True, combine_proj_lr, self.args.weight_decay),
@@ -226,10 +219,9 @@ class ATrainer(Trainer):
         optimizer_cls, optimizer_kwargs = Trainer.get_optimizer_cls_and_kwargs(self.args, opt_model)
         self.optimizer = optimizer_cls(optimizer_grouped_parameters, **optimizer_kwargs)
         logger.info(
-            "Created optimizer with talker lr=%s, depth_transformer lr=%s, audio_encoder lr=%s, "
-            "combine_proj lr=%s, and base lr=%s across %d parameter groups.",
+            "Created optimizer with talker lr=%s, audio_encoder lr=%s, combine_proj lr=%s, "
+            "and base lr=%s across %d parameter groups.",
             talker_lr,
-            depth_lr,
             audio_encoder_lr,
             combine_proj_lr,
             self.args.learning_rate,

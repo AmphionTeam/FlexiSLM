@@ -578,115 +578,6 @@ class ModelArguments:
         metadata={"help": "Number of learnable prefix tokens"}
     )
     
-    # ------------------------------------------------------------------
-    # Depth transformer (Moshi-style acoustic code prediction)
-    # ------------------------------------------------------------------
-    use_depth_transformer: bool = field(
-        default=False,
-        metadata={
-            "help": (
-                "Enable Moshi-style depth transformer that predicts FlexiCodec acoustic codes "
-                "(in addition to the semantic codes already predicted by the talker). "
-                "When enabled, encoding uses (1 + num_acoustic_quantizers) FlexiCodec quantizers."
-            )
-        },
-    )
-    depth_transformer_num_layers: int = field(
-        default=6,
-        metadata={"help": "Number of transformer layers in the depth transformer (Moshi default: 6)."},
-    )
-    depth_transformer_dim: int = field(
-        default=1024,
-        metadata={"help": "Hidden size of the depth transformer (Moshi default: 1024)."},
-    )
-    depth_transformer_num_heads: int = field(
-        default=16,
-        metadata={"help": "Number of attention heads in the depth transformer (Moshi default: 16)."},
-    )
-    depth_transformer_dim_feedforward: int = field(
-        default=4096,
-        metadata={"help": "FFN intermediate size for the depth transformer (Moshi default: 4096)."},
-    )
-    num_acoustic_quantizers: int = field(
-        default=11,
-        metadata={
-            "help": (
-                "Number of acoustic codebooks predicted by the depth transformer "
-                "(FlexiCodec supports up to 23 acoustic quantizers; default 11)."
-            )
-        },
-    )
-    acoustic_codebook_size: int = field(
-        default=4096,
-        metadata={"help": "Cardinality of each FlexiCodec acoustic codebook."},
-    )
-    acoustic_loss_weight: float = field(
-        default=10.0,
-        metadata={"help": "Weight applied to the depth-transformer loss, including flow-matching decoder-latent loss."},
-    )
-    use_flow_matching_depth: bool = field(
-        default=False,
-        metadata={
-            "help": (
-                "Enable the flow-matching depth head that predicts FlexiCodec decoder_latent "
-                "instead of discrete acoustic codebooks. This takes precedence over "
-                "use_depth_transformer when both are enabled."
-            )
-        },
-    )
-    flow_matching_sigma: float = field(
-        default=1e-5,
-        metadata={"help": "Minimum-noise sigma used by the flow-matching depth objective."},
-    )
-    flow_matching_time_scheduler: str = field(
-        default="cos",
-        metadata={"help": "Time scheduler for flow-matching depth training/generation: 'cos' or 'linear'."},
-    )
-    flow_matching_cfg_scale: float = field(
-        default=0.2,
-        metadata={"help": "Condition-drop probability / CFG scale used by the flow-matching depth head."},
-    )
-    decoder_latent_dim: int = field(
-        default=512,
-        metadata={"help": "Channel dimension of the FlexiCodec decoder_latent predicted by flow matching."},
-    )
-    flow_matching_prev_latents: int = field(
-        default=4,
-        metadata={"help": "Number of previous decoder_latent steps used as context by the flow-matching depth head."},
-    )
-    flow_matching_use_dim_schedule_shift: bool = field(
-        default=False,
-        metadata={
-            "help": (
-                "Enable RAE-DiT dimension-dependent noise schedule shift for the flow-matching depth head: "
-                "t <- alpha*t/(1+(alpha-1)*t), alpha=sqrt(effective_dim/base_dim)."
-            )
-        },
-    )
-    flow_matching_base_dim: int = field(
-        default=4096,
-        metadata={"help": "Base dimension n for the RAE-DiT dimension-dependent flow schedule shift."},
-    )
-    flow_matching_effective_dim: int = field(
-        default=0,
-        metadata={
-            "help": (
-                "Effective dimension m for the RAE-DiT dimension-dependent flow schedule shift. "
-                "If <=0, defaults to decoder_latent_dim."
-            )
-        },
-    )
-    flow_matching_shift_latent: bool = field(
-        default=False,
-        metadata={
-            "help": (
-                "If True, shift the decoder_latent labels for the flow-matching depth head "
-                "by one frame (latent[t-1] becomes the target at audio position t), the same "
-                "way length labels are shifted by one. The first audio position gets a zero "
-                "latent target."
-            )
-        },
-    )
     predict_second_audio_token: bool = field(
         default=False,
         metadata={
@@ -695,8 +586,7 @@ class ModelArguments:
                 "prediction head (group size 2). When enabled, the dataloader's "
                 "``audio_token_lengths`` field is reinterpreted as the second audio token id "
                 "(audio-vocab space, 0-indexed) at each step, and the secondary CE is "
-                "computed over the talker audio vocabulary instead of length classes. "
-                "Incompatible with use_depth_transformer / use_flow_matching_depth."
+                "computed over the talker audio vocabulary instead of length classes."
             )
         },
     )
@@ -847,19 +737,8 @@ class TrainingArguments(transformers.TrainingArguments):
         metadata={
             "help": (
                 "Optional learning rate for the whole talker stack. When set, parameters whose "
-                "names contain 'talker', 'depth_transformer', or 'input_merging_transformer' use "
-                "this LR, including the talker transformer, depth transformer, and the v1/v2 "
-                "input merging transformer."
-            )
-        },
-    )
-    depth_transformer_learning_rate: Optional[float] = field(
-        default=None,
-        metadata={
-            "help": (
-                "Optional learning rate for parameters whose names contain 'depth_transformer'. "
-                "Ignored for depth_transformer params when talker_learning_rate is set. "
-                "If unset, all trainable parameters use the base learning_rate."
+                "names contain 'talker' or 'input_merging_transformer' use this LR, including "
+                "the talker transformer and the v1/v2 input merging transformer."
             )
         },
     )

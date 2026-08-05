@@ -540,26 +540,6 @@ class ParallelS2SConfig(MultimodalQwen2Config):
         use_input_merging_transformer_v2: bool = False,
         # Learnable audio boundary embeddings (replace audio_start/end token IDs)
         use_learnable_audio_boundary: bool = True,
-        # Depth transformer for acoustic code prediction (Moshi-style)
-        use_depth_transformer: bool = False,
-        depth_transformer_num_layers: int = 6,
-        depth_transformer_dim: int = 1024,
-        depth_transformer_num_heads: int = 16,
-        depth_transformer_dim_feedforward: int = 4096,
-        num_acoustic_quantizers: int = 11,
-        acoustic_codebook_size: int = 4096,
-        acoustic_loss_weight: float = 10.0,
-        # Flow matching depth transformer options
-        use_flow_matching_depth: bool = False,
-        flow_matching_sigma: float = 1e-5,
-        flow_matching_time_scheduler: str = "cos",
-        flow_matching_cfg_scale: float = 0.2,
-        decoder_latent_dim: int = 512,
-        flow_matching_prev_latents: int = 4,
-        flow_matching_use_dim_schedule_shift: bool = False,
-        flow_matching_base_dim: int = 4096,
-        flow_matching_effective_dim: int = 0,
-        flow_matching_shift_latent: bool = False,
         # Ablation: replace the length prediction head with a second-audio-token
         # prediction head (group size 2). When enabled, ``audio_token_lengths``
         # supplied by the dataloader is reinterpreted as the second audio token
@@ -667,530 +647,7 @@ class ParallelS2SConfig(MultimodalQwen2Config):
         # v2 (interleaved pre-merge frames + per-group query tokens)
         self.use_input_merging_transformer_v2 = use_input_merging_transformer_v2
         self.use_learnable_audio_boundary = use_learnable_audio_boundary
-        # Depth transformer parameters
-        self.use_depth_transformer = use_depth_transformer
-        self.depth_transformer_num_layers = depth_transformer_num_layers
-        self.depth_transformer_dim = depth_transformer_dim
-        self.depth_transformer_num_heads = depth_transformer_num_heads
-        self.depth_transformer_dim_feedforward = depth_transformer_dim_feedforward
-        self.num_acoustic_quantizers = num_acoustic_quantizers
-        self.acoustic_codebook_size = acoustic_codebook_size
-        self.acoustic_loss_weight = acoustic_loss_weight
-        # Flow matching depth transformer parameters
-        self.use_flow_matching_depth = use_flow_matching_depth
-        self.flow_matching_sigma = flow_matching_sigma
-        self.flow_matching_time_scheduler = flow_matching_time_scheduler
-        self.flow_matching_cfg_scale = flow_matching_cfg_scale
-        self.decoder_latent_dim = decoder_latent_dim
-        self.flow_matching_prev_latents = flow_matching_prev_latents
-        self.flow_matching_use_dim_schedule_shift = flow_matching_use_dim_schedule_shift
-        self.flow_matching_base_dim = flow_matching_base_dim
-        self.flow_matching_effective_dim = flow_matching_effective_dim
-        self.flow_matching_shift_latent = flow_matching_shift_latent
         self.predict_second_audio_token = bool(predict_second_audio_token)
-
-
-class DepthTransformer(nn.Module):
-    """Moshi-style depth transformer for predicting acoustic codebooks.
-
-    At each time step, autoregressively generates acoustic codes for
-    codebooks 1..K conditioned on the talker hidden state and the
-    semantic token (codebook 0). Following Moshi, the acoustic tokens
-    are delayed by 1 step relative to the semantic tokens.
-
-    The depth backbone is a HuggingFace ``Qwen2Model`` (consistent with the
-    rest of this codebase), driven by ``inputs_embeds`` so we manage the
-    embeddings ourselves (per-codebook input embeddings + per-codebook
-    output heads, as in Moshi's depformer).
-    """
-
-    def __init__(self, config: "ParallelS2SConfig"):
-        super().__init__()
-        dep_dim = config.depth_transformer_dim
-        n_acoustic = config.num_acoustic_quantizers
-        card = config.acoustic_codebook_size
-
-        # Project talker hidden → depth transformer dim
-        self.input_proj = nn.Linear(config.talker_hidden_size, dep_dim, bias=False)
-
-        # Embedding for the semantic token (first input to the depth sequence)
-        self.semantic_emb = nn.Embedding(config.padded_audio_vocab_size + 1, dep_dim)
-
-        # Length embedding for conditioning on the previous step's length class
-        self.length_emb = nn.Embedding(config.max_length_classes, dep_dim)
-
-        # Per-codebook embeddings for acoustic tokens (teacher-forcing inputs for steps 1..K-1)
-        self.acoustic_embs = nn.ModuleList([
-            nn.Embedding(card + 1, dep_dim) for _ in range(n_acoustic - 1)
-        ])
-
-        # Depth transformer backbone: a small Qwen2Model used as a causal
-        # transformer over the K codebook positions.  We drive it with
-        # ``inputs_embeds`` so the built-in ``embed_tokens`` is unused, but
-        # vocab_size must be set to a small positive value to construct it.
-        depth_qwen_config = Qwen2Config(
-            vocab_size=1,  # unused (we feed inputs_embeds)
-            hidden_size=dep_dim,
-            intermediate_size=config.depth_transformer_dim_feedforward,
-            num_hidden_layers=config.depth_transformer_num_layers,
-            num_attention_heads=config.depth_transformer_num_heads,
-            num_key_value_heads=config.depth_transformer_num_heads,
-            max_position_embeddings=max(n_acoustic, 32),
-            rope_theta=getattr(config, "rope_theta", 10000.0),
-            attention_dropout=0.0,
-            hidden_dropout=0.0,
-            tie_word_embeddings=False,
-        )
-        self.transformer = Qwen2Model(depth_qwen_config)
-        self.transformer.config._attn_implementation = getattr(config, "_attn_implementation", "sdpa")
-
-        # Per-codebook output linear heads
-        self.linears = nn.ModuleList([
-            nn.Linear(dep_dim, card, bias=False) for _ in range(n_acoustic)
-        ])
-
-        self.n_acoustic = n_acoustic
-        self.dep_dim = dep_dim
-
-    def forward(self, talker_hidden: torch.Tensor, semantic_codes: torch.Tensor,
-                acoustic_codes_target: torch.Tensor, length_ids: Optional[torch.Tensor] = None) -> torch.Tensor:
-        """Training forward: parallel over time, causal over depth.
-
-        Args:
-            talker_hidden: [B, T, H_talker] - talker output hidden states.
-            semantic_codes: [B, T] - ground-truth semantic token IDs (audio-vocab space, 0-indexed).
-            acoustic_codes_target: [B, n_acoustic, T] - ground-truth acoustic codes.
-                Following Moshi delay convention, these are already shifted by +1 step
-                relative to semantic codes by the caller (i.e. acoustic at position t
-                corresponds to semantic at position t-1).
-            length_ids: [B, T] - length class IDs for each semantic token (previous step's length).
-
-        Returns:
-            logits: [B, n_acoustic, T, card] - logits for each acoustic codebook.
-        """
-        B, T, _ = talker_hidden.shape
-        K = self.n_acoustic
-
-        # Project talker hidden: [B, T, dep_dim]
-        base = self.input_proj(talker_hidden)
-
-        # Semantic embedding: [B, T, dep_dim]
-        sem_emb = self.semantic_emb(semantic_codes.clamp(min=0))
-
-        # Length embedding: [B, T, dep_dim]
-        if length_ids is not None:
-            len_emb = self.length_emb(length_ids.clamp(min=0))
-        else:
-            len_emb = torch.zeros_like(sem_emb)
-
-        # Build depth input sequence: [B*T, K, dep_dim]
-        # Position 0: base + semantic embedding + length embedding
-        # Position k (k>=1): base + embedding of acoustic codebook[k-1] (teacher forcing)
-        base_flat = base.reshape(B * T, 1, self.dep_dim).expand(-1, K, -1)  # [B*T, K, dep_dim]
-        depth_seq = base_flat.clone()
-
-        # Position 0: add semantic embedding and length embedding
-        depth_seq[:, 0, :] = depth_seq[:, 0, :] + sem_emb.reshape(B * T, self.dep_dim) + len_emb.reshape(B * T, self.dep_dim)
-
-        # Positions 1..K-1: add acoustic embedding of previous codebook
-        for k in range(1, K):
-            prev_code = acoustic_codes_target[:, k - 1, :].reshape(B * T)  # [B*T]
-            depth_seq[:, k, :] = depth_seq[:, k, :] + self.acoustic_embs[k - 1](prev_code.clamp(min=0))
-
-        # Forward through depth transformer (Qwen2Model handles causal masking via RoPE + causal attention)
-        depth_out = self.transformer(
-            inputs_embeds=depth_seq,
-            use_cache=False,
-            return_dict=True,
-        ).last_hidden_state  # [B*T, K, dep_dim]
-
-        # Per-codebook logits: [B, K, T, card]
-        all_logits = []
-        for k in range(K):
-            logits_k = self.linears[k](depth_out[:, k, :])  # [B*T, card]
-            all_logits.append(logits_k.reshape(B, T, -1))
-        return torch.stack(all_logits, dim=1)  # [B, K, T, card]
-
-    @torch.no_grad()
-    def generate(self, talker_hidden: torch.Tensor, semantic_code: torch.Tensor, 
-                 length_id: Optional[torch.Tensor] = None) -> torch.Tensor:
-        """Inference: autoregressive generation over depth for a single time step.
-
-        Uses Qwen2Model's KV cache so each codebook position only requires a
-        single new forward pass.
-
-        Args:
-            talker_hidden: [B, 1, H_talker] - talker hidden at current step.
-            semantic_code: [B] - semantic token ID for current step (0-indexed in audio vocab).
-            length_id: [B] - length class ID for the previous step's semantic token.
-
-        Returns:
-            acoustic_codes: [B, n_acoustic] - predicted acoustic code IDs.
-        """
-        B = talker_hidden.shape[0]
-        K = self.n_acoustic
-
-        # Project: [B, dep_dim]
-        base = self.input_proj(talker_hidden.squeeze(1))
-
-        # First input: base + semantic embedding + length embedding -> [B, 1, dep_dim]
-        inp = base + self.semantic_emb(semantic_code.clamp(min=0))
-        if length_id is not None:
-            inp = inp + self.length_emb(length_id.clamp(min=0))
-        inp = inp.unsqueeze(1)
-
-        past_key_values = None
-        generated = []
-
-        for k in range(K):
-            out = self.transformer(
-                inputs_embeds=inp,
-                past_key_values=past_key_values,
-                use_cache=True,
-                return_dict=True,
-            )
-            past_key_values = out.past_key_values
-            depth_out = out.last_hidden_state[:, -1, :]  # [B, dep_dim]
-
-            logits_k = self.linears[k](depth_out)  # [B, card]
-            next_code = logits_k.argmax(dim=-1)  # [B]
-            generated.append(next_code)
-
-            # Prepare next input (if not last codebook)
-            if k < K - 1:
-                next_emb = base + self.acoustic_embs[k](next_code)  # [B, dep_dim]
-                inp = next_emb.unsqueeze(1)
-
-        return torch.stack(generated, dim=1)  # [B, K]
-
-
-class FlowMatchingDepthTransformer(nn.Module):
-    """Flow matching depth transformer for predicting decoder latent.
-    
-    Instead of predicting discrete acoustic codes, this model predicts the
-    continuous decoder latent of FlexiCodec using a flow matching objective.
-    
-    The model is conditioned on:
-    - talker hidden state
-    - a configurable number of previous decoder latents
-    
-    Training uses flow matching loss to predict the noise in the diffusion process.
-    Inference uses reverse diffusion to generate the decoder latent.
-    """
-    
-    def __init__(self, config: "ParallelS2SConfig"):
-        super().__init__()
-        dep_dim = config.depth_transformer_dim
-        self.latent_dim = config.decoder_latent_dim
-        self.sigma = config.flow_matching_sigma
-        self.time_scheduler = config.flow_matching_time_scheduler
-        self.cfg_scale = config.flow_matching_cfg_scale
-        self.num_prev_latents = int(getattr(config, "flow_matching_prev_latents", 4))
-        self.use_dim_schedule_shift = bool(getattr(config, "flow_matching_use_dim_schedule_shift", False))
-        self.base_dim = float(getattr(config, "flow_matching_base_dim", 4096))
-        self.effective_dim = float(getattr(config, "flow_matching_effective_dim", 0) or config.decoder_latent_dim)
-        self.semantic_vocab_size = config.padded_audio_vocab_size + 1
-        self.max_length_classes = config.max_length_classes
-        
-        # Project talker hidden → depth transformer dim
-        self.input_proj = nn.Linear(config.talker_hidden_size, dep_dim, bias=False)
-        self.semantic_emb = nn.Embedding(self.semantic_vocab_size, dep_dim)
-        self.length_emb = nn.Embedding(self.max_length_classes, dep_dim)
-
-        # Project noised decoder latent and scalar time into the transformer space.
-        self.latent_in_proj = nn.Linear(self.latent_dim, dep_dim, bias=False)
-        self.time_proj = nn.Sequential(
-            nn.Linear(1, dep_dim),
-            nn.SiLU(),
-            nn.Linear(dep_dim, dep_dim),
-        )
-        
-        # Flow matching transformer backbone
-        depth_qwen_config = Qwen2Config(
-            vocab_size=1,
-            hidden_size=dep_dim,
-            intermediate_size=config.depth_transformer_dim_feedforward,
-            num_hidden_layers=config.depth_transformer_num_layers,
-            num_attention_heads=config.depth_transformer_num_heads,
-            num_key_value_heads=config.depth_transformer_num_heads,
-            max_position_embeddings=max(self.num_prev_latents + 3, 32),
-            rope_theta=getattr(config, "rope_theta", 10000.0),
-            attention_dropout=0.0,
-            hidden_dropout=0.0,
-            tie_word_embeddings=False,
-        )
-        self.transformer = Qwen2Model(depth_qwen_config)
-        self.transformer.config._attn_implementation = getattr(config, "_attn_implementation", "sdpa")
-        
-        # Output projection to decoder latent dimension
-        self.output_proj = nn.Linear(dep_dim, self.latent_dim)
-        
-        self.dep_dim = dep_dim
-
-    def _schedule_time(self, t: torch.Tensor) -> torch.Tensor:
-        """Apply base time distribution and optional dimension-dependent shift."""
-        if self.time_scheduler == "cos":
-            t = 1 - torch.cos(t * math.pi * 0.5)
-        elif self.time_scheduler != "linear":
-            raise ValueError(f"Unsupported flow_matching_time_scheduler={self.time_scheduler!r}")
-
-        if self.use_dim_schedule_shift:
-            alpha = math.sqrt(self.effective_dim / max(self.base_dim, 1.0))
-            t = (alpha * t) / (1 + (alpha - 1) * t).clamp_min(1e-6)
-        return t.clamp(1e-5, 1.0)
-
-    def _build_sequence(
-        self,
-        talker_token: torch.Tensor,
-        prev_semantic_code: torch.Tensor,
-        prev_length_id: torch.Tensor,
-        prev_latents: torch.Tensor,
-        prev_latent_semantic_codes: torch.Tensor,
-        prev_latent_length_ids: torch.Tensor,
-        xt: torch.Tensor,
-        t: torch.Tensor,
-        drop_cond: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-        """Build [talker, prev semantic+length, prev latent+semantic+length..., noised latent]."""
-        prev_semantic_token = self.semantic_emb(
-            prev_semantic_code.clamp(min=0, max=self.semantic_vocab_size - 1)
-        ) + self.length_emb(
-            prev_length_id.clamp(min=0, max=self.max_length_classes - 1)
-        )
-        prev_tokens = self.latent_in_proj(prev_latents) + self.semantic_emb(
-            prev_latent_semantic_codes.clamp(min=0, max=self.semantic_vocab_size - 1)
-        ) + self.length_emb(
-            prev_latent_length_ids.clamp(min=0, max=self.max_length_classes - 1)
-        )
-        latent_token = self.latent_in_proj(xt) + self.time_proj(t.unsqueeze(-1).to(dtype=xt.dtype))
-
-        if drop_cond is not None:
-            # For CFG, drop only the talker state and keep latent history visible.
-            keep = (~drop_cond).to(talker_token.dtype).unsqueeze(-1)
-            talker_token = talker_token * keep
-
-        return torch.cat(
-            [talker_token.unsqueeze(1), prev_semantic_token.unsqueeze(1), prev_tokens, latent_token.unsqueeze(1)],
-            dim=1,
-        )
-
-    def _make_prev_latents(self, decoder_latent: torch.Tensor) -> torch.Tensor:
-        """Teacher-force previous decoder-latent context for each target position."""
-        B, T, D = decoder_latent.shape
-        if self.num_prev_latents <= 0:
-            return decoder_latent.new_zeros(B, T, 0, D)
-        pad = decoder_latent.new_zeros(B, self.num_prev_latents, D)
-        padded = torch.cat([pad, decoder_latent], dim=1)
-        prev = [
-            padded[:, self.num_prev_latents - i:self.num_prev_latents - i + T, :]
-            for i in range(self.num_prev_latents, 0, -1)
-        ]
-        return torch.stack(prev, dim=2)
-
-    def _make_prev_semantic_codes(self, semantic_codes: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Return semantic[t-1] and semantic[t-N:t-1] for each target position."""
-        B, T = semantic_codes.shape
-        pad_one = semantic_codes.new_zeros(B, 1)
-        prev_semantic = torch.cat([pad_one, semantic_codes[:, :-1]], dim=1)
-        if self.num_prev_latents <= 0:
-            return prev_semantic, semantic_codes.new_zeros(B, T, 0)
-        pad = semantic_codes.new_zeros(B, self.num_prev_latents)
-        padded = torch.cat([pad, semantic_codes], dim=1)
-        prev = [
-            padded[:, self.num_prev_latents - i:self.num_prev_latents - i + T]
-            for i in range(self.num_prev_latents, 0, -1)
-        ]
-        return prev_semantic, torch.stack(prev, dim=2)
-
-    def _make_prev_length_ids(self, length_ids: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Return lengths for delayed semantic/latent context.
-
-        ``length_ids`` is already shifted by one position before it reaches the
-        flow head, so length_ids[t] corresponds to semantic/latent[t-1].
-        """
-        B, T = length_ids.shape
-        prev_length = length_ids
-        if self.num_prev_latents <= 0:
-            return prev_length, length_ids.new_zeros(B, T, 0)
-        pad = length_ids.new_zeros(B, max(self.num_prev_latents - 1, 0))
-        padded = torch.cat([pad, length_ids], dim=1)
-        prev = [
-            padded[:, self.num_prev_latents - i:self.num_prev_latents - i + T]
-            for i in range(self.num_prev_latents, 0, -1)
-        ]
-        return prev_length, torch.stack(prev, dim=2)
-    
-    def forward_diffusion(self, x, t):
-        """
-        Forward diffusion step: xt = (1 - (1 - sigma) * t) * z + t * x
-        where z ~ N(0, 1) is noise, x is the target decoder latent.
-        
-        Args:
-            x: [B, latent_dim] - target decoder latent
-            t: [B,] - time step in [0, 1]
-        
-        Returns:
-            xt: [B, latent_dim] - noised latent
-            z: [B, latent_dim] - noise
-        """
-        z = torch.randn(x.shape, dtype=x.dtype, device=x.device, requires_grad=False)
-        t_expanded = t.unsqueeze(-1)
-        xt = ((1 - (1 - self.sigma) * t_expanded) * z + t_expanded * x)
-        return xt, z
-    
-    def compute_loss(self, talker_hidden: torch.Tensor, semantic_codes: torch.Tensor,
-                     length_ids: torch.Tensor, decoder_latent: torch.Tensor,
-                     loss_mask: Optional[torch.Tensor] = None):
-        """
-        Compute flow matching loss.
-        
-        Args:
-            talker_hidden: [B, T, H_talker] - talker hidden states
-            semantic_codes: [B, T] - current semantic token IDs
-            length_ids: [B, T] - already-shifted length IDs, length_ids[t] is length[t-1]
-            decoder_latent: [B, T, latent_dim] - target decoder latent
-            loss_mask: [B, T] - True/1 for valid latent targets
-        
-        Returns:
-            loss: scalar flow matching loss
-        """
-        B, T, _ = talker_hidden.shape
-        
-        # Sample random time steps
-        t = torch.rand(B * T, device=talker_hidden.device, requires_grad=False)
-        t = self._schedule_time(t)
-
-        # Project talker hidden, used as the first sequence element.
-        talker_token = self.input_proj(talker_hidden)  # [B, T, dep_dim]
-        prev_latents = self._make_prev_latents(decoder_latent)
-        prev_semantic, prev_latent_semantics = self._make_prev_semantic_codes(semantic_codes)
-        prev_length, prev_latent_lengths = self._make_prev_length_ids(length_ids)
-        # Reshape for processing
-        talker_token_flat = talker_token.reshape(B * T, self.dep_dim)  # [B*T, dep_dim]
-        prev_latents_flat = prev_latents.reshape(B * T, self.num_prev_latents, self.latent_dim)
-        prev_semantic_flat = prev_semantic.reshape(B * T)
-        prev_latent_semantics_flat = prev_latent_semantics.reshape(B * T, self.num_prev_latents)
-        prev_length_flat = prev_length.reshape(B * T)
-        prev_latent_lengths_flat = prev_latent_lengths.reshape(B * T, self.num_prev_latents)
-        decoder_latent_flat = decoder_latent.reshape(B * T, self.latent_dim)  # [B*T, latent_dim]
-        
-        # Forward diffusion
-        xt, z = self.forward_diffusion(decoder_latent_flat, t)  # [B*T, latent_dim]
-        
-        # Condition dropout for classifier-free guidance.
-        drop_cond = None
-        if self.cfg_scale > 0:
-            drop_cond = torch.rand(talker_token_flat.shape[0], device=talker_token_flat.device) < self.cfg_scale
-
-        transformer_input = self._build_sequence(
-            talker_token_flat, prev_semantic_flat, prev_length_flat,
-            prev_latents_flat, prev_latent_semantics_flat, prev_latent_lengths_flat,
-            xt, t, drop_cond=drop_cond
-        )
-        
-        out = self.transformer(inputs_embeds=transformer_input)
-        hidden = out.last_hidden_state[:, self.num_prev_latents + 2, :]  # [B*T, dep_dim]
-        
-        flow_pred = self.output_proj(hidden)  # [B*T, latent_dim]
-        flow_target = decoder_latent_flat - (1 - self.sigma) * z
-        
-        # Flow matching loss: ||flow_pred - (x - (1-sigma) * noise)||.
-        loss_per_pos = F.l1_loss(flow_pred, flow_target, reduction="none").mean(dim=-1)
-        if loss_mask is not None:
-            mask_flat = loss_mask.reshape(B * T).to(dtype=loss_per_pos.dtype, device=loss_per_pos.device)
-            loss = (loss_per_pos * mask_flat).sum() / mask_flat.sum().clamp_min(1.0)
-        else:
-            loss = loss_per_pos.mean()
-        return loss
-    
-    @torch.no_grad()
-    def generate(self, talker_hidden: torch.Tensor,
-                 prev_semantic_code: Optional[torch.Tensor] = None,
-                 prev_length_id: Optional[torch.Tensor] = None,
-                 prev_decoder_latents: Optional[torch.Tensor] = None,
-                 prev_decoder_semantic_codes: Optional[torch.Tensor] = None,
-                 prev_decoder_length_ids: Optional[torch.Tensor] = None,
-                 n_timesteps: int = 15):
-        """
-        Generate decoder latent using reverse diffusion.
-        
-        Args:
-            talker_hidden: [B, 1, H_talker] - talker hidden at current step
-            prev_semantic_code: [B] - previous semantic token ID
-            prev_length_id: [B] - previous semantic token length class
-            prev_decoder_latents: [B, N, latent_dim] - previous generated decoder latents
-            prev_decoder_semantic_codes: [B, N] - semantic IDs for previous decoder latents
-            prev_decoder_length_ids: [B, N] - length class IDs for previous decoder latents
-            n_timesteps: number of diffusion steps
-        
-        Returns:
-            decoder_latent: [B, latent_dim] - generated decoder latent
-        """
-        B = talker_hidden.shape[0]
-        
-        # Start from random noise
-        x = torch.randn(B, self.latent_dim, device=talker_hidden.device, dtype=talker_hidden.dtype)
-        
-        # Project talker hidden, used as the first sequence element.
-        talker_token = self.input_proj(talker_hidden.squeeze(1))  # [B, dep_dim]
-        if prev_semantic_code is None:
-            prev_semantic_code = torch.zeros(B, device=talker_hidden.device, dtype=torch.long)
-        if prev_length_id is None:
-            prev_length_id = torch.zeros(B, device=talker_hidden.device, dtype=torch.long)
-        if prev_decoder_latents is None:
-            prev_decoder_latents = x.new_zeros(B, self.num_prev_latents, self.latent_dim)
-        elif prev_decoder_latents.shape[1] != self.num_prev_latents:
-            raise ValueError(
-                f"Expected prev_decoder_latents second dim={self.num_prev_latents}, "
-                f"got {prev_decoder_latents.shape[1]}"
-            )
-        if prev_decoder_semantic_codes is None:
-            prev_decoder_semantic_codes = torch.zeros(
-                B, self.num_prev_latents, device=talker_hidden.device, dtype=torch.long
-            )
-        elif prev_decoder_semantic_codes.shape[1] != self.num_prev_latents:
-            raise ValueError(
-                f"Expected prev_decoder_semantic_codes second dim={self.num_prev_latents}, "
-                f"got {prev_decoder_semantic_codes.shape[1]}"
-            )
-        if prev_decoder_length_ids is None:
-            prev_decoder_length_ids = torch.zeros(
-                B, self.num_prev_latents, device=talker_hidden.device, dtype=torch.long
-            )
-        elif prev_decoder_length_ids.shape[1] != self.num_prev_latents:
-            raise ValueError(
-                f"Expected prev_decoder_length_ids second dim={self.num_prev_latents}, "
-                f"got {prev_decoder_length_ids.shape[1]}"
-            )
-        
-        # Reverse diffusion process
-        h = 1.0 / n_timesteps
-        for i in range(n_timesteps):
-            t_raw = (0 + (i + 0.5) * h) * torch.ones(B, dtype=x.dtype, device=x.device)
-            t = self._schedule_time(t_raw) if self.use_dim_schedule_shift else t_raw
-            
-            transformer_input = self._build_sequence(
-                talker_token, prev_semantic_code, prev_length_id,
-                prev_decoder_latents, prev_decoder_semantic_codes, prev_decoder_length_ids,
-                x, t
-            )
-            
-            out = self.transformer(inputs_embeds=transformer_input)
-            hidden = out.last_hidden_state[:, self.num_prev_latents + 2, :]  # [B, dep_dim]
-            
-            flow_pred = self.output_proj(hidden)  # [B, latent_dim]
-            
-            # Reverse diffusion step. Keep legacy linear stepping unless the
-            # optional shifted schedule is enabled.
-            if self.use_dim_schedule_shift:
-                t0 = self._schedule_time(torch.full((B,), i * h, dtype=x.dtype, device=x.device))
-                t1 = self._schedule_time(torch.full((B,), (i + 1) * h, dtype=x.dtype, device=x.device))
-                step_size = (t1 - t0).unsqueeze(-1)
-            else:
-                step_size = h
-            x = x + step_size * flow_pred
-        
-        return x
 
 
 @dataclass
@@ -1202,7 +659,7 @@ class InterleavedS2SOutputWithPast(CausalLMOutputWithPast):
     text_token_loss: Optional[torch.FloatTensor] = None
     audio_token_loss: Optional[torch.FloatTensor] = None
     acoustic_loss: Optional[torch.FloatTensor] = None
-    acoustic_ce_loss: Optional[torch.FloatTensor] = None  # unweighted mean acoustic CE (before acoustic_loss_weight)
+    acoustic_ce_loss: Optional[torch.FloatTensor] = None  # unweighted mean acoustic CE
     acoustic_per_codebook_loss: Optional[torch.FloatTensor] = None  # [n_q_a] unweighted CE per codebook
     loss_text_only_data: Optional[torch.FloatTensor] = None
     loss_audio_dialog_data: Optional[torch.FloatTensor] = None
@@ -1590,37 +1047,6 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
             self.audio_start_embedding = nn.Parameter(torch.randn(config.hidden_size) * 0.02)
             self.audio_end_embedding = nn.Parameter(torch.randn(config.hidden_size) * 0.02)
             logger.info(f"  - Created learnable audio boundary embeddings (dim={config.hidden_size})")
-
-        # Depth transformer for acoustic code prediction (Moshi-style, optional)
-        if getattr(config, "use_flow_matching_depth", False):
-            assert not getattr(config, "predict_second_audio_token", False), (
-                "predict_second_audio_token is incompatible with use_flow_matching_depth: "
-                "the flow head conditions on length classes."
-            )
-            self.depth_transformer = FlowMatchingDepthTransformer(config)
-            logger.info(
-                f"  - Created FlowMatchingDepthTransformer: dim={config.depth_transformer_dim}, "
-                f"layers={config.depth_transformer_num_layers}, "
-                f"heads={config.depth_transformer_num_heads}, "
-                f"latent_dim={config.decoder_latent_dim}, "
-                f"sigma={config.flow_matching_sigma}, "
-                f"prev_latents={config.flow_matching_prev_latents}"
-            )
-        elif getattr(config, "use_depth_transformer", False):
-            assert not getattr(config, "predict_second_audio_token", False), (
-                "predict_second_audio_token is incompatible with use_depth_transformer: "
-                "the depth transformer conditions on length classes."
-            )
-            self.depth_transformer = DepthTransformer(config)
-            logger.info(
-                f"  - Created DepthTransformer: dim={config.depth_transformer_dim}, "
-                f"layers={config.depth_transformer_num_layers}, "
-                f"heads={config.depth_transformer_num_heads}, "
-                f"n_acoustic={config.num_acoustic_quantizers}, "
-                f"card={config.acoustic_codebook_size}"
-            )
-        else:
-            self.depth_transformer = None
 
         self.post_init()
 
@@ -2997,8 +2423,6 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
         assistant_semantic_codes = None
         assistant_token_lengths = None
         assistant_code_lens = None
-        assistant_acoustic_codes = None
-        assistant_decoder_latent = None
         dummy_assistant_audio = 0.0
         if user_has_audio is not None and user_has_audio.any().item():
             u_rows = torch.nonzero(user_has_audio, as_tuple=True)[0]
@@ -3233,7 +2657,7 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
                 self.flexicodec_dict,
                 audio_features=assistant_audio_features[a_rows],
                 audio_features_lens=(assistant_audio_features_lens[a_rows] if assistant_audio_features_lens is not None else None),
-                num_quantizers=(1 + self.config.num_acoustic_quantizers) if self.depth_transformer is not None else 1,
+                num_quantizers=1,
                 merging_threshold=(
                     selected_output_target_rate
                     if use_uniform_output_merging
@@ -3278,30 +2702,6 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
                     # )
                 except Exception as _e:
                     print(f"[rank0][output_framerate] failed to compute: {_e}", flush=True)
-            # Extract acoustic codes for depth transformer (delayed by 1 step)
-            assistant_acoustic_codes = None
-            assistant_decoder_latent = None
-            if getattr(self.config, "use_flow_matching_depth", False):
-                assistant_decoder_latent = a_codec['decoder_latent']
-                if assistant_decoder_latent is None:
-                    raise RuntimeError("use_flow_matching_depth=True requires FlexiCodec encode output to contain 'decoder_latent'")
-                # FlexiCodec returns decoder_latent as [B, D, T]; train the flow head on [B, T, D].
-                if assistant_decoder_latent.dim() != 3:
-                    raise RuntimeError(f"Expected decoder_latent to be 3D, got shape={assistant_decoder_latent.shape}")
-                if assistant_decoder_latent.shape[1] == self.config.decoder_latent_dim:
-                    assistant_decoder_latent = assistant_decoder_latent.transpose(1, 2).contiguous()
-                elif assistant_decoder_latent.shape[2] == self.config.decoder_latent_dim:
-                    assistant_decoder_latent = assistant_decoder_latent.contiguous()
-                else:
-                    raise RuntimeError(
-                        f"decoder_latent shape {assistant_decoder_latent.shape} does not match "
-                        f"decoder_latent_dim={self.config.decoder_latent_dim}"
-                    )
-                assistant_decoder_latent = assistant_decoder_latent.to(dtype=dtype)
-                debug_print(f"    - assistant_decoder_latent shape: {assistant_decoder_latent.shape}", rank=rank)
-            elif self.depth_transformer is not None:
-                assistant_acoustic_codes = a_codec['acoustic_codes'][:, :self.config.num_acoustic_quantizers, :].to(dtype=torch.long)  # [Na, n_q_a, T]
-                debug_print(f"    - assistant_acoustic_codes shape: {assistant_acoustic_codes.shape}", rank=rank)
             debug_print(f"    - assistant_semantic_codes shape: {assistant_semantic_codes.shape}", rank=rank)
             debug_print(f"    - assistant_token_lengths shape: {assistant_token_lengths.shape}", rank=rank)
             debug_print(f"    - assistant_code_lens: {assistant_code_lens}", rank=rank)
@@ -3352,10 +2752,6 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
         all_speech_labels: List[torch.Tensor] = []
         all_speech_length_labels: List[torch.Tensor] = []
         all_speech_attention_masks: List[torch.Tensor] = []
-        # Acoustic labels for depth transformer, aligned 1-to-1 with speech_labels per-sample.
-        # Each entry is [L_i, n_q_a] long, IGNORE_TOKEN_ID at non-audio positions.
-        all_acoustic_labels: List[torch.Tensor] = []
-        all_decoder_latent_labels: List[torch.Tensor] = []
         # Extra conditioning for talker (aligned to full user+assistant sequence)
         all_talker_extra_conds: List[torch.Tensor] = []
         all_alignment_pad_masks: List[torch.Tensor] = []
@@ -3524,50 +2920,6 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
             attn_i = torch.cat([user_attn_i, assistant_attn_i], dim=0)
             del assistant_attn_i, user_attn_i
 
-            # Build acoustic labels aligned 1-to-1 with speech_labels_i.
-            # Same protocol as semantic: IGNORE everywhere except at audio positions,
-            # where we fill in the codec's acoustic codes (one per FlexiCodec frame).
-            n_q_a = self.config.num_acoustic_quantizers if self.depth_transformer is not None else 0
-            acoustic_labels_i = torch.full(
-                (speech_labels_i.shape[0], max(n_q_a, 1)), IGNORE_TOKEN_ID,
-                device=device, dtype=torch.long,
-            )
-            if (self.depth_transformer is not None
-                    and assistant_acoustic_codes is not None
-                    and assistant_has_audio is not None
-                    and bool(assistant_has_audio[i].item())):
-                sub_i = assistant_audio_row_to_subidx[i]
-                ac_codes_i = assistant_acoustic_codes[sub_i, :n_q_a, :]  # [n_q_a, T_codec]
-                # Find audio positions in speech_labels_i (they correspond 1-to-1 with codec frames in order)
-                audio_positions = (speech_labels_i != IGNORE_TOKEN_ID).nonzero(as_tuple=True)[0]
-                T_use = min(audio_positions.numel(), ac_codes_i.shape[1])
-                if T_use > 0:
-                    acoustic_labels_i[audio_positions[:T_use], :] = ac_codes_i[:, :T_use].transpose(0, 1)
-
-            # Build decoder-latent labels for flow-matching depth, aligned to speech labels.
-            decoder_latent_labels_i = torch.zeros(
-                (speech_labels_i.shape[0], self.config.decoder_latent_dim),
-                device=device, dtype=dtype,
-            )
-            if (getattr(self.config, "use_flow_matching_depth", False)
-                    and assistant_decoder_latent is not None
-                    and assistant_has_audio is not None
-                    and bool(assistant_has_audio[i].item())):
-                sub_i = assistant_audio_row_to_subidx[i]
-                latent_i = assistant_decoder_latent[sub_i]  # [T_codec, D]
-                audio_positions = (speech_labels_i != IGNORE_TOKEN_ID).nonzero(as_tuple=True)[0]
-                if getattr(self.config, "flow_matching_shift_latent", False):
-                    # Shift latent labels by 1 (analogous to length labels): the latent of
-                    # codec frame k becomes the target at audio_positions[k+1]; the first
-                    # audio position keeps its zero-latent default.
-                    T_use = min(max(audio_positions.numel() - 1, 0), latent_i.shape[0])
-                    if T_use > 0:
-                        decoder_latent_labels_i[audio_positions[1:T_use + 1], :] = latent_i[:T_use]
-                else:
-                    T_use = min(audio_positions.numel(), latent_i.shape[0])
-                    if T_use > 0:
-                        decoder_latent_labels_i[audio_positions[:T_use], :] = latent_i[:T_use]
-
             # Build talker extra conditioning aligned to the full sequence:
             # only assistant segment has (audio_embeds, length_embeds) as separate conditions; user segment is zeros.
             # When use_concat_len_emb: replace delay token embeddings (first D positions) with length embeddings
@@ -3594,8 +2946,6 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
             all_labels.append(labels_i)
             all_length_labels.append(length_labels_i)
             all_speech_labels.append(speech_labels_i)
-            all_acoustic_labels.append(acoustic_labels_i)
-            all_decoder_latent_labels.append(decoder_latent_labels_i)
             all_attention_masks.append(attn_i)
             all_talker_extra_conds.append(talker_extra_cond_i)
             all_alignment_pad_masks.append(align_pad_mask_i)
@@ -3614,8 +2964,6 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
             labels = torch.cat(all_labels, dim=0).unsqueeze(0)
             length_labels = torch.cat(all_length_labels, dim=0).unsqueeze(0)
             speech_labels = torch.cat(all_speech_labels, dim=0).unsqueeze(0)
-            acoustic_labels = torch.cat(all_acoustic_labels, dim=0).unsqueeze(0)  # [1, L_total, n_q_a]
-            decoder_latent_labels = torch.cat(all_decoder_latent_labels, dim=0).unsqueeze(0)  # [1, L_total, D_latent]
             alignment_pad_mask = torch.cat(all_alignment_pad_masks, dim=0).unsqueeze(0)
             talker_extra_conds = torch.cat(all_talker_extra_conds, dim=0).unsqueeze(0).to(inputs_embeds.dtype)
             attention_mask = None
@@ -3637,8 +2985,6 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
             length_labels = pad_sequence(all_length_labels, batch_first=True, padding_value=IGNORE_TOKEN_ID)
             attention_mask = pad_sequence(all_attention_masks, batch_first=True, padding_value=False).to(inputs_embeds.dtype)
             speech_labels = pad_sequence(all_speech_labels, batch_first=True, padding_value=IGNORE_TOKEN_ID)
-            acoustic_labels = pad_sequence(all_acoustic_labels, batch_first=True, padding_value=IGNORE_TOKEN_ID)  # [B, L, n_q_a]
-            decoder_latent_labels = pad_sequence(all_decoder_latent_labels, batch_first=True, padding_value=0.0)  # [B, L, D_latent]
             alignment_pad_mask = pad_sequence(all_alignment_pad_masks, batch_first=True, padding_value=False)
             talker_extra_conds = pad_sequence(all_talker_extra_conds, batch_first=True, padding_value=0.0).to(inputs_embeds.dtype)
             position_ids = None
@@ -3937,77 +3283,6 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
                 length_loss_weight = getattr(self.config, "length_loss_weight", 1.0)
                 len_loss = speech_len_loss * length_loss_weight
 
-                # ------------------------------------------------------------------
-                # Depth transformer: predict acoustic codes or decoder latent
-                # ------------------------------------------------------------------
-                acoustic_loss = None
-                acoustic_ce_loss = None
-                acoustic_per_codebook_loss = None
-                if self.depth_transformer is not None:
-                    # Check if using flow matching depth transformer
-                    if getattr(self.config, "use_flow_matching_depth", False):
-                        # Flow matching: predict decoder latent
-                        latent_loss_mask = speech_labels != IGNORE_TOKEN_ID
-                        if bool(latent_loss_mask.any().item()):
-                            semantic_codes_for_flow = (speech_labels - self.text_vocab_size).clamp(min=0)
-                            length_ids_for_flow = length_labels.clamp(min=0)
-                            # Flow head conditions on talker_hidden[t], semantic/length[t-1],
-                            # and previous latent+semantic+length context.
-                            acoustic_loss = self.depth_transformer.compute_loss(
-                                talker_hidden, semantic_codes_for_flow, length_ids_for_flow, decoder_latent_labels,
-                                loss_mask=latent_loss_mask
-                            )
-                            acoustic_loss = acoustic_loss * self.config.acoustic_loss_weight
-                            debug_print(
-                                f"    - flow_matching_acoustic_loss (weighted): {acoustic_loss.item():.4f}",
-                                rank=rank,
-                            )
-                        else:
-                            debug_print(f"    - No valid decoder latent targets for flow matching", rank=rank)
-                    else:
-                        # Discrete depth transformer: predict acoustic codes (Moshi-style, delayed by 1 step)
-                        # Same protocol as the semantic loss above: acoustic_labels is built during
-                        # sequence assembly aligned 1-to-1 with speech_labels (using the same
-                        # assistant_audio_row_to_subidx mapping), so no packed/non-packed branching
-                        # is needed here. acoustic_labels: [B, L_speech, n_q_a].
-                        if assistant_acoustic_codes is not None:
-                            n_q_a = self.config.num_acoustic_quantizers
-                            # Transpose to [B, n_q_a, L_speech] for the depth transformer interface.
-                            acoustic_labels_bnq = acoustic_labels[..., :n_q_a].transpose(1, 2).contiguous()
-
-                            # Apply Moshi 1-step delay: acoustic at position t is predicted from
-                            # talker_hidden[t] + semantic[t-1].
-                            sem_codes_shifted = (speech_labels - self.text_vocab_size).clamp(min=0)  # [B, L_speech]
-                            sem_codes_input = torch.zeros_like(sem_codes_shifted)
-                            sem_codes_input[:, 1:] = sem_codes_shifted[:, :-1]
-
-                            ac_logits = self.depth_transformer(
-                                talker_hidden, sem_codes_input, acoustic_labels_bnq.clamp(min=0),
-                                length_ids=length_labels.clamp(min=0)
-                            )  # [B, n_q_a, L_speech, card]
-
-                            card = ac_logits.shape[-1]
-                            # Same protocol as semantic loss: one cross-entropy call per codebook,
-                            # averaged. ignore_index masks out non-audio positions.
-                            per_q_losses = []
-                            for q in range(n_q_a):
-                                per_q_losses.append(self.loss_function(
-                                    logits=ac_logits[:, q].float(),       # [B, L_speech, card]
-                                    labels=acoustic_labels_bnq[:, q],     # [B, L_speech]
-                                    ignore_index=IGNORE_TOKEN_ID,
-                                    vocab_size=card,
-                                ))
-                            per_q_stack = torch.stack(per_q_losses)            # [n_q_a]
-                            acoustic_ce_loss = per_q_stack.mean()              # unweighted mean (for logging)
-                            acoustic_per_codebook_loss = per_q_stack.detach()  # [n_q_a] (for logging)
-                            acoustic_loss = acoustic_ce_loss * self.config.acoustic_loss_weight
-                            debug_print(
-                                f"    - acoustic_loss (weighted): {acoustic_loss.item():.4f}, "
-                                f"acoustic_ce (unweighted): {acoustic_ce_loss.item():.4f}, "
-                                f"per-codebook: {[f'{x:.3f}' for x in acoustic_per_codebook_loss.tolist()]}",
-                                rank=rank,
-                            )
-
             else:
                 # DeepSpeed ZeRO-2 fix: use zero-valued contributions from model
                 # outputs instead of detached constants, so talker parameters
@@ -4015,34 +3290,28 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
                 speech_loss = (speech_logits.mean() * 0.0 if speech_logits.numel() > 0 else speech_logits.sum() * 0.0) + dummy_assistant_audio
                 len_loss = speech_length_logits.mean() * 0.0 if speech_length_logits.numel() > 0 else speech_length_logits.sum() * 0.0
                 audio_token_loss = torch.tensor(0.0, device=text_loss.device, dtype=text_loss.dtype) + dummy_assistant_audio
-                acoustic_loss = None
-                acoustic_ce_loss = None
-                acoustic_per_codebook_loss = None
                 debug_print(f"    - No speech sequences, speech_loss=0, len_loss=0", rank=rank)
-            
-            # Acoustic loss contribution (depth transformer)
-            _acoustic_loss_term = acoustic_loss if acoustic_loss is not None else 0.0
 
             text_token_loss = text_loss.detach()  # weighted text term (same as text_ce_loss * w)
             if self.config.force_use_combined_embedding:
-                loss = text_loss + speech_loss + len_loss + _acoustic_loss_term
+                loss = text_loss + speech_loss + len_loss
             elif self.config.freeze_llm:
                 # Stage 1 trains the Talker from TTS losses and the audio-input
                 # adapters from ASR text loss while the main LLM remains frozen.
-                loss = text_loss + speech_loss + len_loss + _acoustic_loss_term
+                loss = text_loss + speech_loss + len_loss
             elif getattr(self.config, "freeze_talker", False):
                 # Freeze talker: exclude talker loss; only text loss is used for gradients
                 loss = text_loss
             elif getattr(self.config, "only_train_llm", False):
                 # Only train LLM: use text loss; talker/adaptor are frozen
-                loss = text_loss + speech_loss + len_loss + _acoustic_loss_term
+                loss = text_loss + speech_loss + len_loss
             elif self.config.only_train_talker:
-                loss = speech_loss + len_loss + _acoustic_loss_term
+                loss = speech_loss + len_loss
             elif getattr(self.config, "use_lora", False):
                 # LoRA trains the LM on text prediction; loss must have grad_fn (use text_loss)
-                loss = text_loss + speech_loss + len_loss + _acoustic_loss_term
+                loss = text_loss + speech_loss + len_loss
             else:
-                loss = text_loss + speech_loss + len_loss + _acoustic_loss_term
+                loss = text_loss + speech_loss + len_loss
 
 
             if has_audio_dialog_data:
@@ -4362,16 +3631,9 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
         generated_text_ids = []
         generated_audio_ids = []
         generated_length_ids = []
-        generated_acoustic_codes = []  # Discrete acoustic codes or flow decoder latents.
+        generated_acoustic_codes = None
         all_scores = [] if output_scores else None
         all_length_scores = [] if output_scores else None
-        
-        # Depth transformer state.
-        prev_semantic_for_depth = None  # [B] - previous semantic code (0-indexed)
-        prev_length_for_depth = None
-        prev_decoder_latents_for_depth = None
-        prev_decoder_semantics_for_depth = None
-        prev_decoder_lengths_for_depth = None
         
         # Track which sequences have finished
         finished = torch.zeros(batch_size, dtype=torch.bool, device=device)
@@ -4646,69 +3908,6 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
                     audio_delay_count += 1
                 elif next_audio_val == 0:  # AUD_END (qwen3: talker token 0)
                     audio_delay_count = 0
-
-                # Depth transformer: generate acoustic codes or decoder latent
-                if self.depth_transformer is not None and next_audio_val >= AUDIO_TOKEN_OFFSET:
-                    current_semantic = next_audio_token_offset  # [B] - semantic[t]
-                    # Check if using flow matching depth transformer
-                    if getattr(self.config, "use_flow_matching_depth", False):
-                        # Flow matching: generate decoder latent
-                        if prev_semantic_for_depth is None:
-                            prev_semantic_for_depth = torch.zeros_like(current_semantic)
-                        prev_length_for_depth = next_length
-                        if prev_decoder_latents_for_depth is None:
-                            prev_decoder_latents_for_depth = talker_hidden_last.new_zeros(
-                                batch_size,
-                                self.depth_transformer.num_prev_latents,
-                                self.config.decoder_latent_dim,
-                            )
-                        if prev_decoder_semantics_for_depth is None:
-                            prev_decoder_semantics_for_depth = torch.zeros(
-                                batch_size,
-                                self.depth_transformer.num_prev_latents,
-                                device=device,
-                                dtype=torch.long,
-                            )
-                        if prev_decoder_lengths_for_depth is None:
-                            prev_decoder_lengths_for_depth = torch.zeros(
-                                batch_size,
-                                self.depth_transformer.num_prev_latents,
-                                device=device,
-                                dtype=torch.long,
-                            )
-                        prev_decoder_latents_for_depth[:, -1, :] = next_length
-                        decoder_latent = self.depth_transformer.generate(
-                            talker_hidden_last,
-                            prev_semantic_for_depth,
-                            prev_length_for_depth,
-                            prev_decoder_latents_for_depth,
-                            prev_decoder_semantics_for_depth,
-                            prev_decoder_lengths_for_depth,
-                        )  # [B, latent_dim]
-                        generated_acoustic_codes.append(decoder_latent)
-                        if self.depth_transformer.num_prev_latents > 0:
-                            prev_decoder_semantics_for_depth = torch.cat(
-                                [prev_decoder_semantics_for_depth[:, 1:], current_semantic.unsqueeze(1)],
-                                dim=1,
-                            )
-                            prev_decoder_latents_for_depth = torch.cat(
-                                [prev_decoder_latents_for_depth[:, 1:], decoder_latent.unsqueeze(1)],
-                                dim=1,
-                            )
-                        prev_semantic_for_depth = current_semantic
-
-                    else:
-                        # Discrete depth transformer: generate acoustic codes
-                        if prev_semantic_for_depth is None:
-                            prev_semantic_for_depth = torch.zeros_like(current_semantic)
-                        current_shifted_length = next_length.long()
-                        ac_codes = self.depth_transformer.generate(
-                            talker_hidden_last, prev_semantic_for_depth, current_shifted_length
-                        )  # [B, n_acoustic]
-                        generated_acoustic_codes.append(ac_codes)
-                        # Update state for next step: this step's semantic becomes "previous".
-                        prev_semantic_for_depth = current_semantic
-                        prev_length_for_depth = current_shifted_length
             # Teacher-force text tokens (e.g. for TTS sentence prefix)
             if force_text_ids is not None and force_text_idx < len(force_text_ids):
                 next_text_token = torch.full_like(next_text_token, force_text_ids[force_text_idx].item())
@@ -4903,14 +4102,6 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
             generated_length_ids = torch.stack(generated_length_ids, dim=1)  # [B, num_generated]
         else:
             generated_length_ids = torch.empty((batch_size, 0), device=device, dtype=torch.long)
-        # Stack acoustic codes from depth transformer (if generated)
-        if len(generated_acoustic_codes) > 0:
-            generated_acoustic_codes = torch.stack(generated_acoustic_codes, dim=1)
-            if not getattr(self.config, "use_flow_matching_depth", False):
-                # Discrete acoustic codes: [B, T_ac, n_acoustic] -> [B, n_acoustic, T_ac].
-                generated_acoustic_codes = generated_acoustic_codes.transpose(1, 2)
-        else:
-            generated_acoustic_codes = None
         # Concatenate with input_ids if available
         if input_ids is not None:
             sequences = torch.cat([input_ids, generated_text_ids], dim=1)

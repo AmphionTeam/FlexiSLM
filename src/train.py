@@ -640,10 +640,6 @@ def main():
             for p in model.talker_model.parameters():
                 p.requires_grad = True
 
-        if hasattr(model, "depth_transformer") and model.depth_transformer is not None:
-            for p in model.depth_transformer.parameters():
-                p.requires_grad = True
-
         if bool(getattr(model.config, "use_joint_text_audio_vocab", True)):
             if hasattr(model, "lm_head") and model.lm_head is not None:
                 for p in model.lm_head.parameters():
@@ -829,12 +825,6 @@ def main():
         except Exception:
             pass
     if getattr(model_args, "predict_second_audio_token", False):
-        assert not getattr(model_args, "use_depth_transformer", False), (
-            "predict_second_audio_token is incompatible with use_depth_transformer."
-        )
-        assert not getattr(model_args, "use_flow_matching_depth", False), (
-            "predict_second_audio_token is incompatible with use_flow_matching_depth."
-        )
         logger.info(
             "predict_second_audio_token=True: replacing the talker length-prediction head "
             "with a second-audio-token prediction head (group size 2 ablation)."

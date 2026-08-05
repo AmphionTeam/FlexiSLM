@@ -99,18 +99,8 @@ else
     # fi
 fi
 
-# Output directory setup with date suffix (if OUTPUT_DIR_BASE is set before sourcing)
-# This will be applied if OUTPUT_DIR_BASE is set and GPU_COUNT > 1
-if [ -n "${OUTPUT_DIR_BASE:-}" ] && [ "$GPU_COUNT" -gt 1 ]; then
-    DATE_SUFFIX=$(date +%Y%m)
-    OUTPUT_DIR="${OUTPUT_DIR_BASE}_${DATE_SUFFIX}"
-    RUN_NAME="${RUN_NAME:-}_${DATE_SUFFIX}"
-    if [ "$MULTI_MACHINE" = true ]; then
-        echo "Multi-machine training. Appending date to output_dir: $OUTPUT_DIR"
-    else
-        echo "Multiple GPUs detected. Appending date to output_dir: $OUTPUT_DIR"
-    fi
-elif [ -n "${OUTPUT_DIR_BASE:-}" ]; then
+# Preserve the configured output directory without adding run-specific suffixes.
+if [ -n "${OUTPUT_DIR_BASE:-}" ]; then
     OUTPUT_DIR="$OUTPUT_DIR_BASE"
 fi
 

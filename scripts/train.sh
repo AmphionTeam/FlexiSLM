@@ -36,10 +36,9 @@ if [ -z "$ACCELERATE_BIN" ]; then
     exit 1
 fi
 
-# Model and encoder paths are declared in the YAML config. Keep this shared
-# launcher limited to runtime-specific overrides such as output and resume state.
+# Model, encoder, and output paths are declared in the YAML config. Keep this
+# shared launcher limited to runtime-specific overrides.
 TRAINING_OVERRIDES=(
-    --output_dir "$OUTPUT_DIR"
     --run_name "$RUN_NAME"
     --dataloader_num_workers "$DATALOADER_NUM_WORKERS"
 )

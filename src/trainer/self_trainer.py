@@ -30,8 +30,8 @@ from torch import nn
 from torch.utils.data import DataLoader
 from typing import Any, Union
 from tqdm import tqdm
-from transformers import Trainer
-from transformers.trainer_utils import seed_worker
+from transformers import Trainer, TrainerCallback
+from transformers.trainer_utils import SaveStrategy, seed_worker
 from transformers.utils import is_datasets_available, is_sagemaker_mp_enabled
 
 # Import datasets module
@@ -138,7 +138,31 @@ class TokenBudgetBatchSampler(torch.utils.data.Sampler):
         return len(self._rank_batches())
 
 
+class SkipFinalCheckpointCallback(TrainerCallback):
+    """Keep the final model in output_dir without duplicating it in a checkpoint."""
+
+    @staticmethod
+    def _skip_final_save(args, state, control, strategy):
+        if (
+            args.save_strategy == strategy
+            and state.global_step >= state.max_steps
+        ):
+            control.should_save = False
+        return control
+
+    def on_step_end(self, args, state, control, **kwargs):
+        return self._skip_final_save(args, state, control, SaveStrategy.STEPS)
+
+    def on_epoch_end(self, args, state, control, **kwargs):
+        return self._skip_final_save(args, state, control, SaveStrategy.EPOCH)
+
+
 class ATrainer(Trainer):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Run after DefaultFlowCallback so its forced final checkpoint is disabled.
+        self.add_callback(SkipFinalCheckpointCallback)
+
     def create_optimizer(self):
         talker_lr = getattr(self.args, "talker_learning_rate", None)
         audio_encoder_lr = getattr(self.args, "audio_encoder_learning_rate", None)

@@ -213,6 +213,15 @@ class ModelArguments:
             )
         },
     )
+    talker_checkpoint_path: Optional[str] = field(
+        default=None,
+        metadata={
+            "help": (
+                "Path to a FlexiSLM checkpoint directory whose complete talker_model state initializes the Talker. "
+                "The configured Talker architecture must exactly match the checkpoint."
+            )
+        },
+    )
     speech_delay_tokens: int = field(
         default=5,
         metadata={"help": "Number of null tokens to delay speech generation"}

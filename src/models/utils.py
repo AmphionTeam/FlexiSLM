@@ -1,5 +1,7 @@
 # Copyright (c) 2025 ByteDance Ltd. and/or its affiliates
 # SPDX-License-Identifier: MIT
+import json
+import os
 import time
 import torch
 import torch.nn as nn
@@ -47,6 +49,70 @@ def add_audio_tokens_if_needed(tokenizer) -> int:
         return num_added
     return 0
 
+
+
+def _load_talker_checkpoint(model, checkpoint: str) -> None:
+    """Load only ``talker_model`` weights from a FlexiSLM checkpoint directory."""
+    if not os.path.isdir(checkpoint):
+        raise FileNotFoundError(f"Talker checkpoint directory not found: {checkpoint}")
+
+    prefix = "talker_model."
+    index_path = os.path.join(checkpoint, "model.safetensors.index.json")
+    single_path = os.path.join(checkpoint, "model.safetensors")
+    state_dict = {}
+
+    if os.path.isfile(index_path):
+        from safetensors import safe_open
+
+        with open(index_path, "r", encoding="utf-8") as index_file:
+            weight_map = json.load(index_file).get("weight_map", {})
+        selected = {name: shard for name, shard in weight_map.items() if name.startswith(prefix)}
+        for shard_name in sorted(set(selected.values())):
+            shard_path = os.path.join(checkpoint, shard_name)
+            if not os.path.isfile(shard_path):
+                raise FileNotFoundError(f"Talker checkpoint shard not found: {shard_path}")
+            with safe_open(shard_path, framework="pt", device="cpu") as shard:
+                for name, mapped_shard in selected.items():
+                    if mapped_shard == shard_name:
+                        state_dict[name[len(prefix):]] = shard.get_tensor(name)
+    elif os.path.isfile(single_path):
+        from safetensors import safe_open
+
+        with safe_open(single_path, framework="pt", device="cpu") as checkpoint_file:
+            for name in checkpoint_file.keys():
+                if name.startswith(prefix):
+                    state_dict[name[len(prefix):]] = checkpoint_file.get_tensor(name)
+    else:
+        raise FileNotFoundError(
+            f"No safetensors model found in Talker checkpoint: {checkpoint}"
+        )
+
+    if not state_dict:
+        raise ValueError(f"No weights with prefix {prefix!r} found in {checkpoint}")
+
+    expected = model.talker_model.state_dict()
+    missing = sorted(set(expected) - set(state_dict))
+    unexpected = sorted(set(state_dict) - set(expected))
+    mismatched = sorted(
+        (name, tuple(state_dict[name].shape), tuple(expected[name].shape))
+        for name in set(expected) & set(state_dict)
+        if state_dict[name].shape != expected[name].shape
+    )
+    if missing or unexpected or mismatched:
+        details = []
+        if missing:
+            details.append(f"missing={missing[:10]}")
+        if unexpected:
+            details.append(f"unexpected={unexpected[:10]}")
+        if mismatched:
+            details.append(f"shape_mismatches={mismatched[:10]}")
+        raise ValueError(
+            "Talker checkpoint is incompatible with the configured architecture: " + "; ".join(details)
+        )
+
+    model.talker_model.load_state_dict(state_dict, strict=True, assign=True)
+    model.config.talker_checkpoint_path = os.path.abspath(checkpoint)
+    logger.info(f"Loaded {len(state_dict)} Talker weights from {checkpoint}")
 
 
 def load_train_flexislm_model_and_tokenizer(
@@ -288,6 +354,9 @@ def load_train_flexislm_model_and_tokenizer(
     del pretrained_model
     torch.cuda.empty_cache() if torch.cuda.is_available() else None
     model.resize_token_embeddings(len(tokenizer), pad_to_multiple_of=8)
+    talker_checkpoint_path = getattr(model_args, "talker_checkpoint_path", None)
+    if talker_checkpoint_path:
+        _load_talker_checkpoint(model, talker_checkpoint_path)
     new_embedding_size = model.text_vocab_size + model.audio_vocab_size
     if torch_dtype not in ["auto", None]:
         model = model.to(torch_dtype)

@@ -13,6 +13,12 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 # Set Python path
 export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
 export SWANLAB_API_KEY="${SWANLAB_API_KEY:-}"  # Set your key in environment; do not hard-code secrets.
+
+# Create SwanLab global state directory before distributed workers start.
+# Older swankit versions race here when several ranks import it concurrently.
+export SWANLAB_SAVE_DIR="${SWANLAB_SAVE_DIR:-${HOME}/.swanlab}"
+mkdir -p "$SWANLAB_SAVE_DIR"
+
 # NCCL configuration for multi-machine training
 export NCCL_CONNECT_TIMEOUT=60
 export NCCL_IB_TIMEOUT=60

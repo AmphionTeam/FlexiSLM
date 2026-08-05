@@ -1,7 +1,7 @@
 # FlexiSLM: A Spoken Language Model with Dynamic and Controllable Frame Rate
 
-[![arXiv](https://img.shields.io/badge/arXiv-2606.31247-b31b1b)](https://arxiv.org/abs/2606.31247)
-[![demo page](https://img.shields.io/badge/demo-page-blue)](https://flexislm.github.io)
+[![arXiv Paper](https://img.shields.io/badge/arXiv_Paper-2606.31247-b31b1b)](https://arxiv.org/abs/2606.31247)
+[![demo page](https://img.shields.io/badge/Demo_Page-Github.io-blue)](https://flexislm.github.io)
 
 
 
@@ -9,11 +9,7 @@
 This repository contains the code for our paper "FlexiSLM: A Spoken Language Model with Dynamic and Controllable Frame Rate". Reproduced data and checkpoints, along with complete guide to train with the data, will be released soon this month.
 
 
-About our paper: FlexiSLM is the first SLM that supports *dynamic* and *controllable* frame rates on both speech input and output. A single trained model can be steered between 12.5 Hz down to 4.0 Hz without retraining, and its dynamic frame rate mechanism adapts to the varying complexity of speech.
-Key contributions include: 
-- **Dynamic frame rate SLM framework and validation.** We introduce FlexiSLM, the first dynamic frame rate SLM framework, with dynamic frame compression on both speech input and output. Experiments show strong performance at 12.5 Hz and 6.25 Hz, with graceful degradation at 5.0 Hz and 4.0 Hz.
-- **Accurate and practical frame rate control.** We propose direct frame rate conditioning, letting users specify the average output frame rate instead of indirectly tuning a merging threshold. This makes FlexiSLM, to our knowledge, the first SLM with frame rate controllability.
-- **Strong quality-efficiency trade-off.** At 6.25 Hz output, FlexiSLM roughly *halves* AR inference time relative to 12.5 Hz with only minor quality degradation; at high-quality operating points, it outperforms fixed-rate 7B baselines such as Qwen2.5-Omni and Kimi-Audio.
+About our paper: FlexiSLM is the first SLM that supports *dynamic* and *controllable* frame rates on both speech input and output. A single trained model can be steered between 12.5 Hz down to 4.0 Hz without retraining, and its dynamic frame rate mechanism adapts to the varying complexity of speech. Our paper's key contributions include dynamic frame rate SLM framework and validation, accurate and practical frame rate control, and strong quality-efficiency trade-off.
 
 <!-- ![FlexiSLM architecture](assets/flexislm_architecture.png) -->
 
@@ -25,27 +21,41 @@ Overall FlexiSLM architecture is a Thinker-Talker model with dynamic frame-rate 
 - **August 2, 2026: Code release**. We have released the training and inference code of FlexiSLM-7B.
 - Before September 1, 2026: Planned Reproduced FlexiSLM-Data and checkpoint release: We plan to release a reproduced version of FlexiSLM-7B and 5M samples of reproduced speech-to-speech dialog training data. We plan to release them before September 2026. 
 
+## Repository Layout
 
+```text
+FlexiSLM/
+├── assets/                 # Static images and other documentation assets
+├── config/                 # Declarative training and runtime configurations
+│   └── datasets/           # Dataset recipes referenced by training configs
+├── examples/               # Small example data and runnable notebooks
+│   └── data/               # Minimal ASR, TTS, and dialogue JSONL samples
+├── local/                  # Offline data preparation, conversion, and audit tools
+├── scripts/                # Thin shell launchers and shared runtime environment setup
+├── src/                    # Reusable training, inference, and model implementation
+│   ├── dataset/            # Dataset loading, preprocessing, and collation
+│   ├── models/             # FlexiSLM model definitions, configs, and loading utilities
+│   ├── processor/          # Text and input processing utilities
+│   └── trainer/            # Trainer implementation and training helpers
+├── README.md               # Installation, training, data, and inference guide
+├── LICENSE                 # Project license
+└── requirements.txt        # Python dependencies
+```
+
+Keep datasets, model checkpoints, training outputs, logs, and temporary files outside the repository. Place reusable runtime code under `src/`; reserve `local/` for offline or corpus-specific utilities, and keep `scripts/` limited to executable shell entrypoints.
 
 ## Training Guide
 
 
 ### Environment Setup
 
-This repository depends on a git submodule: `flexislm/third_party/flexicodec`.
-
-1. Clone with submodules:
+1. Clone the repository:
 ```bash
-git clone --recurse-submodules <repo_url>
+git clone https://github.com/AmphionTeam/FlexiSLM.git
 cd FlexiSLM
 ```
 
-2. If you already cloned without submodules:
-```bash
-git submodule update --init --recursive
-```
-
-3. Install dependencies:
+2. Install dependencies:
 ```bash
 pip install -r requirements.txt
 ```
@@ -57,63 +67,39 @@ FlexiSLM training progresses in 3 stages:
 3. **Full fine-tuning.** Continue from Stage 2, merge the LoRA updates into the LLM, train all parameters, and enable the Talker-to-Thinker connection to improve speech perception and generation quality.
 
 
-Use scripts under `exps/` as launch templates:
+Training arguments are stored in YAML files under `config/`, while the launch scripts live under `scripts/`:
 
-- `exps/train_stage1.sh`: stage-1 training
-- `exps/train_stage2.sh`: stage-2 training
-<!-- - `exps/train_stage2_v2merging.sh`: stage-2 with input-merging-v2 options -->
-- `exps/train_stage3.sh`: stage-3 training
-<!-- - `exps/train_stage3_v2merging.sh`: wrapper that calls `train_stage2_v2merging.sh` -->
+| Stage | Configuration | Launcher |
+| --- | --- | --- |
+| Stage 1 | `config/train_stage1.yaml` | `scripts/train_stage1.sh` |
+| Stage 2 | `config/train_stage2.yaml` | `scripts/train_stage2.sh` |
+| Stage 3 | `config/train_stage3.yaml` | `scripts/train_stage3.sh` |
+<!-- | Stage 2 (v1 merging) | `config/train_stage2_v1merging.yaml` | `scripts/train_stage2_v1merging.sh` | -->
 
-Notes:
-- These scripts are environment-specific templates and contain cluster/internal absolute paths.
-<!-- - Copy a script and edit paths before use.
-- If an old script still has deprecated args (for example `--load_from_stage1`), remove them. -->
-
-<!-- ### Recommended Direct Launch (Minimal)
-
-Run from repo root:
+The YAML values can be overridden from the command line:
 
 ```bash
-torchrun --nproc_per_node=8 train.py \
-  --do_train \
-  --log_level info \
-  --model_name_or_path path/to/base_qwen_checkpoint \
-  --config_name path/to/base_qwen_checkpoint \
-  --tokenizer_name path/to/base_qwen_checkpoint \
-  --dataset_name flexislm/dataset/recipes/dataset_train_stage1.yaml \
-  --dataset_name_eval flexislm/dataset/dataset_eval.yaml \
-  --output_dir outputs/flexislm_stage1 \
-  --num_train_epochs 1 \
-  --per_device_train_batch_size 1 \
-  --gradient_accumulation_steps 1 \
-  --model_max_length 1024 \
+bash scripts/train_stage2.sh \
   --learning_rate 2e-5 \
-  --bf16 True \
-  --torch_dtype bfloat16 \
-  --use_parallel True \
-  --enable_flexible_framerate True \
-  --use_omni_token True
+  --output_dir outputs/custom_stage2
 ```
 
-Resume training:
+Use the shared launcher to run a custom configuration:
 
 ```bash
-torchrun --nproc_per_node=8 train.py \
-  --do_train \
-  --resume_from_checkpoint path/to/checkpoint-dir \
-  --dataset_name path/to/train_recipe.yaml \
-  --dataset_name_eval path/to/eval_recipe.yaml
-``` -->
+bash scripts/train.sh config/train_stage2.yaml
+```
+
+The scripts detect local or distributed GPU settings through `scripts/env.sh`. They are launch templates, so adjust environment-specific paths and cluster settings before use.
 
 ### Dataset Preparation Workflow
 
 Prepare your dataset in three steps.
 
 Step 1: format your JSONL like the provided examples:
-- `flexislm/dataset/example_data_asr.jsonl`
-- `flexislm/dataset/example_data_tts.jsonl`
-- `flexislm/dataset/example_data_dialog.jsonl`
+- `examples/data/asr.jsonl`
+- `examples/data/tts.jsonl`
+- `examples/data/dialog.jsonl`
 
 The common JSONL format is:
 
@@ -130,7 +116,7 @@ The common JSONL format is:
   ]
 }
 ```
-(system message are always overwritten by Qwen-Omni's system message in our setting. Configure this behavior in flexislm/dataset/dataset_override/dataset_interleaved.py)
+(system message are always overwritten by Qwen-Omni's system message in our setting. Configure this behavior in src/dataset/interleaved.py)
 
 
 Important constraints:
@@ -141,12 +127,12 @@ Important constraints:
 Step 2: use the precompute script to append audio duration/token metadata.
 
 Script path:
-- `flexislm/dataset/scripts/precompute_audio_durations.py`
+- `src/dataset/precompute_audio_durations.py`
 
 Single JSONL:
 
 ```bash
-python flexislm/dataset/scripts/precompute_audio_durations.py \
+python src/dataset/precompute_audio_durations.py \
   --input path/to/train.jsonl \
   --audio-root path/to/audio_root \
   --workers 32
@@ -155,7 +141,7 @@ python flexislm/dataset/scripts/precompute_audio_durations.py \
 Batch mode (process all `data_paths` listed in a YAML file):
 
 ```bash
-python flexislm/dataset/scripts/precompute_audio_durations.py \
+python src/dataset/precompute_audio_durations.py \
   --yaml path/to/train_recipe.yaml \
   --workers 32
 ```
@@ -196,18 +182,18 @@ Supported `data_paths` types:
 
 ## Inference Guide
 
-Primary inference script: `flexislm/inference_flexislm.py`.
+Primary inference script: `src/inference_flexislm.py`.
 
 Use:
 
 ```bash
-python flexislm/inference_flexislm.py --help
+python -m src.inference_flexislm --help
 ```
 
 Minimal API examples:
 
 ```python
-from flexislm.inference_flexislm import InterleavedInferenceConfig, InterleavedS2SInference
+from src.inference_flexislm import InterleavedInferenceConfig, InterleavedS2SInference
 
 cfg = InterleavedInferenceConfig(
     model_path="/path/to/flexislm_checkpoint",
@@ -265,7 +251,7 @@ t2t = engine.generate_from_text(
 Quick debug run (same five modes in script):
 
 ```bash
-python flexislm/inference_flexislm.py \
+python -m src.inference_flexislm \
   --model_path /path/to/flexislm_checkpoint \
   --debug \
   --debug_audio_path /path/to/input_audio.wav
@@ -274,11 +260,11 @@ python flexislm/inference_flexislm.py \
 Minimal notebook example (imports inference module and runs T2T/S2T/TTS):
 
 ```bash
-inference_minimal.ipynb
+examples/inference.ipynb
 ```
 
-## Citation
-
+## Citation and Acknowledgements
+If you find our work useful, please consider citing:
 ```bibtex
 @misc{li2026flexislmdynamiccontrollableframe,
       title={FlexiSLM: A Dynamic and Controllable Frame Rate Spoken Language Model},
@@ -291,6 +277,12 @@ inference_minimal.ipynb
 }
 ```
 
+Acknowledgements:
+- Our work uses Qwen 2.5 as the backbone and [Qwen 2.5-Omni](https://github.com/qwenlm/qwen2.5-omni) as audio encoder. 
+- Our training framework is largely based on Huggingface [Transformers](https://github.com/huggingface/transformers).
+- Our previous open-source works [FlexiCodec](https://github.com/AmphionTeam/FlexiCodec) and [DualCodec](https://github.com/jiaqili3/DualCodec) are foundational to this work.
+
+
 ## License
 
-This project is licensed under the MIT License. See [LICENSE](LICENSE) for details.
+This project is licensed under the MIT License. 

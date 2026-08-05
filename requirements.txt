@@ -6,7 +6,6 @@
 # Notes:
 # 1) Some modules referenced by the code are not standard PyPI packages and
 #    must be installed from source or provided via PYTHONPATH, e.g.:
-#    - flexicodec
 #    - zero_shot_tts_training
 #    - qwen_asr
 # 2) `flash-attn` is optional and environment-specific; install it manually
@@ -15,6 +14,7 @@
 accelerate>=0.30.0
 datasets>=2.18.0
 deepspeed>=0.14.0
+flexicodec @ git+https://github.com/jiaqili3/FlexiCodec.git@70c09f4c5b1e3eb95155427e4411efe333a8dad0
 huggingface_hub>=0.23.0
 inflect>=7.0.0
 librosa>=0.10.0
@@ -23,12 +23,13 @@ matplotlib>=3.7.0
 num2words>=0.5.13
 numpy>=1.24.0,<2.0
 peft>=0.11.0
+peewee>=3.17,<4
 PyYAML>=6.0
 requests>=2.31.0
 safetensors>=0.4.0
 sentencepiece>=0.1.99
 soundfile>=0.12.1
-swanlab>=0.3.0
+swanlab[dashboard]==0.6.0
 torch>=2.1.0
 torchaudio>=2.1.0
 torchvision>=0.16.0

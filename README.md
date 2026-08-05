@@ -1,7 +1,7 @@
 # FlexiSLM: A Spoken Language Model with Dynamic and Controllable Frame Rate
 
-[![arXiv](https://img.shields.io/badge/arXiv-2606.31247-b31b1b)](https://arxiv.org/abs/2606.31247)
-[![demo page](https://img.shields.io/badge/demo-page-blue)](https://flexislm.github.io)
+[![arXiv Paper](https://img.shields.io/badge/arXiv_Paper-2606.31247-b31b1b)](https://arxiv.org/abs/2606.31247)
+[![demo page](https://img.shields.io/badge/Demo_Page-Github.io-blue)](https://flexislm.github.io)
 
 
 
@@ -9,11 +9,7 @@
 This repository contains the code for our paper "FlexiSLM: A Spoken Language Model with Dynamic and Controllable Frame Rate". Reproduced data and checkpoints, along with complete guide to train with the data, will be released soon this month.
 
 
-About our paper: FlexiSLM is the first SLM that supports *dynamic* and *controllable* frame rates on both speech input and output. A single trained model can be steered between 12.5 Hz down to 4.0 Hz without retraining, and its dynamic frame rate mechanism adapts to the varying complexity of speech.
-Key contributions include: 
-- **Dynamic frame rate SLM framework and validation.** We introduce FlexiSLM, the first dynamic frame rate SLM framework, with dynamic frame compression on both speech input and output. Experiments show strong performance at 12.5 Hz and 6.25 Hz, with graceful degradation at 5.0 Hz and 4.0 Hz.
-- **Accurate and practical frame rate control.** We propose direct frame rate conditioning, letting users specify the average output frame rate instead of indirectly tuning a merging threshold. This makes FlexiSLM, to our knowledge, the first SLM with frame rate controllability.
-- **Strong quality-efficiency trade-off.** At 6.25 Hz output, FlexiSLM roughly *halves* AR inference time relative to 12.5 Hz with only minor quality degradation; at high-quality operating points, it outperforms fixed-rate 7B baselines such as Qwen2.5-Omni and Kimi-Audio.
+About our paper: FlexiSLM is the first SLM that supports *dynamic* and *controllable* frame rates on both speech input and output. A single trained model can be steered between 12.5 Hz down to 4.0 Hz without retraining, and its dynamic frame rate mechanism adapts to the varying complexity of speech. Our paper's key contributions include dynamic frame rate SLM framework and validation, accurate and practical frame rate control, and strong quality-efficiency trade-off.
 
 <!-- ![FlexiSLM architecture](assets/flexislm_architecture.png) -->
 
@@ -77,8 +73,8 @@ Training arguments are stored in YAML files under `config/`, while the launch sc
 | --- | --- | --- |
 | Stage 1 | `config/train_stage1.yaml` | `scripts/train_stage1.sh` |
 | Stage 2 | `config/train_stage2.yaml` | `scripts/train_stage2.sh` |
-<!-- | Stage 2 (v1 merging) | `config/train_stage2_v1merging.yaml` | `scripts/train_stage2_v1merging.sh` | -->
 | Stage 3 | `config/train_stage3.yaml` | `scripts/train_stage3.sh` |
+<!-- | Stage 2 (v1 merging) | `config/train_stage2_v1merging.yaml` | `scripts/train_stage2_v1merging.sh` | -->
 
 The YAML values can be overridden from the command line:
 

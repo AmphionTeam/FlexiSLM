@@ -14,7 +14,7 @@ import tarfile
 import tempfile
 import time
 import traceback
-from collections import defaultdict
+from collections import OrderedDict, defaultdict
 from typing import Dict, List, Optional, Sequence
 import re
 import librosa
@@ -458,7 +458,30 @@ class Qwen2Dataset(BaseDataset):
         
         # Counter for filtered samples (e.g., code-containing samples)
         self.filtered_samples = 0
-        self._wds_tar_cache = {}
+        self._wds_tar_cache = OrderedDict()
+        self._wds_tar_cache_maxsize = max(
+            1, int(self.cfg.get("webdataset_tar_cache_size", 300))
+        )
+
+    def _close_all_wds_cache(self):
+        while self._wds_tar_cache:
+            _, tar_obj = self._wds_tar_cache.popitem(last=False)
+            try:
+                tar_obj.close()
+            except Exception:
+                pass
+
+    def __getstate__(self):
+        # TarFile objects cannot be pickled into spawned DataLoader workers.
+        state = self.__dict__.copy()
+        state["_wds_tar_cache"] = OrderedDict()
+        return state
+
+    def __del__(self):
+        try:
+            self._close_all_wds_cache()
+        except Exception:
+            pass
 
     def _load_audio_from_wds_uri(self, uri: str):
         parsed = _parse_wds_uri(uri)
@@ -466,9 +489,17 @@ class Qwen2Dataset(BaseDataset):
             raise ValueError(f"Invalid wds uri: {uri}")
         tar_path, member, channel = parsed
         tar_obj = self._wds_tar_cache.get(tar_path)
-        if tar_obj is None:
+        if tar_obj is not None:
+            self._wds_tar_cache.move_to_end(tar_path)
+        else:
             tar_obj = tarfile.open(tar_path, mode="r")
             self._wds_tar_cache[tar_path] = tar_obj
+            while len(self._wds_tar_cache) > self._wds_tar_cache_maxsize:
+                _, evicted = self._wds_tar_cache.popitem(last=False)
+                try:
+                    evicted.close()
+                except Exception:
+                    pass
         fp = tar_obj.extractfile(member)
         if fp is None:
             raise FileNotFoundError(f"Member {member} not found in tar {tar_path}")
@@ -489,7 +520,7 @@ class Qwen2Dataset(BaseDataset):
         Priority order (fastest → slowest fallback):
 
         1. ``num_tokens_est`` column – single pre-computed int per sample written
-           by ``src/dataset/precompute_audio_durations.py``; zero Python computation.
+           by ``local/precompute_audio_durations.py``; zero Python computation.
         2. ``audio_tokens`` + ``messages`` columns – sum pre-computed per-audio
            int token counts, add char-based text estimate.
         3. ``audio_durations`` + ``messages`` columns – derive audio tokens via

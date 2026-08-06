@@ -1,0 +1,15 @@
+# Four-sample Stage 2 S2S WebDataset recipe for the one-step debug launcher.
+# The launcher exports these paths and rebuilds the tiny JSONL index before
+# training, so workers only open audio members needed by the selected samples.
+
+xlsx_sample_num: 1
+webdataset_tar_cache_size: 2
+
+dataset:
+  stage2_s2s_webdataset_debug:
+    ratio: 1.0
+    num: 4
+    data_format: webdataset
+    webdataset_index_path: ${S2S_DEBUG_INDEX}
+    data_paths:
+      - ${S2S_DATA_ROOT}

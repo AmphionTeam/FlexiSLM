@@ -24,13 +24,13 @@ is the fastest possible path for the TokenBudgetBatchSampler.
 Usage
 -----
 # Single file:
-python src/dataset/precompute_audio_durations.py \\
+python local/precompute_audio_durations.py \\
     --input path/to/VoiceAssistant-400K/data.jsonl \\
     --audio-root path/to/VoiceAssistant-400K/audio \\
     --workers 32
 
 # Batch mode – process every data_paths entry in a YAML config:
-python src/dataset/precompute_audio_durations.py \\
+python local/precompute_audio_durations.py \\
     --yaml path/to/dataset_train.yaml \\
     --workers 32
 

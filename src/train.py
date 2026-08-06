@@ -1180,13 +1180,16 @@ def main():
         if trainer.is_fsdp_enabled:
             trainer.accelerator.state.fsdp_plugin.set_state_dict_type("FULL_STATE_DICT")
         
-        # Save model (VQAdaptor is saved automatically inside trainer.save_model()).
-        trainer.save_model()
-        
-        if model_args.use_lora and PEFT_AVAILABLE:
-            logger.info("LoRA model with InterleavedS2S components saved successfully!")
+        # Skip the large final checkpoint for one-step smoke tests when requested.
+        if os.environ.get("SKIP_FINAL_SAVE_MODEL", "0") == "1":
+            logger.warning("SKIP_FINAL_SAVE_MODEL=1: skipping final trainer.save_model().")
         else:
-            logger.info("Full InterleavedS2S model saved successfully!")
+            # VQAdaptor is saved automatically inside trainer.save_model().
+            trainer.save_model()
+            if model_args.use_lora and PEFT_AVAILABLE:
+                logger.info("LoRA model with InterleavedS2S components saved successfully!")
+            else:
+                logger.info("Full InterleavedS2S model saved successfully!")
 
         metrics = train_result.metrics
 

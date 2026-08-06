@@ -15,7 +15,7 @@ output_checkpoints
 
 *.o
 *.png
-outputs
+/outputs/
 *.log
 *.wav
 *.zip
@@ -83,3 +83,6 @@ coverage.xml
 # Local files
 scripts/yutong
 config/yutong
+
+# Local path reference documentation
+/docs/

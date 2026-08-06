@@ -2,6 +2,9 @@
 
 [![arXiv Paper](https://img.shields.io/badge/arXiv_Paper-2606.31247-b31b1b)](https://arxiv.org/abs/2606.31247)
 [![demo page](https://img.shields.io/badge/Demo_Page-Github.io-blue)](https://flexislm.github.io)
+[![dataset](https://img.shields.io/badge/FlexiSLM_Data-2M_speech2speech-yellow?logo=huggingface&logoColor=white)](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-2M-s2s-compact)
+[![dataset](https://img.shields.io/badge/FlexiSLM_Data-4M_speech2speech-yellow?logo=huggingface&logoColor=white)](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-4M-s2s)
+
 
 
 
@@ -18,10 +21,38 @@ Overall FlexiSLM architecture is a Thinker-Talker model with dynamic frame-rate 
 <!-- The architecture of FlexiSLM is shown in the figure above.  -->
 
 ## News
+- **August 6, 2026: Data release**. We have released training data resources on HuggingFace, including [FlexiSLM/FlexiSLM-Data-4M-s2s](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-4M-s2s), [FlexiSLM/FlexiSLM-Data-2M-s2s-compact](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-2M-s2s-compact), [FlexiSLM/FlexiSLM-Data-5M-t2t](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-5M-t2t). These data are reproduced based on the paper's data pipeline.
 - **August 2, 2026: Code release**. We have released the training and inference code of FlexiSLM-7B.
-- Before September 1, 2026: Planned Reproduced FlexiSLM-Data and checkpoint release: We plan to release a reproduced version of FlexiSLM-7B and 5M samples of reproduced speech-to-speech dialog training data. We plan to release them before September 2026. 
+- Before September 1, 2026: Planned Reproduced checkpoint release: We plan to release a reproduced version of FlexiSLM-7B and 0.5B. We plan to release them before September 2026. 
 
-## Repository Layout
+## FlexiSLM-Data
+We open-source FlexiSLM-Data constructed using the following pipeline:
+
+1. **Prompt collection and response generation.** 
+Text prompts are collected from public QA,
+   instruction-following, and dialogue datasets (see the table below). 
+Then, all text responses are generated with Qwen3-Omni-30B-A3B. The 5M samples data collected after this stage is released in [🤗FlexiSLM/FlexiSLM-Data-5M-t2t](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-5M-t2t)
+2. **Speech synthesis.** Responses are synthesized with **Qwen3-TTS**. Prompts are synthesized with
+   Fish-Audio TTS](https://huggingface.co/fishaudio/s1-mini), with random speaker prompts. 
+   After this stage, there are 4.2M samples and 26k hours of audio shipped here in [🤗FlexiSLM/FlexiSLM-Data-4M-s2s](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-4M-s2s).
+3. **Quality filtering and mp3-format compression**. Apply more strict filtering and converts all audios to mp3 format. This results in 2M samples and 15k hours of audio, released in [🤗FlexiSLM/FlexiSLM-Data-2M-s2s-compact](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-2M-s2s-compact)). The size of this dataset is less than 500G.
+
+
+## Training Guide
+
+### Environment Setup
+
+1. Clone the repository:
+```bash
+git clone https://github.com/AmphionTeam/FlexiSLM.git
+cd FlexiSLM
+```
+
+2. Install dependencies:
+```bash
+pip install -r requirements.txt
+```
+### Repository Layout
 
 ```text
 FlexiSLM/
@@ -43,22 +74,6 @@ FlexiSLM/
 ```
 
 Keep datasets, model checkpoints, training outputs, logs, and temporary files outside the repository. Place reusable runtime code under `src/`; reserve `local/` for offline or corpus-specific utilities, and keep `scripts/` limited to executable shell entrypoints.
-
-## Training Guide
-
-
-### Environment Setup
-
-1. Clone the repository:
-```bash
-git clone https://github.com/AmphionTeam/FlexiSLM.git
-cd FlexiSLM
-```
-
-2. Install dependencies:
-```bash
-pip install -r requirements.txt
-```
 
 ### Training Scripts
 FlexiSLM training progresses in 3 stages:
@@ -127,12 +142,12 @@ Important constraints:
 Step 2: use the precompute script to append audio duration/token metadata.
 
 Script path:
-- `src/dataset/precompute_audio_durations.py`
+- `local/precompute_audio_durations.py`
 
 Single JSONL:
 
 ```bash
-python src/dataset/precompute_audio_durations.py \
+python local/precompute_audio_durations.py \
   --input path/to/train.jsonl \
   --audio-root path/to/audio_root \
   --workers 32
@@ -141,7 +156,7 @@ python src/dataset/precompute_audio_durations.py \
 Batch mode (process all `data_paths` listed in a YAML file):
 
 ```bash
-python src/dataset/precompute_audio_durations.py \
+python local/precompute_audio_durations.py \
   --yaml path/to/train_recipe.yaml \
   --workers 32
 ```
@@ -177,8 +192,44 @@ dataset:
 
 Supported `data_paths` types:
 - JSONL file
-- local directory / file containing WebDataset `.tar` shards (`data_format: webdataset`)
+- WebDataset tar path, directory, or glob (`data_format: webdataset`)
 - parquet/local HF dataset path or HF dataset id
+
+For WebDataset, build an index before training so distributed workers do not
+scan every tar shard at startup:
+
+```bash
+python local/precompute_webdataset_index.py \
+  --input 'path/to/shards/*.tar' \
+  --output path/to/train.webdataset.jsonl \
+  --task tts \
+  --prompt-template 'Read the following text out loud: {text}'
+```
+
+Then point the recipe at both the tar source and precomputed index:
+
+```yaml
+dataset:
+  my_webdataset:
+    ratio: 1.0
+    data_format: webdataset
+    webdataset_index_path: path/to/train.webdataset.jsonl
+    data_paths:
+      - path/to/shards/*.tar
+```
+
+The index stores `wds://<tar>::<member>#ch=<channel>` references. Audio remains
+inside the tar shards and is decoded on demand during training.
+
+Run a one-step Stage 2 smoke test against the local S2S WebDataset with:
+
+```bash
+bash scripts/debug_stage2_s2s_webdataset.sh
+```
+
+The launcher indexes four samples from the first training shard, uses one GPU
+by default, disables remote reporting and checkpoint saving, and runs a single
+optimizer step. Override `S2S_DATA_ROOT` or `S2S_DEBUG_SHARD` when needed.
 
 ## Inference Guide
 

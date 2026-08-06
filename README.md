@@ -2,6 +2,9 @@
 
 [![arXiv Paper](https://img.shields.io/badge/arXiv_Paper-2606.31247-b31b1b)](https://arxiv.org/abs/2606.31247)
 [![demo page](https://img.shields.io/badge/Demo_Page-Github.io-blue)](https://flexislm.github.io)
+[![dataset](https://img.shields.io/badge/FlexiSLM_Data_2M-yellow?logo=huggingface&logoColor=white)](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-2M-s2s-compact)
+[![dataset](https://img.shields.io/badge/FlexiSLM_Data_4M-yellow?logo=huggingface&logoColor=white)](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-2M-s2s-compact)
+
 
 
 
@@ -18,10 +21,26 @@ Overall FlexiSLM architecture is a Thinker-Talker model with dynamic frame-rate 
 <!-- The architecture of FlexiSLM is shown in the figure above.  -->
 
 ## News
+- **August 6, 2026: Data release**. We have released training data resources on HuggingFace, including [**FlexiSLM/FlexiSLM-Data-4M-s2s**](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-4M-s2s), [**FlexiSLM/FlexiSLM-Data-2M-s2s-compact**](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-2M-s2s-compact), [**FlexiSLM/FlexiSLM-Data-5M-t2t**](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-5M-t2t). These data are reproduced based on the paper's data pipeline.
 - **August 2, 2026: Code release**. We have released the training and inference code of FlexiSLM-7B.
 - Before September 1, 2026: Planned Reproduced FlexiSLM-Data and checkpoint release: We plan to release a reproduced version of FlexiSLM-7B and 5M samples of reproduced speech-to-speech dialog training data. We plan to release them before September 2026. 
 
-## Repository Layout
+
+## Training Guide
+
+### Environment Setup
+
+1. Clone the repository:
+```bash
+git clone https://github.com/AmphionTeam/FlexiSLM.git
+cd FlexiSLM
+```
+
+2. Install dependencies:
+```bash
+pip install -r requirements.txt
+```
+### Repository Layout
 
 ```text
 FlexiSLM/
@@ -43,22 +62,6 @@ FlexiSLM/
 ```
 
 Keep datasets, model checkpoints, training outputs, logs, and temporary files outside the repository. Place reusable runtime code under `src/`; reserve `local/` for offline or corpus-specific utilities, and keep `scripts/` limited to executable shell entrypoints.
-
-## Training Guide
-
-
-### Environment Setup
-
-1. Clone the repository:
-```bash
-git clone https://github.com/AmphionTeam/FlexiSLM.git
-cd FlexiSLM
-```
-
-2. Install dependencies:
-```bash
-pip install -r requirements.txt
-```
 
 ### Training Scripts
 FlexiSLM training progresses in 3 stages:

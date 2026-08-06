@@ -83,3 +83,6 @@ coverage.xml
 # Local files
 scripts/yutong
 config/yutong
+
+# Local path reference documentation
+/docs/

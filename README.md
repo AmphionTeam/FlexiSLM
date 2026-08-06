@@ -2,8 +2,8 @@
 
 [![arXiv Paper](https://img.shields.io/badge/arXiv_Paper-2606.31247-b31b1b)](https://arxiv.org/abs/2606.31247)
 [![demo page](https://img.shields.io/badge/Demo_Page-Github.io-blue)](https://flexislm.github.io)
-[![dataset](https://img.shields.io/badge/FlexiSLM_Data_2M-yellow?logo=huggingface&logoColor=white)](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-2M-s2s-compact)
-[![dataset](https://img.shields.io/badge/FlexiSLM_Data_4M-yellow?logo=huggingface&logoColor=white)](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-2M-s2s-compact)
+[![dataset](https://img.shields.io/badge/FlexiSLM_Data_2M_s2s-yellow?logo=huggingface&logoColor=white)](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-2M-s2s-compact)
+[![dataset](https://img.shields.io/badge/FlexiSLM_Data_4M_s2s-yellow?logo=huggingface&logoColor=white)](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-4M-s2s)
 
 
 
@@ -21,9 +21,21 @@ Overall FlexiSLM architecture is a Thinker-Talker model with dynamic frame-rate 
 <!-- The architecture of FlexiSLM is shown in the figure above.  -->
 
 ## News
-- **August 6, 2026: Data release**. We have released training data resources on HuggingFace, including [**FlexiSLM/FlexiSLM-Data-4M-s2s**](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-4M-s2s), [**FlexiSLM/FlexiSLM-Data-2M-s2s-compact**](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-2M-s2s-compact), [**FlexiSLM/FlexiSLM-Data-5M-t2t**](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-5M-t2t). These data are reproduced based on the paper's data pipeline.
+- **August 6, 2026: Data release**. We have released training data resources on HuggingFace, including [FlexiSLM/FlexiSLM-Data-4M-s2s](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-4M-s2s), [FlexiSLM/FlexiSLM-Data-2M-s2s-compact](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-2M-s2s-compact), [FlexiSLM/FlexiSLM-Data-5M-t2t](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-5M-t2t). These data are reproduced based on the paper's data pipeline.
 - **August 2, 2026: Code release**. We have released the training and inference code of FlexiSLM-7B.
-- Before September 1, 2026: Planned Reproduced FlexiSLM-Data and checkpoint release: We plan to release a reproduced version of FlexiSLM-7B and 5M samples of reproduced speech-to-speech dialog training data. We plan to release them before September 2026. 
+- Before September 1, 2026: Planned Reproduced checkpoint release: We plan to release a reproduced version of FlexiSLM-7B and 0.5B. We plan to release them before September 2026. 
+
+## FlexiSLM-Data
+We open-source FlexiSLM-Data constructed using the following pipeline:
+
+1. **Prompt collection and response generation.** 
+Text prompts are collected from public QA,
+   instruction-following, and dialogue datasets (see the table below). 
+Then, all text responses are generated with Qwen3-Omni-30B-A3B. The 5M samples data collected after this stage is released in [🤗FlexiSLM/FlexiSLM-Data-5M-t2t](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-5M-t2t)
+2. **Speech synthesis.** Responses are synthesized with **Qwen3-TTS**. Prompts are synthesized with
+   Fish-Audio TTS](https://huggingface.co/fishaudio/s1-mini), with random speaker prompts. 
+   After this stage, there are 4.2M samples and 26k hours of audio shipped here in [🤗FlexiSLM/FlexiSLM-Data-4M-s2s](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-4M-s2s).
+3. **Quality filtering and mp3-format compression**. Apply more strict filtering and converts all audios to mp3 format. This results in 2M samples and 15k hours of audio, released in [🤗FlexiSLM/FlexiSLM-Data-2M-s2s-compact](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-2M-s2s-compact))
 
 
 ## Training Guide

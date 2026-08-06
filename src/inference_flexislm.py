@@ -689,9 +689,17 @@ class InterleavedS2SInference:
         
         # Load vocoder
         logger.info("Loading vocoder for flow matching decoder...")
-        from flexicodec.nar_tts.inference_voicebox import load_vocoder
+        from functools import partial
+        from flexicodec.nar_tts.vocoder_model import (
+            get_vocos_model_spectrogram,
+            mel_to_wav_vocos,
+        )
 
-        self.vocoder_decode_func, _ = load_vocoder(self.device, vocoder_path=self.config.flow_matching_vocoder_path)
+        vocos_model, _ = get_vocos_model_spectrogram(
+            vocoder_path=self.config.flow_matching_vocoder_path,
+            device=self.device,
+        )
+        self.vocoder_decode_func = partial(mel_to_wav_vocos, vocos_model)
         
         # Load feature extractor for flow matching
         self.feature_extractor = FBankGen(sr=16000)

@@ -30,7 +30,7 @@ We open-source FlexiSLM-Data constructed using the following pipeline:
 
 1. **Prompt collection and response generation.** 
 Text prompts are collected from public QA,
-   instruction-following, and dialogue datasets (see the table below). 
+   instruction-following, and dialogue datasets. 
 Then, all text responses are generated with Qwen3-Omni-30B-A3B. The 5M samples data collected after this stage is released in [🤗FlexiSLM/FlexiSLM-Data-5M-t2t](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-5M-t2t)
 2. **Speech synthesis.** Responses are synthesized with **Qwen3-TTS**. Prompts are synthesized with
    Fish-Audio TTS, with random speaker prompts. 

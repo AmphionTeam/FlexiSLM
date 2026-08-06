@@ -158,17 +158,29 @@ def _find_sibling_audio_member(json_member: str, member_names: set) -> str:
     return ""
 
 
-def _resolve_webdataset_audio_member(
+def _resolve_webdataset_audio_members(
     sample: dict,
     json_member: str,
     member_names: set,
     audio_variant: str,
-) -> str:
+) -> list:
+    variant = str(audio_variant or "noisy").strip().lower()
+    candidates = sample.get("audios_nonoise") if variant == "nonoise" else None
+    if not isinstance(candidates, list) or not candidates:
+        candidates = sample.get("audios")
+
+    if isinstance(candidates, list) and candidates:
+        resolved = [_lookup_tar_member(member_names, item) for item in candidates]
+        if all(resolved):
+            return resolved
+
     candidate = _choose_member_from_json(sample, audio_variant)
     found = _lookup_tar_member(member_names, candidate)
     if found:
-        return found
-    return _find_sibling_audio_member(json_member, member_names)
+        return [found]
+
+    sibling = _find_sibling_audio_member(json_member, member_names)
+    return [sibling] if sibling else []
 
 
 def _format_audio_text_webdataset_row(
@@ -214,16 +226,20 @@ def _format_audio_text_webdataset_row(
     return row
 
 
-def _build_wds_audio_refs(sample: dict, tar_path: str, audio_member: str) -> list:
+def _build_wds_audio_refs(sample: dict, tar_path: str, audio_members: list) -> list:
     roles = _first_turn_audio_roles(sample.get("messages", []))
-    refs = []
+    if len(audio_members) > 1:
+        # Separate per-turn members, as used by the FlexiSLM S2S shards.
+        return [f"wds://{tar_path}::{member}#ch=0" for member in audio_members]
+
+    audio_member = audio_members[0]
     if roles:
-        for role in roles:
-            ch = 1 if role in ASSISTANT_ROLES else 0
-            refs.append(f"wds://{tar_path}::{audio_member}#ch={ch}")
-    else:
-        refs.append(f"wds://{tar_path}::{audio_member}#ch=0")
-    return refs
+        # A single multi-channel member stores user/assistant audio in channels 0/1.
+        return [
+            f"wds://{tar_path}::{audio_member}#ch={1 if role in ASSISTANT_ROLES else 0}"
+            for role in roles
+        ]
+    return [f"wds://{tar_path}::{audio_member}#ch=0"]
 
 
 def _iter_webdataset_rows(
@@ -265,29 +281,29 @@ def _iter_webdataset_rows(
                     except Exception:
                         continue
 
-                    audio_member = _resolve_webdataset_audio_member(
+                    audio_members = _resolve_webdataset_audio_members(
                         row,
                         member.name,
                         member_names,
                         audio_variant,
                     )
-                    if not audio_member:
+                    if not audio_members:
                         continue
 
                     if isinstance(row.get("messages"), list):
-                        row["audios"] = _build_wds_audio_refs(row, tar_path, audio_member)
+                        row["audios"] = _build_wds_audio_refs(row, tar_path, audio_members)
                     else:
                         row = _format_audio_text_webdataset_row(
                             row,
                             tar_path,
-                            audio_member,
+                            audio_members[0],
                             data_info,
                         )
                         if not row:
                             continue
 
                     row["webdataset_tar_path"] = tar_path
-                    row["webdataset_audio_member"] = audio_member
+                    row["webdataset_audio_member"] = audio_members[0]
                     row["webdataset_audio_variant"] = audio_variant
                     yielded += 1
                     if yielded % log_interval_samples == 0:
@@ -633,6 +649,8 @@ class BaseDataset(torch.utils.data.Dataset):
                 continue
 
             for data_idx, data_path in enumerate(data_info["data_paths"]):
+                if isinstance(data_path, str):
+                    data_path = os.path.expanduser(os.path.expandvars(data_path))
 
                 data_format = str(data_info.get("data_format", "")).strip().lower()
                 is_webdataset = data_format in {"webdataset", "webdataset_tar", "duplex_webdataset"}

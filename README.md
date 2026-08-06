@@ -209,6 +209,16 @@ dataset:
 The index stores `wds://<tar>::<member>#ch=<channel>` references. Audio remains
 inside the tar shards and is decoded on demand during training.
 
+Run a one-step Stage 2 smoke test against the local S2S WebDataset with:
+
+```bash
+bash scripts/debug_stage2_s2s_webdataset.sh
+```
+
+The launcher indexes four samples from the first training shard, uses one GPU
+by default, disables remote reporting and checkpoint saving, and runs a single
+optimizer step. Override `S2S_DATA_ROOT` or `S2S_DEBUG_SHARD` when needed.
+
 ## Inference Guide
 
 Primary inference script: `src/inference_flexislm.py`.

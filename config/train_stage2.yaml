@@ -76,7 +76,7 @@ adam_beta2: 0.95
 adam_epsilon: 1.0e-8
 warmup_ratio: 0.05
 lr_scheduler_type: cosine_with_min_lr
-lr_scheduler_kwargs: '{"min_lr": 1e-7}'
+lr_scheduler_kwargs: {min_lr: 1.0e-7}
 logging_steps: 100
 log_level: info
 model_max_length: 1024

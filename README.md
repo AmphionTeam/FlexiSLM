@@ -35,7 +35,7 @@ Then, all text responses are generated with Qwen3-Omni-30B-A3B. The 5M samples d
 2. **Speech synthesis.** Responses are synthesized with **Qwen3-TTS**. Prompts are synthesized with
    Fish-Audio TTS](https://huggingface.co/fishaudio/s1-mini), with random speaker prompts. 
    After this stage, there are 4.2M samples and 26k hours of audio shipped here in [🤗FlexiSLM/FlexiSLM-Data-4M-s2s](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-4M-s2s).
-3. **Quality filtering and mp3-format compression**. Apply more strict filtering and converts all audios to mp3 format. This results in 2M samples and 15k hours of audio, released in [🤗FlexiSLM/FlexiSLM-Data-2M-s2s-compact](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-2M-s2s-compact))
+3. **Quality filtering and mp3-format compression**. Apply more strict filtering and converts all audios to mp3 format. This results in 2M samples and 15k hours of audio, released in [🤗FlexiSLM/FlexiSLM-Data-2M-s2s-compact](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-2M-s2s-compact)). The size of this dataset is less than 500G.
 
 
 ## Training Guide

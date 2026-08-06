@@ -1,1 +1,1 @@
-"""Evaluate existing FlexiSLM prediction traces."""
+"""Evaluate unified FlexiSLM inference traces."""

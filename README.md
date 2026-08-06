@@ -130,12 +130,12 @@ Important constraints:
 Step 2: use the precompute script to append audio duration/token metadata.
 
 Script path:
-- `src/dataset/precompute_audio_durations.py`
+- `local/precompute_audio_durations.py`
 
 Single JSONL:
 
 ```bash
-python src/dataset/precompute_audio_durations.py \
+python local/precompute_audio_durations.py \
   --input path/to/train.jsonl \
   --audio-root path/to/audio_root \
   --workers 32
@@ -144,7 +144,7 @@ python src/dataset/precompute_audio_durations.py \
 Batch mode (process all `data_paths` listed in a YAML file):
 
 ```bash
-python src/dataset/precompute_audio_durations.py \
+python local/precompute_audio_durations.py \
   --yaml path/to/train_recipe.yaml \
   --workers 32
 ```
@@ -180,8 +180,34 @@ dataset:
 
 Supported `data_paths` types:
 - JSONL file
-- local directory / file containing WebDataset `.tar` shards (`data_format: webdataset`)
+- WebDataset tar path, directory, or glob (`data_format: webdataset`)
 - parquet/local HF dataset path or HF dataset id
+
+For WebDataset, build an index before training so distributed workers do not
+scan every tar shard at startup:
+
+```bash
+python local/precompute_webdataset_index.py \
+  --input 'path/to/shards/*.tar' \
+  --output path/to/train.webdataset.jsonl \
+  --task tts \
+  --prompt-template 'Read the following text out loud: {text}'
+```
+
+Then point the recipe at both the tar source and precomputed index:
+
+```yaml
+dataset:
+  my_webdataset:
+    ratio: 1.0
+    data_format: webdataset
+    webdataset_index_path: path/to/train.webdataset.jsonl
+    data_paths:
+      - path/to/shards/*.tar
+```
+
+The index stores `wds://<tar>::<member>#ch=<channel>` references. Audio remains
+inside the tar shards and is decoded on demand during training.
 
 ## Inference Guide
 

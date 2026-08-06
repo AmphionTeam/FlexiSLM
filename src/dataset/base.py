@@ -26,6 +26,12 @@ logger.setLevel(logging.INFO)
 
 HUMAN_ROLES = {"user", "human"}
 ASSISTANT_ROLES = {"assistant", "gpt", "assistant_content"}
+AUDIO_EXTENSIONS = (".wav", ".flac", ".mp3", ".m4a", ".ogg")
+WEBDATASET_DEBUG_COLUMNS = (
+    "webdataset_tar_path",
+    "webdataset_audio_member",
+    "webdataset_audio_variant",
+)
 
 
 def _jsonl_with_durations_path(jsonl_path: str) -> str:
@@ -34,9 +40,15 @@ def _jsonl_with_durations_path(jsonl_path: str) -> str:
 
 
 def _precompute_audio_durations_script_path() -> str:
-    return os.path.join(
-        os.path.dirname(os.path.abspath(__file__)),
-        "precompute_audio_durations.py",
+    # Repo root: FlexiSLM/src/dataset/ -> ../../local/
+    return os.path.normpath(
+        os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "..",
+            "..",
+            "local",
+            "precompute_audio_durations.py",
+        )
     )
 
 
@@ -112,7 +124,94 @@ def _choose_member_from_json(sample: dict, audio_variant: str) -> str:
         noisy_name = variants.get("noisy")
         if isinstance(noisy_name, str) and noisy_name:
             return noisy_name
+    for key in ("wav", "audio", "audio_path", "path"):
+        value = sample.get(key)
+        if isinstance(value, str) and value:
+            return value
     return ""
+
+
+def _lookup_tar_member(member_names: set, name: str) -> str:
+    if not isinstance(name, str) or not name:
+        return ""
+    clean = name.replace("\\", "/")
+    stripped = clean.lstrip("./")
+    candidates = [
+        clean,
+        stripped,
+        f"./{stripped}",
+        os.path.basename(stripped),
+        f"./{os.path.basename(stripped)}",
+    ]
+    for candidate in candidates:
+        if candidate in member_names:
+            return candidate
+    return ""
+
+
+def _find_sibling_audio_member(json_member: str, member_names: set) -> str:
+    base, _ = os.path.splitext(json_member)
+    for ext in AUDIO_EXTENSIONS:
+        found = _lookup_tar_member(member_names, f"{base}{ext}")
+        if found:
+            return found
+    return ""
+
+
+def _resolve_webdataset_audio_member(
+    sample: dict,
+    json_member: str,
+    member_names: set,
+    audio_variant: str,
+) -> str:
+    candidate = _choose_member_from_json(sample, audio_variant)
+    found = _lookup_tar_member(member_names, candidate)
+    if found:
+        return found
+    return _find_sibling_audio_member(json_member, member_names)
+
+
+def _format_audio_text_webdataset_row(
+    sample: dict,
+    tar_path: str,
+    audio_member: str,
+    data_info: dict,
+) -> dict:
+    text_key = str(data_info.get("text_key", "text"))
+    text = str(sample.get(text_key, "")).strip()
+    if not text:
+        return {}
+
+    task = str(data_info.get("webdataset_task", data_info.get("task", "tts"))).strip().lower()
+    audio_ref = f"wds://{tar_path}::{audio_member}#ch=0"
+    row = {}
+
+    if task in {"asr", "s2t", "speech_to_text"}:
+        prompt = str(data_info.get("asr_prompt", "Transcribe the following audio:"))
+        row["messages"] = [
+            {"role": "user", "content": f"{prompt}<|audio|>"},
+            {"role": "assistant", "content": text},
+        ]
+    else:
+        prompt_template = str(
+            data_info.get(
+                "tts_prompt_template",
+                "Read the following text out loud: {text}",
+            )
+        )
+        row["messages"] = [
+            {"role": "user", "content": prompt_template.format(text=text)},
+            {"role": "assistant", "content": f"{text}<|audio|>"},
+        ]
+
+    row["audios"] = [audio_ref]
+    duration = sample.get("duration")
+    if duration is not None:
+        try:
+            row["audio_durations"] = [float(duration)]
+        except Exception:
+            pass
+    return row
 
 
 def _build_wds_audio_refs(sample: dict, tar_path: str, audio_member: str) -> list:
@@ -127,56 +226,221 @@ def _build_wds_audio_refs(sample: dict, tar_path: str, audio_member: str) -> lis
     return refs
 
 
-def load_webdataset_duplex(data_path, data_info, data_name, output_dir):
-    """
-    Load duplex WebDataset tar shards and convert rows into amphion format with
-    tar-member audio references (wds://...::member#ch=X).
-    """
-    from datasets import Dataset
+def _iter_webdataset_rows(
+    tar_paths,
+    data_info,
+    audio_variant,
+    max_rows=None,
+    tar_fingerprint=None,
+    log_label="WebDataset",
+):
+    _ = tar_fingerprint
+    total_tars = len(tar_paths)
+    yielded = 0
+    log_interval_samples = 10000
+    tar_completed = 0
+    for tar_path in tar_paths:
+        try:
+            with tarfile.open(tar_path, mode="r") as tf:
+                json_members = []
+                member_names = set()
+                for member in tf:
+                    if not member.isfile():
+                        continue
+                    member_names.add(member.name)
+                    if member.name.lower().endswith(".json"):
+                        json_members.append(member)
+                for member in json_members:
+                    if max_rows is not None and yielded >= max_rows:
+                        logger.info(
+                            f"{log_label}: reached max_rows={max_rows} after {yielded} samples "
+                            f"from {tar_completed}/{total_tars} tars, stopping"
+                        )
+                        return
+                    try:
+                        fp = tf.extractfile(member)
+                        if fp is None:
+                            continue
+                        row = json.loads(fp.read().decode("utf-8"))
+                    except Exception:
+                        continue
 
-    tar_paths = _collect_webdataset_tar_paths(data_path)
-    if not tar_paths:
-        logger.warning(f"No .tar shards found for webdataset path: {data_path}")
-        return None
+                    audio_member = _resolve_webdataset_audio_member(
+                        row,
+                        member.name,
+                        member_names,
+                        audio_variant,
+                    )
+                    if not audio_member:
+                        continue
 
-    audio_variant = str(data_info.get("audio_variant", "noisy")).strip().lower()
+                    if isinstance(row.get("messages"), list):
+                        row["audios"] = _build_wds_audio_refs(row, tar_path, audio_member)
+                    else:
+                        row = _format_audio_text_webdataset_row(
+                            row,
+                            tar_path,
+                            audio_member,
+                            data_info,
+                        )
+                        if not row:
+                            continue
+
+                    row["webdataset_tar_path"] = tar_path
+                    row["webdataset_audio_member"] = audio_member
+                    row["webdataset_audio_variant"] = audio_variant
+                    yielded += 1
+                    if yielded % log_interval_samples == 0:
+                        logger.info(
+                            f"{log_label}: yielded {yielded} samples "
+                            f"from {tar_completed + 1}/{total_tars} tars"
+                        )
+                    yield row
+            tar_completed += 1
+            if tar_completed % 10 == 0 or tar_completed == total_tars:
+                logger.info(
+                    f"{log_label}: completed {tar_completed}/{total_tars} tar files, "
+                    f"yielded {yielded} samples so far"
+                )
+        except Exception as e:
+            logger.warning(f"Failed reading tar {tar_path}: {e}")
+            continue
     logger.info(
-        "Loading webdataset duplex shards=%d from %s (audio_variant=%s)",
-        len(tar_paths),
-        data_path,
-        audio_variant,
+        f"{log_label}: finished all {total_tars} tar files, yielded {yielded} samples total"
     )
 
-    def _gen():
-        for tar_path in tar_paths:
-            try:
-                with tarfile.open(tar_path, mode="r") as tf:
-                    for member in tf:
-                        if not member.isfile() or not member.name.endswith(".json"):
-                            continue
-                        try:
-                            fp = tf.extractfile(member)
-                            if fp is None:
-                                continue
-                            row = json.loads(fp.read().decode("utf-8"))
-                        except Exception:
-                            continue
 
-                        audio_member = _choose_member_from_json(row, audio_variant)
-                        if not audio_member:
-                            continue
-                        row["audios"] = _build_wds_audio_refs(row, tar_path, audio_member)
-                        row["webdataset_tar_path"] = tar_path
-                        row["webdataset_audio_member"] = audio_member
-                        row["webdataset_audio_variant"] = audio_variant
-                        yield row
-            except Exception as e:
-                logger.warning(f"Failed reading tar {tar_path}: {e}")
-                continue
+def _resolve_webdataset_index_path(data_info, data_name):
+    index_path = data_info.get("webdataset_index_path")
+    if not isinstance(index_path, str) or not index_path.strip():
+        data_format = data_info.get("data_format", "webdataset")
+        raise ValueError(
+            f"WebDataset source '{data_name}' with data_format='{data_format}' requires "
+            "webdataset_index_path in YAML. Run local/precompute_webdataset_index.py "
+            "first to generate the JSONL index."
+        )
 
-    ds = Dataset.from_generator(_gen)
-    logger.info(f"Loaded {len(ds)} samples from webdataset path {data_path}")
+    index_path = os.path.expanduser(os.path.expandvars(index_path.strip()))
+    if not os.path.isfile(index_path):
+        raise ValueError(
+            f"WebDataset index file not found for source '{data_name}': {index_path}. "
+            "Run local/precompute_webdataset_index.py first to generate the JSONL index."
+        )
+    return index_path
+
+
+def load_webdataset_duplex(data_path, data_info, data_name, output_dir):
+    """
+    Load a precomputed WebDataset JSONL index.
+
+    The training path must not scan tar shards. The index rows are expected to
+    already contain Amphion-compatible messages/audios with wds:// references.
+    """
+    index_path = _resolve_webdataset_index_path(data_info, data_name)
+    logger.info(
+        f"Loading WebDataset[{data_name}] from precomputed index: {index_path} "
+        f"(source path: {data_path})"
+    )
+    ds = load_json(index_path, output_dir)
+    if ds is None:
+        raise ValueError(
+            f"Failed to load WebDataset index for source '{data_name}': {index_path}. "
+            "Run local/precompute_webdataset_index.py first to generate a valid JSONL index."
+        )
+    logger.info(f"Loaded {len(ds)} samples from WebDataset index {index_path}")
     return ds
+
+
+def _feature_is_null_type(feat):
+    """Check if a HF Feature is a null/all-null type (incompatible with concrete types for concatenation)."""
+    from datasets import Features, Sequence, Value
+    if isinstance(feat, Value) and feat.dtype == "null":
+        return True
+    if isinstance(feat, Sequence):
+        return _feature_is_null_type(feat.feature)
+    return False
+
+
+_KNOWN_COLUMN_DEFAULTS = None
+
+
+def _get_default_feature_for_column(column_name):
+    """Return a sensible non-null Feature type for columns that are all-null on both sides."""
+    from datasets import Sequence, Value
+
+    global _KNOWN_COLUMN_DEFAULTS
+    if _KNOWN_COLUMN_DEFAULTS is None:
+        _KNOWN_COLUMN_DEFAULTS = {
+            "audios": Sequence(Value("string")),
+            "audio_durations": Sequence(Value("float64")),
+            "audio_tokens": Sequence(Value("int64")),
+            "num_tokens_est": Value("int64"),
+        }
+    return _KNOWN_COLUMN_DEFAULTS.get(column_name, Value("string"))
+
+
+def _resolve_feature_type(column_name, left_feat, right_feat):
+    """Given two features for the same column, pick the non-null concrete type when one side is all-null."""
+    from datasets import Value
+
+    if left_feat is None:
+        return right_feat if right_feat is not None else _get_default_feature_for_column(column_name)
+    if right_feat is None:
+        return left_feat if left_feat is not None else _get_default_feature_for_column(column_name)
+
+    left_is_null = _feature_is_null_type(left_feat)
+    right_is_null = _feature_is_null_type(right_feat)
+
+    if left_is_null and not right_is_null:
+        return right_feat
+    if right_is_null and not left_is_null:
+        return left_feat
+    if left_is_null and right_is_null:
+        return _get_default_feature_for_column(column_name)
+    return left_feat
+
+
+def _concatenate_datasets_with_optional_columns(left, right):
+    """Concatenate datasets after filling source-specific optional columns and aligning feature types."""
+    from datasets import Features, Sequence, Value, concatenate_datasets
+
+    columns = list(left.column_names)
+    for column in right.column_names:
+        if column not in columns:
+            columns.append(column)
+
+    for column in columns:
+        if column not in left.column_names:
+            left = left.add_column(column, [None] * len(left))
+        if column not in right.column_names:
+            right = right.add_column(column, [None] * len(right))
+
+    left = left.select_columns(columns)
+    right = right.select_columns(columns)
+
+    aligned_features = {}
+    needs_cast = False
+    for column in columns:
+        left_feat = left.features[column]
+        right_feat = right.features[column]
+        target_feat = _resolve_feature_type(column, left_feat, right_feat)
+        aligned_features[column] = target_feat
+        if _feature_is_null_type(left_feat) or _feature_is_null_type(right_feat):
+            if target_feat != left_feat or target_feat != right_feat:
+                needs_cast = True
+
+    if needs_cast:
+        null_columns = [
+            col for col in columns
+            if _feature_is_null_type(left.features[col]) or _feature_is_null_type(right.features[col])
+        ]
+        logger.info(
+            f"Casting null-type columns to concrete features for concatenation: {null_columns}"
+        )
+        left = left.cast(Features(aligned_features))
+        right = right.cast(Features(aligned_features))
+
+    return concatenate_datasets([left, right])
 
 
 def resolve_jsonl_path_with_durations(
@@ -185,7 +449,7 @@ def resolve_jsonl_path_with_durations(
     """
     When ``training_args.max_tokens_per_batch`` is set (see ``arguments.py``), prefer
     ``data.with_durations.jsonl`` over ``data.jsonl`` when it exists. If only the base
-    JSONL exists, start ``src/dataset/precompute_audio_durations.py`` once in the background
+    JSONL exists, start ``local/precompute_audio_durations.py`` once in the background
     (rank 0 only under distributed) and load the base JSONL; the sidecar is picked up on
     a later run when present.
 
@@ -372,8 +636,6 @@ class BaseDataset(torch.utils.data.Dataset):
 
                 data_format = str(data_info.get("data_format", "")).strip().lower()
                 is_webdataset = data_format in {"webdataset", "webdataset_tar", "duplex_webdataset"}
-                if not is_webdataset:
-                    is_webdataset = len(_collect_webdataset_tar_paths(data_path)) > 0
 
                 # Allow HF hub names (e.g. "yuantuo666/qwen3omni_gends_428k_0227") or parquet paths
                 is_hf_hub = (
@@ -392,7 +654,7 @@ class BaseDataset(torch.utils.data.Dataset):
                     )  # local HF dataset dir (parquet, arrow, etc.)
                 )
 
-                if not is_hf_hub and not is_parquet and not os.path.isfile(data_path) and not os.path.isdir(data_path):
+                if not is_hf_hub and not is_parquet and not os.path.isfile(data_path) and not os.path.isdir(data_path) and not is_webdataset:
                     logger.warning(f"Data file not found {data_path}")
                     continue
 
@@ -429,11 +691,24 @@ class BaseDataset(torch.utils.data.Dataset):
                 logger.info(f"Removing debug columns from dataset: {remove_column_names}")
                 this_data = this_data.remove_columns(remove_column_names)
 
-                # sources = [data_path] * len(this_data)
+                webdataset_debug_columns = [
+                    c for c in WEBDATASET_DEBUG_COLUMNS if c in this_data.column_names
+                ]
+                if webdataset_debug_columns:
+                    logger.info(
+                        f"Removing WebDataset debug columns from dataset: {webdataset_debug_columns}"
+                    )
+                    this_data = this_data.remove_columns(webdataset_debug_columns)
+
+                # Keep both a stable numeric source id and human-readable source
+                # metadata for downstream dataset-specific masking and diagnostics.
                 sources = [source_idx] * len(this_data)
+                source_names = [data_name] * len(this_data)
+                source_paths = [str(data_path)] * len(this_data)
                 source_idx += 1
-                # sources = [data_name] * len(this_data)
                 this_data = this_data.add_column("source", sources)
+                this_data = this_data.add_column("source_name", source_names)
+                this_data = this_data.add_column("source_path", source_paths)
 
                 # OPTIMIZATION: Don't shuffle here if we are going to shuffle at the end anyway.
                 # Shuffling creates an index mapping which is heavy.
@@ -462,12 +737,11 @@ class BaseDataset(torch.utils.data.Dataset):
                 if raw_data is None:
                     raw_data = this_data
                 else:
-                    try:
-                        print(f'concatenate_datasets {raw_data} {this_data}')
-                        raw_data = concatenate_datasets([raw_data, this_data.cast(raw_data.features)])
-                    except Exception as e:
-                        print(e)
-                        breakpoint()
+                    logger.info(f"concatenate_datasets {raw_data} {this_data}")
+                    raw_data = _concatenate_datasets_with_optional_columns(
+                        raw_data,
+                        this_data,
+                    )
 
                 sampled_data[data_path] = {}
                 sampled_data[data_path]["data"] = this_data.select(

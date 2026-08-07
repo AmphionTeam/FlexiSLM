@@ -1,0 +1,321 @@
+"""Native WebDataset streaming with distributed dynamic batching."""
+
+from __future__ import annotations
+
+import logging
+import random
+from dataclasses import dataclass, field
+from typing import Any, Callable, Iterable, Iterator, Mapping, Optional, Sequence
+
+import torch
+
+from src.dataset.interleaved_processor import FlexiSampleProcessor, WorkerContext
+
+from .bucketing import (
+    BatchLimits,
+    DynamicBatchIterator,
+    pool_sort_samples,
+    projected_padding_cost,
+)
+from .layouts import AdapterContext, PhysicalLayoutRegistry
+from .shard_source import SharedEpoch, assigned_shards, current_topology
+from .shuffle import byte_bounded_shuffle
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class StreamingConfig:
+    shards: Sequence[str]
+    layout: str = "auto"
+    batch_size: int = 1
+    shuffle_max_samples: int = 4096
+    shuffle_initial_samples: int = 1024
+    shuffle_max_bytes: int = 2 * 1024**3
+    seed: int = 0
+    drop_last: bool = False
+    source_name: str = "webdataset"
+    num_batches: Optional[int] = None
+    sampling_mode: str = "finite_exact"
+    shard_shuffle: bool = True
+    batch_limits: Optional[BatchLimits] = None
+    max_consecutive_errors: int = 100
+
+    def __post_init__(self):
+        if not self.shards:
+            raise ValueError("native WebDataset requires at least one shard URL")
+        if self.batch_size <= 0:
+            raise ValueError("batch_size must be positive")
+        if self.shuffle_max_samples <= 0 or self.shuffle_max_bytes <= 0:
+            raise ValueError("shuffle sample and byte bounds must be positive")
+        if not 0 <= self.shuffle_initial_samples <= self.shuffle_max_samples:
+            raise ValueError("shuffle_initial_samples must not exceed shuffle_max_samples")
+        if self.num_batches is not None and self.num_batches <= 0:
+            raise ValueError("num_batches must be positive when configured")
+        if self.sampling_mode not in {"finite_exact", "finite_padded", "resampled"}:
+            raise ValueError("sampling_mode must be finite_exact, finite_padded, or resampled")
+        if self.sampling_mode == "resampled" and self.num_batches is None:
+            raise ValueError("resampled mode requires steps_per_epoch or num_batches")
+        if self.max_consecutive_errors <= 0:
+            raise ValueError("max_consecutive_errors must be positive")
+
+    @property
+    def effective_batch_limits(self) -> BatchLimits:
+        return self.batch_limits or BatchLimits(max_samples=self.batch_size)
+
+
+def decode_audio_asset(asset):
+    """Decode an ``AudioAsset`` from compressed in-tar bytes with SoundFile."""
+    import io
+    import soundfile as sf
+
+    try:
+        waveform, sample_rate = sf.read(
+            io.BytesIO(asset.data), dtype="float32", always_2d=True
+        )
+    except Exception as exc:
+        raise RuntimeError(
+            f"failed to decode {asset.member_key} as {asset.codec} with SoundFile: {exc}"
+        ) from exc
+    return torch.from_numpy(waveform.T.copy()), sample_rate
+
+
+def _warn_and_continue(error: Exception) -> bool:
+    logger.warning("WebDataset tar read error; skipping entry: %s", error)
+    return True
+
+
+def sequential_physical_samples(shards: Iterable[str]) -> Iterator[Mapping[str, Any]]:
+    """Open assigned shards one at a time and yield grouped physical samples."""
+    try:
+        import webdataset as wds
+    except ImportError as exc:  # pragma: no cover
+        raise RuntimeError(
+            "webdataset_stream requires the pinned 'webdataset' dependency"
+        ) from exc
+
+    from webdataset.tariterators import group_by_keys, tar_file_expander
+
+    for shard in shards:
+        # tarfile_to_samples does not explicitly close the stream returned by
+        # gopen in WebDataset 1.0.2. Own it here so early epoch termination and
+        # repeated/resampled reads cannot leak one descriptor per shard.
+        stream = wds.gopen(shard)
+        expanded = tar_file_expander(
+            [{"url": shard, "stream": stream}], handler=_warn_and_continue
+        )
+        grouped = group_by_keys(expanded, handler=_warn_and_continue)
+        try:
+            yield from grouped
+        finally:
+            grouped.close()
+            expanded.close()
+            stream.close()
+
+
+class FlexiWebDataset(torch.utils.data.IterableDataset):
+    """Rank/worker-sharded stream that emits complete dynamically sized batches."""
+
+    is_native_webdataset = True
+
+    def __init__(
+        self,
+        config: StreamingConfig,
+        processor: FlexiSampleProcessor,
+        worker_context_factory: Callable[[], WorkerContext],
+        *,
+        adapter_context: Optional[AdapterContext] = None,
+        registry: Optional[PhysicalLayoutRegistry] = None,
+        physical_samples_factory: Optional[Callable[[], Iterable[Mapping[str, Any]]]] = None,
+        shared_epoch: Optional[SharedEpoch] = None,
+    ):
+        super().__init__()
+        self.config = config
+        self.processor = processor
+        self.worker_context_factory = worker_context_factory
+        self.adapter_context = adapter_context or AdapterContext(
+            source_name=config.source_name, seed=config.seed
+        )
+        self.registry = registry or PhysicalLayoutRegistry()
+        self.physical_samples_factory = physical_samples_factory
+        self.shared_epoch = shared_epoch or SharedEpoch()
+
+    @property
+    def epoch(self) -> int:
+        return self.shared_epoch.get()
+
+    @property
+    def num_batches(self) -> Optional[int]:
+        return self.config.num_batches
+
+    def __len__(self) -> int:
+        if self.num_batches is None:
+            raise TypeError(
+                "stream length is unknown; set sampling.steps_per_epoch or train with max_steps"
+            )
+        return self.num_batches
+
+    def set_epoch(self, epoch: int) -> None:
+        self.shared_epoch.set(epoch)
+
+    def _worker_batch_limit(self) -> Optional[int]:
+        if self.num_batches is None:
+            return None
+        topology = current_topology()
+        quotient, remainder = divmod(self.num_batches, topology.num_workers)
+        return quotient + int(topology.worker_id < remainder)
+
+    def _physical_samples(self):
+        if self.physical_samples_factory is not None:
+            return iter(self.physical_samples_factory())
+        topology = current_topology()
+        mode = self.config.sampling_mode
+        shards = assigned_shards(
+            self.config.shards,
+            mode=mode,
+            seed=self.config.seed,
+            epoch=self.epoch,
+            topology=topology,
+            shuffle=self.config.shard_shuffle,
+        )
+        return sequential_physical_samples(shards)
+
+    def _logical_samples(self):
+        # AdapterContext is process-local after DataLoader worker creation.
+        context = self.adapter_context
+        context.epoch = self.epoch
+        for physical in self._physical_samples():
+            try:
+                yield from self.registry.expand(
+                    physical, context, expected_layout=self.config.layout
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Skipping invalid physical sample %s::%s: %s",
+                    physical.get("__url__", "<unknown>"),
+                    physical.get("__key__", "<unknown>"),
+                    exc,
+                )
+
+    def _prepared_samples(self):
+        topology = current_topology()
+        stream_seed = self.config.seed + 1_000_003 * self.epoch + 97 * topology.consumer_id
+        logical = byte_bounded_shuffle(
+            self._logical_samples(),
+            max_samples=self.config.shuffle_max_samples,
+            initial_samples=self.config.shuffle_initial_samples,
+            max_bytes=self.config.shuffle_max_bytes,
+            rng=random.Random(stream_seed),
+        )
+        for sample in logical:
+            try:
+                yield self.processor.prepare(sample)
+            except Exception as exc:
+                logger.warning("Skipping logical sample %s during prepare: %s", sample.uid, exc)
+
+    def _ordered_samples(self):
+        limits = self.config.effective_batch_limits
+        topology = current_topology()
+        rng = random.Random(
+            self.config.seed + 2_000_003 * self.epoch + 193 * topology.consumer_id
+        )
+        return pool_sort_samples(
+            self._prepared_samples(),
+            pool_samples=limits.pool_samples,
+            pool_bytes=limits.pool_bytes,
+            chunk_size=limits.chunk_size,
+            rng=rng,
+        )
+
+    def __iter__(self):
+        worker = self.worker_context_factory()
+        limits = self.config.effective_batch_limits
+        ordered = iter(self._ordered_samples())
+        candidates = DynamicBatchIterator(ordered, limits)
+        emitted = 0
+        batch_limit = self._worker_batch_limit()
+
+        for candidate in candidates:
+            if batch_limit is not None and emitted >= batch_limit:
+                return
+            materialized = self._materialize_with_refill(candidate, candidates, worker, limits)
+            if not materialized:
+                continue
+            required = (
+                limits.max_samples
+                if self.config.drop_last and limits.max_cost is None
+                else limits.min_samples
+            )
+            if self.config.drop_last and len(materialized) < required:
+                continue
+            yield materialized
+            emitted += 1
+
+    def _materialize_with_refill(self, batch, replacements, worker, limits):
+        output = []
+        accepted_lengths = []
+        target_size = len(batch)
+        pending = iter(batch)
+        errors = 0
+        rejected_replacements = 0
+
+        while len(output) < target_size:
+            try:
+                prepared = next(pending)
+            except StopIteration:
+                try:
+                    prepared = replacements.take_sample()
+                except StopIteration:
+                    break
+                if limits.max_cost is not None and projected_padding_cost(
+                    accepted_lengths + [prepared.lengths]
+                ) > limits.max_cost:
+                    replacements.put_back(prepared)
+                    rejected_replacements += 1
+                    break
+            try:
+                output.append(self.processor.materialize(prepared, worker))
+                accepted_lengths.append(prepared.lengths)
+                errors = 0
+                rejected_replacements = 0
+            except Exception as exc:
+                errors += 1
+                logger.warning(
+                    "Skipping logical sample %s during audio materialization: %s",
+                    prepared.canonical.uid,
+                    exc,
+                )
+                if errors >= self.config.max_consecutive_errors:
+                    raise RuntimeError(
+                        "maximum consecutive WebDataset materialization errors exceeded"
+                    ) from exc
+        return output
+
+    def build_loader(
+        self,
+        *,
+        collate_fn,
+        num_workers: int = 0,
+        pin_memory: bool = False,
+        persistent_workers: bool = False,
+        prefetch_factor: Optional[int] = None,
+    ):
+        kwargs = dict(
+            batch_size=None,
+            shuffle=False,
+            num_workers=num_workers,
+            pin_memory=pin_memory,
+            collate_fn=collate_fn,
+        )
+        if num_workers > 0:
+            kwargs["persistent_workers"] = persistent_workers
+            if prefetch_factor is not None:
+                kwargs["prefetch_factor"] = prefetch_factor
+        try:
+            import webdataset as wds
+        except ImportError as exc:
+            raise RuntimeError("webdataset_stream requires 'webdataset'") from exc
+        loader = wds.WebLoader(self, **kwargs)
+        # Transformers calls set_epoch on epoch dataloaders when available.
+        loader.set_epoch = self.set_epoch
+        return loader

@@ -14,6 +14,15 @@ from .layouts import (
     SharedAudioTasksAdapter,
     UnknownLayoutError,
 )
+from .bucketing import (
+    BatchLimits,
+    DynamicBatchIterator,
+    dynamic_batches,
+    pool_sort_samples,
+    projected_padding_cost,
+)
+from .shard_source import SharedEpoch, StreamTopology, assigned_shards
+from .shuffle import byte_bounded_shuffle, sample_nbytes
 from .types import AudioAsset, AudioBinding, CanonicalSample, LengthVector
 
 __all__ = [
@@ -33,4 +42,14 @@ __all__ = [
     "S2SPairAdapter",
     "SharedAudioTasksAdapter",
     "UnknownLayoutError",
+    "byte_bounded_shuffle",
+    "sample_nbytes",
+    "BatchLimits",
+    "DynamicBatchIterator",
+    "dynamic_batches",
+    "pool_sort_samples",
+    "projected_padding_cost",
+    "SharedEpoch",
+    "StreamTopology",
+    "assigned_shards",
 ]

@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 
 from dataclasses import dataclass
@@ -512,13 +513,43 @@ class FlexiSampleProcessor:
                 lengths.user_text_tokens += count
             elif turn["role"] == "assistant_content":
                 lengths.assistant_text_tokens += count
-        for binding in bindings:
-            duration = sample.assets[binding.asset_id].duration
-            audio_tokens = int(duration * 17) if duration is not None else 0
+        metadata_audios = sample.metadata.get("audios")
+        metadata_audio_tokens = sample.metadata.get("audio_tokens")
+        token_by_member = {}
+        if (
+            isinstance(metadata_audios, list)
+            and isinstance(metadata_audio_tokens, list)
+            and len(metadata_audios) == len(metadata_audio_tokens)
+        ):
+            token_by_member = {
+                os.path.basename(str(path)): int(value)
+                for path, value in zip(metadata_audios, metadata_audio_tokens)
+                if value is not None
+            }
+
+        for binding_index, binding in enumerate(bindings):
+            asset = sample.assets[binding.asset_id]
+            audio_tokens = token_by_member.get(asset.member_key)
+            if (
+                audio_tokens is None
+                and not token_by_member
+                and isinstance(metadata_audio_tokens, list)
+                and binding_index < len(metadata_audio_tokens)
+                and metadata_audio_tokens[binding_index] is not None
+            ):
+                audio_tokens = int(metadata_audio_tokens[binding_index])
+            if audio_tokens is None:
+                audio_tokens = int(asset.duration * 17) if asset.duration is not None else 0
             if binding.role == "user":
                 lengths.user_audio_tokens += audio_tokens
             else:
                 lengths.assistant_audio_tokens += audio_tokens
+
+        total_estimate = sample.metadata.get("num_tokens_est")
+        if isinstance(total_estimate, (int, float)):
+            # Preserve the multidimensional role costs while ensuring an
+            # authoritative sidecar total remains a lower bound.
+            lengths.codec_tokens = max(0, int(total_estimate) - lengths.total)
         sample.lengths = lengths
         return PreparedSample(sample, tokenized, lengths)
 

@@ -39,6 +39,51 @@ def is_webdataset_stream_config(path: str) -> bool:
     )
 
 
+_INDEXED_BACKENDS = {"webdataset_indexed", "webdataset_eval_indexed"}
+
+
+def is_webdataset_indexed_config(path: str) -> bool:
+    """Return whether a config explicitly selects the map-style WDS index."""
+    cfg = load_dataset_config(path)
+    if str(cfg.get("dataset_backend", "")).strip().lower() in _INDEXED_BACKENDS:
+        return True
+    sources = cfg.get("dataset", {})
+    return bool(sources) and all(
+        str(source.get("data_format", "")).strip().lower() in _INDEXED_BACKENDS
+        for source in sources.values()
+    )
+
+
+def build_qwen2_webdataset_indexed(cfg_path, tokenizer, **kwargs):
+    """Build deterministic map-style evaluation data from JSONL tar indexes.
+
+    The indexed backend deliberately reuses ``Qwen2Dataset`` and its legacy
+    ``wds://`` reader. Unlike the native training stream, this gives evaluation
+    an exact length and stable integer indexing for Trainer samplers. Every
+    source must provide a precomputed ``webdataset_index_path`` (or
+    ``webdataset.index_path``); evaluation never scans tar shards at startup.
+    """
+    cfg = load_dataset_config(cfg_path)
+    sources = cfg.get("dataset", {})
+    if not sources:
+        raise ValueError("webdataset_indexed requires at least one dataset source")
+    for source_name, source in sources.items():
+        web_cfg = source.get("webdataset", {}) or {}
+        index_path = source.get("webdataset_index_path", web_cfg.get("index_path"))
+        if not isinstance(index_path, str) or not index_path.strip():
+            raise ValueError(
+                f"indexed WebDataset source {source_name!r} requires "
+                "webdataset_index_path (or webdataset.index_path)"
+            )
+
+    # Lazy import avoids the interleaved -> webdataset adapter module cycle.
+    from src.dataset.interleaved import Qwen2Dataset
+
+    dataset = Qwen2Dataset(cfg_path, tokenizer, **kwargs)
+    dataset.is_indexed_webdataset = True
+    return dataset
+
+
 def build_qwen2_webdataset(
     cfg_path,
     tokenizer,

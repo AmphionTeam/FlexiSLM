@@ -52,6 +52,8 @@ from src.dataset.interleaved import Qwen2Dataset
 from src.dataset.interleaved_collator import InterleavedDataCollator
 from src.dataset.webdataset.native import (
     build_qwen2_webdataset,
+    build_qwen2_webdataset_indexed,
+    is_webdataset_indexed_config,
     is_webdataset_stream_config,
 )
 from src.trainer.self_trainer import ATrainer
@@ -645,11 +647,12 @@ def main():
     # breakpoint()
     # Load data. Native WebDataset streams bypass BaseDataset and therefore do
     # not construct a JSONL index or wds:// member references.
-    train_dataset_builder = (
-        build_qwen2_webdataset
-        if is_webdataset_stream_config(data_args.dataset_name)
-        else Qwen2Dataset
-    )
+    if is_webdataset_stream_config(data_args.dataset_name):
+        train_dataset_builder = build_qwen2_webdataset
+    elif is_webdataset_indexed_config(data_args.dataset_name):
+        train_dataset_builder = build_qwen2_webdataset_indexed
+    else:
+        train_dataset_builder = Qwen2Dataset
     train_dataset = train_dataset_builder(
         data_args.dataset_name,  # cfg_path
         tokenizer,               # tokenizer
@@ -676,9 +679,21 @@ def main():
         use_omni_token=getattr(model_args, "use_omni_token", False),
         disable_text_normalize_llm=data_args.disable_text_normalize,
     )
-    # eval_dataset = None
+    # Evaluation uses an exact-length map-style index. A native streaming eval
+    # would make sample cardinality and cross-rank reduction depend on shard
+    # assignment, so require the explicit indexed backend for WebDataset eval.
     if training_args.do_eval:
-        eval_dataset = Qwen2Dataset(
+        if is_webdataset_stream_config(data_args.dataset_name_eval):
+            raise ValueError(
+                "WebDataset evaluation requires dataset_backend: "
+                "webdataset_eval_indexed and a precomputed webdataset_index_path"
+            )
+        eval_dataset_builder = (
+            build_qwen2_webdataset_indexed
+            if is_webdataset_indexed_config(data_args.dataset_name_eval)
+            else Qwen2Dataset
+        )
+        eval_dataset = eval_dataset_builder(
             data_args.dataset_name_eval,  # cfg_path
             tokenizer,                    # tokenizer
             max_padding_length=model_args.model_max_length,

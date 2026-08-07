@@ -327,13 +327,16 @@ def _iter_webdataset_rows(
 
 
 def _resolve_webdataset_index_path(data_info, data_name):
-    index_path = data_info.get("webdataset_index_path")
+    webdataset_config = data_info.get("webdataset", {}) or {}
+    index_path = data_info.get(
+        "webdataset_index_path", webdataset_config.get("index_path")
+    )
     if not isinstance(index_path, str) or not index_path.strip():
         data_format = data_info.get("data_format", "webdataset")
         raise ValueError(
             f"WebDataset source '{data_name}' with data_format='{data_format}' requires "
-            "webdataset_index_path in YAML. Run local/precompute_webdataset_index.py "
-            "first to generate the JSONL index."
+            "webdataset_index_path (or webdataset.index_path) in YAML. Run "
+            "local/precompute_webdataset_index.py first to generate the JSONL index."
         )
 
     index_path = os.path.expanduser(os.path.expandvars(index_path.strip()))
@@ -653,7 +656,17 @@ class BaseDataset(torch.utils.data.Dataset):
                     data_path = os.path.expanduser(os.path.expandvars(data_path))
 
                 data_format = str(data_info.get("data_format", "")).strip().lower()
-                is_webdataset = data_format in {"webdataset", "webdataset_tar", "duplex_webdataset"}
+                global_backend = str(self.cfg.get("dataset_backend", "")).strip().lower()
+                is_webdataset = data_format in {
+                    "webdataset",
+                    "webdataset_tar",
+                    "duplex_webdataset",
+                    "webdataset_indexed",
+                    "webdataset_eval_indexed",
+                } or global_backend in {
+                    "webdataset_indexed",
+                    "webdataset_eval_indexed",
+                }
 
                 # Allow HF hub names (e.g. "yuantuo666/qwen3omni_gends_428k_0227") or parquet paths
                 is_hf_hub = (

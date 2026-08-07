@@ -63,6 +63,7 @@ class TokenBudgetBatchSampler(torch.utils.data.Sampler):
         drop_last=False,
         rank=0,
         world_size=1,
+        pad_to_world_size=False,
     ):
         self.lengths = list(lengths)
         self.max_tokens = max_tokens
@@ -72,6 +73,7 @@ class TokenBudgetBatchSampler(torch.utils.data.Sampler):
         self.drop_last = drop_last
         self.rank = rank
         self.world_size = world_size
+        self.pad_to_world_size = pad_to_world_size
         self.epoch = 0
 
         self._batches = self._build_batches()      # all batches, same on every rank
@@ -113,11 +115,15 @@ class TokenBudgetBatchSampler(torch.utils.data.Sampler):
         return batches
 
     def _rank_batches(self):
-        """Slice the shuffled order for this rank only."""
-        # Drop tail that doesn't divide evenly (like drop_last for DDP)
+        """Slice batch order for one rank, optionally padding deterministic eval."""
         total = len(self._order)
-        usable = (total // self.world_size) * self.world_size
-        order = self._order[:usable]
+        if self.pad_to_world_size and total:
+            usable = ((total + self.world_size - 1) // self.world_size) * self.world_size
+            padding = usable - total
+            order = self._order + [self._order[i % total] for i in range(padding)]
+        else:
+            usable = (total // self.world_size) * self.world_size
+            order = self._order[:usable]
         return order[self.rank::self.world_size]
 
     def set_epoch(self, epoch):
@@ -404,11 +410,14 @@ class ATrainer(Trainer):
                 lengths=eval_lengths,
                 max_tokens=max_tokens,
                 max_batch_size=max_batch_size,
-                shuffle=True,
+                shuffle=False,
                 seed=self.args.seed,
-                drop_last=self.args.dataloader_drop_last,
+                # Evaluation must retain the final partial batch so indexed
+                # cardinality does not depend on the training drop-last policy.
+                drop_last=False,
                 rank=self.args.process_index,
                 world_size=self.args.world_size,
+                pad_to_world_size=True,
             )
 
             dataloader_params = {
@@ -457,10 +466,10 @@ class ATrainer(Trainer):
             dataloader_params["prefetch_factor"] = self.args.dataloader_prefetch_factor
 
         if not isinstance(eval_dataset, torch.utils.data.IterableDataset):
-            sampler = self._get_train_sampler(eval_dataset)
+            sampler = self._get_eval_sampler(eval_dataset)
             if sampler is not None:
                 dataloader_params["sampler"] = sampler
-            dataloader_params["drop_last"] = self.args.dataloader_drop_last
+            dataloader_params["drop_last"] = False
 
         dataloader = self.accelerator.prepare(DataLoader(eval_dataset, **dataloader_params))
 

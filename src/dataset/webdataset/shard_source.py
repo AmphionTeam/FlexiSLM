@@ -2,14 +2,61 @@
 
 from __future__ import annotations
 
+import hashlib
 import itertools
+import math
 import multiprocessing as mp
+import numbers
 import os
 import random
 from dataclasses import dataclass
 from typing import Iterator, Sequence
 
 import torch
+
+
+def validate_shard_ratio(source_name: str, ratio: object) -> float:
+    """Validate and normalize one source's shard retention ratio."""
+    normalized_ratio = None
+    if not isinstance(ratio, bool) and isinstance(ratio, numbers.Real):
+        try:
+            normalized_ratio = float(ratio)
+        except (OverflowError, TypeError, ValueError):
+            pass
+    if (
+        normalized_ratio is None
+        or not math.isfinite(normalized_ratio)
+        or not 0 < normalized_ratio <= 1
+    ):
+        raise ValueError(
+            f"WebDataset source {source_name!r} has invalid ratio {ratio!r}; "
+            "expected a finite number in the range 0 < ratio <= 1"
+        )
+    return normalized_ratio
+
+
+def select_shards_by_ratio(
+    shards: Sequence[str],
+    *,
+    ratio: object,
+    seed: int,
+    source_name: str,
+) -> tuple[str, ...]:
+    """Select a stable, seed-based shard subset while preserving input order."""
+    normalized_ratio = validate_shard_ratio(source_name, ratio)
+    # Treat each URL as one candidate if data paths overlap after expansion.
+    candidates = tuple(dict.fromkeys(shards))
+    if normalized_ratio == 1.0 or not candidates:
+        return candidates
+
+    selected_count = max(1, math.floor(len(candidates) * normalized_ratio))
+    # Derive a source-specific seed without Python's process-randomized hash().
+    digest = hashlib.sha256(
+        f"{int(seed)}\0{source_name}".encode("utf-8")
+    ).digest()
+    rng = random.Random(int.from_bytes(digest, "big"))
+    selected_indices = sorted(rng.sample(range(len(candidates)), selected_count))
+    return tuple(candidates[index] for index in selected_indices)
 
 
 class SharedEpoch:

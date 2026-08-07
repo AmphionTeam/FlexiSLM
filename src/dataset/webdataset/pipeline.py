@@ -31,6 +31,7 @@ from .shard_source import (
     assigned_shards,
     assigned_source_shards,
     current_topology,
+    validate_shard_ratio,
 )
 from .shuffle import byte_bounded_shuffle
 
@@ -54,6 +55,7 @@ class StreamingSourceConfig:
     shards: Sequence[str]
     layout: str = "auto"
     weight: float = 1.0
+    ratio: float = 1.0
 
     def __post_init__(self):
         if not self.name:
@@ -62,6 +64,7 @@ class StreamingSourceConfig:
             raise ValueError(f"streaming source {self.name!r} requires at least one shard")
         if self.weight <= 0:
             raise ValueError(f"streaming source {self.name!r} weight must be positive")
+        validate_shard_ratio(self.name, self.ratio)
 
 
 @dataclass(frozen=True)

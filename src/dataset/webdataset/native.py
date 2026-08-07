@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass
 from typing import Any, Mapping
@@ -21,6 +22,10 @@ from .pipeline import (
     decode_audio_asset,
 )
 from .shard_cache import ShardCacheConfig
+from .shard_source import select_shards_by_ratio
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -148,6 +153,7 @@ def build_qwen2_webdataset(
         )
     )
     sampling_cfg = runtime.get("sampling", {})
+    sampling_seed = int(sampling_cfg.get("seed", runtime.get("seed", seed)))
     bucketing_cfg = runtime.get("bucketing", {})
     errors_cfg = runtime.get("errors", {})
     cache_cfg = runtime.get("cache", {})
@@ -193,12 +199,30 @@ def build_qwen2_webdataset(
                     expanded_shards.append(value)
                 else:
                     expanded_shards.extend(wds.shardlists.expand_urls(value))
+        ratio = source.get("ratio", 1.0)
+        shard_count = len(tuple(dict.fromkeys(expanded_shards)))
+        selected_shards = select_shards_by_ratio(
+            expanded_shards,
+            ratio=ratio,
+            seed=sampling_seed,
+            source_name=source_name,
+        )
+        normalized_ratio = float(ratio)
+        logger.info(
+            "WebDataset source %s: ratio=%s selected %d/%d shards with seed=%d",
+            source_name,
+            normalized_ratio,
+            len(selected_shards),
+            shard_count,
+            sampling_seed,
+        )
         source_configs.append(
             StreamingSourceConfig(
                 name=source_name,
-                shards=tuple(expanded_shards),
+                shards=selected_shards,
                 layout=web_cfg.get("layout", "auto"),
                 weight=float(source.get("weight", web_cfg.get("weight", 1.0))),
+                ratio=normalized_ratio,
             )
         )
         adapter_contexts[source_name] = AdapterContext(
@@ -206,7 +230,7 @@ def build_qwen2_webdataset(
             tasks=tuple(web_cfg.get("tasks", ("asr", "tts"))),
             task_policy=web_cfg.get("task_policy", "all"),
             task_weights=web_cfg.get("task_weights", {"asr": 1.0, "tts": 1.0}),
-            seed=int(sampling_cfg.get("seed", runtime.get("seed", seed))),
+            seed=sampling_seed,
             duplicate_member_policy=web_cfg.get("duplicate_member_policy", "error"),
             audio_extension_preference=tuple(
                 web_cfg.get("audio_extensions", ("wav", "flac", "mp3", "m4a", "ogg"))
@@ -234,7 +258,7 @@ def build_qwen2_webdataset(
         shuffle_max_samples=int(shuffle_cfg.get("max_samples", 4096)),
         shuffle_initial_samples=int(shuffle_cfg.get("initial_samples", 1024)),
         shuffle_max_bytes=int(shuffle_cfg.get("max_bytes", 2 * 1024**3)),
-        seed=int(sampling_cfg.get("seed", runtime.get("seed", seed))),
+        seed=sampling_seed,
         drop_last=bool(batch_cfg.get("drop_last", False)),
         num_batches=(int(configured_num_batches) if configured_num_batches is not None else None),
         sampling_mode=sampling_cfg.get("mode", "finite_exact"),

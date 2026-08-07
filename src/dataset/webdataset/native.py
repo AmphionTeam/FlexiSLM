@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
 from typing import Any, Mapping
 
 import yaml
@@ -20,6 +21,32 @@ from .pipeline import (
     decode_audio_asset,
 )
 from .shard_cache import ShardCacheConfig
+
+
+@dataclass(frozen=True)
+class WorkerContextFactory:
+    """Pickle-safe lazy worker resource constructor for spawn/forkserver."""
+
+    use_128_features: bool
+    num_mel_bins: int
+
+    def __call__(self) -> WorkerContext:
+        # Keep heavyweight feature extractor imports and construction inside the
+        # DataLoader worker while leaving the factory itself spawn-pickleable.
+        from flexicodec.feature_extractors import FBankGen
+        from src.dataset.interleaved import Qwen3FbankExtractor
+
+        if self.use_128_features or self.num_mel_bins == 128:
+            user_extractor = Qwen3FbankExtractor()
+            assistant_extractor = FBankGen(sr=16000)
+        else:
+            user_extractor = FBankGen(sr=16000)
+            assistant_extractor = None
+        return WorkerContext(
+            audio_decoder=decode_audio_asset,
+            user_fbank_extractor=user_extractor,
+            assistant_fbank_extractor=assistant_extractor,
+        )
 
 
 def load_dataset_config(path: str) -> Mapping[str, Any]:
@@ -240,30 +267,12 @@ def build_qwen2_webdataset(
         use_omni_token=use_omni,
     )
 
-    # Import lazily to avoid a module cycle while interleaved.py imports the
-    # canonical processor and WebDataset adapter types.
-    from flexicodec.feature_extractors import FBankGen
-    from src.dataset.interleaved import Qwen3FbankExtractor
-
     use_128 = bool(use_qwen3_feature or use_whisper_fetaure or use_qwen25o_feature)
     num_mel_bins = int(cfg.get("num_mel_bins", 128 if use_128 else 80))
-
-    def worker_context_factory():
-        if use_128 or num_mel_bins == 128:
-            user_extractor = Qwen3FbankExtractor()
-            assistant_extractor = FBankGen(sr=16000)
-        else:
-            user_extractor = FBankGen(sr=16000)
-            assistant_extractor = None
-        return WorkerContext(
-            audio_decoder=decode_audio_asset,
-            user_fbank_extractor=user_extractor,
-            assistant_fbank_extractor=assistant_extractor,
-        )
 
     return FlexiWebDataset(
         stream_config,
         processor,
-        worker_context_factory,
+        WorkerContextFactory(use_128, num_mel_bins),
         adapter_contexts=adapter_contexts,
     )

@@ -276,6 +276,23 @@ class ATrainer(Trainer):
         return super()._get_train_sampler(train_dataset)
 
     def get_train_dataloader(self) -> DataLoader:
+        train_dataset = self.train_dataset
+        if getattr(train_dataset, "is_native_webdataset", False):
+            # The dataset already partitions shards by rank and emits complete
+            # dynamic batches. Accelerate must not dispatch or split them again.
+            dataloader_config = getattr(self.accelerator, "dataloader_config", None)
+            if dataloader_config is not None:
+                dataloader_config.dispatch_batches = False
+                dataloader_config.split_batches = False
+                dataloader_config.even_batches = False
+            return train_dataset.build_loader(
+                collate_fn=self.data_collator,
+                num_workers=self.args.dataloader_num_workers,
+                pin_memory=self.args.dataloader_pin_memory,
+                persistent_workers=self.args.dataloader_persistent_workers,
+                prefetch_factor=getattr(self.args, "dataloader_prefetch_factor", None),
+            )
+
         max_tokens = getattr(self.args, "max_tokens_per_batch", None)
         if max_tokens is None:
             return super().get_train_dataloader()
@@ -284,7 +301,6 @@ class ATrainer(Trainer):
         if getattr(self.args, "per_device_train_batch_size", None) is not None:
             max_batch_size = max(1, 3 * self.args.per_device_train_batch_size)
 
-        train_dataset = self.train_dataset
         if not hasattr(train_dataset, "lengths"):
             raise ValueError("Dataset has no 'lengths' attribute; "
                              "falling back to default dataloader")

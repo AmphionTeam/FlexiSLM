@@ -50,6 +50,10 @@ from src.arguments import ModelArguments, DataTrainingArguments, TrainingArgumen
 from src.dataset.collator import collate_fn_deepspeed, get_collator
 from src.dataset.interleaved import Qwen2Dataset
 from src.dataset.interleaved_collator import InterleavedDataCollator
+from src.dataset.webdataset.native import (
+    build_qwen2_webdataset,
+    is_webdataset_stream_config,
+)
 from src.trainer.self_trainer import ATrainer
 # from sampler.TokenBatchSampler import TokenBatchSampler
 import loguru
@@ -639,9 +643,14 @@ def main():
 
 
     # breakpoint()
-    # Load data
-    # Keep only the parameters actually required by BaseDataset.
-    train_dataset = Qwen2Dataset(
+    # Load data. Native WebDataset streams bypass BaseDataset and therefore do
+    # not construct a JSONL index or wds:// member references.
+    train_dataset_builder = (
+        build_qwen2_webdataset
+        if is_webdataset_stream_config(data_args.dataset_name)
+        else Qwen2Dataset
+    )
+    train_dataset = train_dataset_builder(
         data_args.dataset_name,  # cfg_path
         tokenizer,               # tokenizer
         max_padding_length=model_args.model_max_length,

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import random
-from typing import Any, Iterable, Iterator, Mapping
+from typing import Any, Callable, Iterable, Iterator, Mapping, Optional
 
 
 def sample_nbytes(sample: Mapping[str, Any]) -> int:
@@ -22,6 +22,7 @@ def byte_bounded_shuffle(
     max_bytes: int,
     initial_samples: int = 0,
     rng: random.Random | None = None,
+    on_buffer_change: Optional[Callable[[int, int], None]] = None,
 ) -> Iterator[Any]:
     """Shuffle a stream while bounding both retained sample count and bytes.
 
@@ -39,6 +40,10 @@ def byte_bounded_shuffle(
     buffer = []
     sizes = []
     buffered_bytes = 0
+
+    def observe_buffer() -> None:
+        if on_buffer_change is not None:
+            on_buffer_change(len(buffer), buffered_bytes)
 
     def pop_random():
         nonlocal buffered_bytes
@@ -65,6 +70,7 @@ def byte_bounded_shuffle(
         buffer.append(item)
         sizes.append(size)
         buffered_bytes += size
+        observe_buffer()
         if initial_samples and len(buffer) >= initial_samples:
             yield pop_random()
 

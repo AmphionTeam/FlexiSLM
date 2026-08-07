@@ -388,6 +388,7 @@ class FlexiWebDataset(torch.utils.data.IterableDataset):
             initial_samples=self.config.shuffle_initial_samples,
             max_bytes=self.config.shuffle_max_bytes,
             rng=random.Random(stream_seed),
+            on_buffer_change=self.metrics.record_shuffle_buffer,
         )
         for sample in logical:
             try:
@@ -408,6 +409,7 @@ class FlexiWebDataset(torch.utils.data.IterableDataset):
             pool_bytes=limits.pool_bytes,
             chunk_size=limits.chunk_size,
             rng=rng,
+            on_pool_drain=self.metrics.record_bucket_pool,
         )
 
     def __iter__(self):
@@ -416,7 +418,11 @@ class FlexiWebDataset(torch.utils.data.IterableDataset):
         worker = self.worker_context_factory()
         limits = self.config.effective_batch_limits
         ordered = iter(self._ordered_samples())
-        candidates = DynamicBatchIterator(ordered, limits)
+        candidates = DynamicBatchIterator(
+            ordered,
+            limits,
+            on_sample_dropped=lambda _: self.metrics.record_filtered("oversized"),
+        )
         emitted = 0
         batch_limit = self._worker_batch_limit()
 
@@ -437,7 +443,7 @@ class FlexiWebDataset(torch.utils.data.IterableDataset):
                 else limits.min_samples
             )
             if self.config.drop_last and len(materialized) < required:
-                self.metrics.increment("samples_filtered", len(materialized))
+                self.metrics.record_filtered("drop_last", len(materialized))
                 continue
             self.metrics.record_batch(
                 accepted_lengths, time.perf_counter() - started

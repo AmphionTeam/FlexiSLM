@@ -26,12 +26,27 @@ _COUNTERS = (
     "duplicate_members",
     "prepare_failures",
     "audio_decode_failures",
+    "audio_decode_failures_wav",
+    "audio_decode_failures_flac",
+    "audio_decode_failures_mp3",
+    "audio_decode_failures_m4a",
+    "audio_decode_failures_ogg",
+    "audio_decode_failures_other",
     "samples_filtered",
+    "samples_filtered_layout",
+    "samples_filtered_prepare",
+    "samples_filtered_materialize",
+    "samples_filtered_drop_last",
+    "samples_filtered_oversized",
     "batches_emitted",
     "batch_size_sum",
     "batch_cost_sum",
     "unpadded_cost_sum",
     "data_wait_time_sum",
+    "shuffle_buffer_samples_peak",
+    "shuffle_buffer_bytes_peak",
+    "bucket_pools_drained",
+    "bucket_fill_ratio_sum",
     "shard_cache_hits",
     "shard_cache_misses",
     "shard_cache_bytes_written",
@@ -61,6 +76,43 @@ class SharedStreamMetrics:
         with self._values.get_lock():
             self._values[index] += float(value)
 
+    def set_max(self, name: str, value: float) -> None:
+        """Atomically retain the largest value observed across all workers."""
+        try:
+            index = _INDEX[name]
+        except KeyError as exc:
+            raise KeyError(f"unknown WebDataset metric {name!r}") from exc
+        with self._values.get_lock():
+            self._values[index] = max(self._values[index], float(value))
+
+    def record_shuffle_buffer(self, samples: int, retained_bytes: int) -> None:
+        """Record process-wide shuffle high-water marks."""
+        with self._values.get_lock():
+            sample_index = _INDEX["shuffle_buffer_samples_peak"]
+            byte_index = _INDEX["shuffle_buffer_bytes_peak"]
+            self._values[sample_index] = max(
+                self._values[sample_index], float(samples)
+            )
+            self._values[byte_index] = max(
+                self._values[byte_index], float(retained_bytes)
+            )
+
+    def record_bucket_pool(self, fill_ratio: float) -> None:
+        """Record one bounded bucketing pool drain and its capacity usage."""
+        ratio = min(1.0, max(0.0, float(fill_ratio)))
+        with self._values.get_lock():
+            self._values[_INDEX["bucket_pools_drained"]] += 1.0
+            self._values[_INDEX["bucket_fill_ratio_sum"]] += ratio
+
+    def record_filtered(self, reason: str, value: float = 1.0) -> None:
+        """Count filtered samples with a bounded, process-safe reason label."""
+        counter = f"samples_filtered_{reason}"
+        if counter not in _INDEX:
+            raise KeyError(f"unknown WebDataset filter reason {reason!r}")
+        with self._values.get_lock():
+            self._values[_INDEX["samples_filtered"]] += float(value)
+            self._values[_INDEX[counter]] += float(value)
+
     def record_error(self, error: Exception, *, stage: str) -> None:
         counter = _ERROR_COUNTERS.get(type(error).__name__)
         if counter is not None:
@@ -69,7 +121,12 @@ class SharedStreamMetrics:
             self.increment("prepare_failures")
         elif stage == "materialize":
             self.increment("audio_decode_failures")
-        self.increment("samples_filtered")
+            codec = str(getattr(error, "codec", "other")).lower()
+            codec_counter = f"audio_decode_failures_{codec}"
+            if codec_counter not in _INDEX:
+                codec_counter = "audio_decode_failures_other"
+            self.increment(codec_counter)
+        self.record_filtered(stage)
 
     def record_layout(self, layout: str) -> None:
         layout_counter = f"layout_matches_{layout}"
@@ -103,6 +160,10 @@ class SharedStreamMetrics:
         raw["batch_cost"] = padded / batches if batches else 0.0
         raw["padding_ratio"] = 1.0 - raw["unpadded_cost_sum"] / padded if padded else 0.0
         raw["data_wait_time"] = raw["data_wait_time_sum"] / batches if batches else 0.0
+        pools = raw["bucket_pools_drained"]
+        raw["bucket_fill_ratio"] = (
+            raw["bucket_fill_ratio_sum"] / pools if pools else 0.0
+        )
         return raw
 
 

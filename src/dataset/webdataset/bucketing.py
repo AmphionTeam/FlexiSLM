@@ -5,7 +5,7 @@ from __future__ import annotations
 import random
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from .shuffle import sample_nbytes
 from .types import LengthVector
@@ -62,12 +62,19 @@ def pool_sort_samples(
     pool_bytes: int,
     chunk_size: int,
     rng: random.Random,
+    on_pool_drain: Optional[Callable[[float], None]] = None,
 ) -> Iterator[Any]:
     """Sort bounded pools by length, then shuffle similarly sized chunks."""
     pool = []
     retained_bytes = 0
 
     def drain():
+        if on_pool_drain is not None:
+            fill_ratio = max(
+                len(pool) / pool_samples,
+                retained_bytes / pool_bytes,
+            )
+            on_pool_drain(min(1.0, fill_ratio))
         pool.sort(key=lambda item: item.lengths.total)
         chunks = [pool[index : index + chunk_size] for index in range(0, len(pool), chunk_size)]
         rng.shuffle(chunks)
@@ -91,9 +98,15 @@ def pool_sort_samples(
 class DynamicBatchIterator(Iterator[list[Any]]):
     """Greedy batch iterator whose next sample is available for refill."""
 
-    def __init__(self, source: Iterable[Any], limits: BatchLimits):
+    def __init__(
+        self,
+        source: Iterable[Any],
+        limits: BatchLimits,
+        on_sample_dropped: Optional[Callable[[Any], None]] = None,
+    ):
         self.source = iter(source)
         self.limits = limits
+        self.on_sample_dropped = on_sample_dropped
         self.pending = None
 
     def take_sample(self):
@@ -128,6 +141,8 @@ class DynamicBatchIterator(Iterator[list[Any]]):
                         self.pending = sample
                         return batch
                     return [sample]
+                if self.on_sample_dropped is not None:
+                    self.on_sample_dropped(sample)
                 continue
 
             candidate = batch + [sample]
@@ -142,6 +157,10 @@ class DynamicBatchIterator(Iterator[list[Any]]):
             batch = candidate
 
 
-def dynamic_batches(source: Iterable[Any], limits: BatchLimits) -> Iterator[list[Any]]:
+def dynamic_batches(
+    source: Iterable[Any],
+    limits: BatchLimits,
+    on_sample_dropped: Optional[Callable[[Any], None]] = None,
+) -> Iterator[list[Any]]:
     """Greedily form batches constrained by projected padding cost and size."""
-    yield from DynamicBatchIterator(source, limits)
+    yield from DynamicBatchIterator(source, limits, on_sample_dropped)

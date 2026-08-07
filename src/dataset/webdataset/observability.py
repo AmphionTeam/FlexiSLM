@@ -32,6 +32,10 @@ _COUNTERS = (
     "batch_cost_sum",
     "unpadded_cost_sum",
     "data_wait_time_sum",
+    "shard_cache_hits",
+    "shard_cache_misses",
+    "shard_cache_bytes_written",
+    "shard_cache_evictions",
 )
 _INDEX = {name: index for index, name in enumerate(_COUNTERS)}
 _ERROR_COUNTERS = {

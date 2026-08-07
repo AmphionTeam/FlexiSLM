@@ -19,6 +19,7 @@ from .pipeline import (
     StreamingSourceConfig,
     decode_audio_asset,
 )
+from .shard_cache import ShardCacheConfig
 
 
 def load_dataset_config(path: str) -> Mapping[str, Any]:
@@ -77,6 +78,7 @@ def build_qwen2_webdataset(
     sampling_cfg = runtime.get("sampling", {})
     bucketing_cfg = runtime.get("bucketing", {})
     errors_cfg = runtime.get("errors", {})
+    cache_cfg = runtime.get("cache", {})
     configured_num_batches = batch_cfg.get(
         "num_batches", sampling_cfg.get("steps_per_epoch")
     )
@@ -144,6 +146,15 @@ def build_qwen2_webdataset(
             ),
         )
 
+    shard_cache = None
+    if cache_cfg and bool(cache_cfg.get("enabled", True)):
+        shard_cache = ShardCacheConfig(
+            directory=str(cache_cfg.get("directory", "")),
+            max_bytes=int(cache_cfg.get("max_bytes", 0)),
+            cache_local_files=bool(cache_cfg.get("cache_local_files", True)),
+            copy_chunk_bytes=int(cache_cfg.get("copy_chunk_bytes", 8 * 1024**2)),
+        )
+
     stream_config = StreamingConfig(
         sources=tuple(source_configs),
         source_name=(source_configs[0].name if len(source_configs) == 1 else "mixed"),
@@ -167,6 +178,7 @@ def build_qwen2_webdataset(
         ),
         max_consecutive_errors=int(errors_cfg.get("max_consecutive_errors", 100)),
         quarantine_path=errors_cfg.get("quarantine_path"),
+        shard_cache=shard_cache,
     )
 
     use_omni = bool(use_omni_token if use_omni_token is not None else cfg.get("use_omni_token", False))

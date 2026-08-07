@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import random
 import time
+from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Any, Callable, Iterable, Iterator, Mapping, Optional, Sequence, Union
 
@@ -20,6 +21,7 @@ from .bucketing import (
 )
 from .layouts import AdapterContext, PhysicalLayoutRegistry
 from .observability import QuarantineWriter, SharedStreamMetrics, StreamErrorReporter
+from .shard_cache import NodeLocalShardCache, ShardCacheConfig
 from .shard_source import (
     SharedEpoch,
     ShardRef,
@@ -77,6 +79,7 @@ class StreamingConfig:
     batch_limits: Optional[BatchLimits] = None
     max_consecutive_errors: int = 100
     quarantine_path: Optional[str] = None
+    shard_cache: Optional[ShardCacheConfig] = None
     sources: Sequence[StreamingSourceConfig] = ()
 
     def __post_init__(self):
@@ -134,6 +137,8 @@ def _warn_and_continue(error: Exception) -> bool:
 
 def sequential_physical_samples(
     shards: Iterable[Union[str, ShardRef]],
+    *,
+    shard_cache: Optional[NodeLocalShardCache] = None,
 ) -> Iterator[Mapping[str, Any]]:
     """Open assigned shards one at a time and yield grouped physical samples."""
     try:
@@ -148,23 +153,29 @@ def sequential_physical_samples(
     for shard in shards:
         source_name = shard.source_name if isinstance(shard, ShardRef) else None
         url = shard.url if isinstance(shard, ShardRef) else shard
-        # tarfile_to_samples does not explicitly close the stream returned by
-        # gopen in WebDataset 1.0.2. Own it here so early epoch termination and
-        # repeated/resampled reads cannot leak one descriptor per shard.
-        stream = wds.gopen(url)
-        expanded = tar_file_expander(
-            [{"url": url, "stream": stream}], handler=_warn_and_continue
+        # Keep the original URL in sample metadata even when bytes are read
+        # through a node-local cached path, preserving stable logical UIDs.
+        path_context = (
+            shard_cache.open_path(url) if shard_cache is not None else nullcontext(url)
         )
-        grouped = group_by_keys(expanded, handler=_warn_and_continue)
-        try:
-            for sample in grouped:
-                if source_name is not None:
-                    sample["__source__"] = source_name
-                yield sample
-        finally:
-            grouped.close()
-            expanded.close()
-            stream.close()
+        with path_context as open_url:
+            # tarfile_to_samples does not explicitly close the stream returned by
+            # gopen in WebDataset 1.0.2. Own it here so early epoch termination and
+            # repeated/resampled reads cannot leak one descriptor per shard.
+            stream = wds.gopen(open_url)
+            expanded = tar_file_expander(
+                [{"url": url, "stream": stream}], handler=_warn_and_continue
+            )
+            grouped = group_by_keys(expanded, handler=_warn_and_continue)
+            try:
+                for sample in grouped:
+                    if source_name is not None:
+                        sample["__source__"] = source_name
+                    yield sample
+            finally:
+                grouped.close()
+                expanded.close()
+                stream.close()
 
 
 class FlexiWebDataset(torch.utils.data.IterableDataset):
@@ -285,7 +296,12 @@ class FlexiWebDataset(torch.utils.data.IterableDataset):
                 topology=topology,
                 shuffle=self.config.shard_shuffle,
             )
-        return sequential_physical_samples(shards)
+        shard_cache = None
+        if self.config.shard_cache is not None:
+            shard_cache = NodeLocalShardCache(
+                self.config.shard_cache, self.metrics.increment
+            )
+        return sequential_physical_samples(shards, shard_cache=shard_cache)
 
     def _logical_samples(self):
         # AdapterContext is process-local after DataLoader worker creation.

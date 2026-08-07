@@ -2,6 +2,7 @@
 
 from .manifest import load_shard_manifest
 from .observability import QuarantineWriter, SharedStreamMetrics
+from .shard_cache import NodeLocalShardCache, ShardCacheConfig
 from .layouts import (
     AdapterContext,
     AmbiguousLayoutError,
@@ -67,4 +68,6 @@ __all__ = [
     "load_shard_manifest",
     "QuarantineWriter",
     "SharedStreamMetrics",
+    "NodeLocalShardCache",
+    "ShardCacheConfig",
 ]

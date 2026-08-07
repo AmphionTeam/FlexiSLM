@@ -216,19 +216,6 @@ class ATrainer(Trainer):
             os.fsync(stream.fileno())
         os.replace(temporary_path, state_path)
 
-    def log(self, logs, start_time=None):
-        """Attach native WebDataset health and batching metrics to Trainer logs."""
-        dataset = getattr(self, "train_dataset", None)
-        snapshot_fn = getattr(dataset, "metrics_snapshot", None)
-        if callable(snapshot_fn):
-            snapshot = snapshot_fn()
-            logs = dict(logs)
-            for name, value in snapshot.items():
-                if name.endswith("_sum") or name == "unpadded_cost_sum":
-                    continue
-                logs[f"webdataset/{name}"] = value
-        return super().log(logs, start_time)
-
     def create_optimizer(self):
         talker_lr = getattr(self.args, "talker_learning_rate", None)
         audio_encoder_lr = getattr(self.args, "audio_encoder_learning_rate", None)
@@ -580,8 +567,16 @@ class ATrainer(Trainer):
         return local_batch_size, global_batch_size
 
     def log(self, logs, start_time=None):
+        logs = dict(logs)
+        dataset = getattr(self, "train_dataset", None)
+        snapshot_fn = getattr(dataset, "metrics_snapshot", None)
+        if callable(snapshot_fn):
+            for name, value in snapshot_fn().items():
+                if name.endswith("_sum") or name == "unpadded_cost_sum":
+                    continue
+                logs[f"webdataset/{name}"] = value
+
         if self.args.process_index == 0:
-            logs = dict(logs)
             total_samples_seen = getattr(self, "_total_samples_seen", None)
             if total_samples_seen is not None:
                 logs["total_samples_seen"] = total_samples_seen
@@ -590,7 +585,7 @@ class ATrainer(Trainer):
             if global_batch_size is not None:
                 logs["global_effective_batch_size"] = global_batch_size
 
-        super().log(logs, start_time=start_time)
+        return super().log(logs, start_time=start_time)
 
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
         """

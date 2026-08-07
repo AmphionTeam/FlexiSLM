@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import logging
 import random
-from dataclasses import dataclass, field
+import time
+from dataclasses import dataclass
 from typing import Any, Callable, Iterable, Iterator, Mapping, Optional, Sequence, Union
 
 import torch
@@ -18,6 +19,7 @@ from .bucketing import (
     projected_padding_cost,
 )
 from .layouts import AdapterContext, PhysicalLayoutRegistry
+from .observability import QuarantineWriter, SharedStreamMetrics, StreamErrorReporter
 from .shard_source import (
     SharedEpoch,
     ShardRef,
@@ -29,6 +31,17 @@ from .shard_source import (
 from .shuffle import byte_bounded_shuffle
 
 logger = logging.getLogger(__name__)
+
+
+class AudioDecodeError(RuntimeError):
+    """Compressed audio bytes could not be decoded by the configured backend."""
+
+    def __init__(self, member_key: str, codec: str, detail: str):
+        self.member_key = member_key
+        self.codec = codec
+        super().__init__(
+            f"failed to decode {member_key} as {codec} with SoundFile: {detail}"
+        )
 
 
 @dataclass(frozen=True)
@@ -63,6 +76,7 @@ class StreamingConfig:
     shard_shuffle: bool = True
     batch_limits: Optional[BatchLimits] = None
     max_consecutive_errors: int = 100
+    quarantine_path: Optional[str] = None
     sources: Sequence[StreamingSourceConfig] = ()
 
     def __post_init__(self):
@@ -109,9 +123,7 @@ def decode_audio_asset(asset):
             io.BytesIO(asset.data), dtype="float32", always_2d=True
         )
     except Exception as exc:
-        raise RuntimeError(
-            f"failed to decode {asset.member_key} as {asset.codec} with SoundFile: {exc}"
-        ) from exc
+        raise AudioDecodeError(asset.member_key, asset.codec, str(exc)) from exc
     return torch.from_numpy(waveform.T.copy()), sample_rate
 
 
@@ -171,6 +183,7 @@ class FlexiWebDataset(torch.utils.data.IterableDataset):
         registry: Optional[PhysicalLayoutRegistry] = None,
         physical_samples_factory: Optional[Callable[[], Iterable[Mapping[str, Any]]]] = None,
         shared_epoch: Optional[SharedEpoch] = None,
+        metrics: Optional[SharedStreamMetrics] = None,
     ):
         super().__init__()
         self.config = config
@@ -188,6 +201,8 @@ class FlexiWebDataset(torch.utils.data.IterableDataset):
         self.registry = registry or PhysicalLayoutRegistry()
         self.physical_samples_factory = physical_samples_factory
         self.shared_epoch = shared_epoch or SharedEpoch()
+        self.metrics = metrics or SharedStreamMetrics()
+        self._quarantine = None
 
     @property
     def epoch(self) -> int:
@@ -206,6 +221,35 @@ class FlexiWebDataset(torch.utils.data.IterableDataset):
 
     def set_epoch(self, epoch: int) -> None:
         self.shared_epoch.set(epoch)
+
+    def metrics_snapshot(self) -> dict[str, float]:
+        """Return process-safe cumulative stream metrics for logging."""
+        return self.metrics.snapshot()
+
+    def _configure_observability(self, topology) -> None:
+        self._quarantine = QuarantineWriter(
+            self.config.quarantine_path, topology, self.epoch
+        )
+        self.adapter_context.error_reporter = StreamErrorReporter(
+            self.metrics, self._quarantine, self.adapter_context.source_name
+        )
+        for context in self.adapter_contexts.values():
+            context.error_reporter = StreamErrorReporter(
+                self.metrics, self._quarantine, context.source_name
+            )
+
+    def _record_error(
+        self, error, *, stage, physical=None, logical=None, source_name=None
+    ) -> None:
+        self.metrics.record_error(error, stage=stage)
+        if self._quarantine is not None:
+            self._quarantine.record(
+                error,
+                stage=stage,
+                physical=physical,
+                logical=logical,
+                source_name=source_name,
+            )
 
     def _worker_batch_limit(self) -> Optional[int]:
         if self.num_batches is None:
@@ -250,14 +294,23 @@ class FlexiWebDataset(torch.utils.data.IterableDataset):
             context.epoch = self.epoch
         layouts = {source.name: source.layout for source in self.config.sources}
         for physical in self._physical_samples():
+            self.metrics.increment("physical_samples_seen")
             source_name = physical.get("__source__")
             context = self.adapter_contexts.get(source_name, self.adapter_context)
-            layout = layouts.get(source_name, self.config.layout)
+            expected_layout = layouts.get(source_name, self.config.layout)
             try:
-                yield from self.registry.expand(
-                    physical, context, expected_layout=layout
-                )
+                adapter = self.registry.resolve(physical, expected_layout)
+                self.metrics.record_layout(adapter.name)
+                for logical in adapter.expand(physical, context):
+                    self.metrics.record_logical(logical.task)
+                    yield logical
             except Exception as exc:
+                self._record_error(
+                    exc,
+                    stage="layout",
+                    physical=physical,
+                    source_name=context.source_name,
+                )
                 logger.warning(
                     "Skipping invalid physical sample %s::%s: %s",
                     physical.get("__url__", "<unknown>"),
@@ -279,6 +332,7 @@ class FlexiWebDataset(torch.utils.data.IterableDataset):
             try:
                 yield self.processor.prepare(sample)
             except Exception as exc:
+                self._record_error(exc, stage="prepare", logical=sample)
                 logger.warning("Skipping logical sample %s during prepare: %s", sample.uid, exc)
 
     def _ordered_samples(self):
@@ -296,6 +350,8 @@ class FlexiWebDataset(torch.utils.data.IterableDataset):
         )
 
     def __iter__(self):
+        topology = current_topology()
+        self._configure_observability(topology)
         worker = self.worker_context_factory()
         limits = self.config.effective_batch_limits
         ordered = iter(self._ordered_samples())
@@ -303,10 +359,15 @@ class FlexiWebDataset(torch.utils.data.IterableDataset):
         emitted = 0
         batch_limit = self._worker_batch_limit()
 
-        for candidate in candidates:
-            if batch_limit is not None and emitted >= batch_limit:
+        while batch_limit is None or emitted < batch_limit:
+            started = time.perf_counter()
+            try:
+                candidate = next(candidates)
+            except StopIteration:
                 return
-            materialized = self._materialize_with_refill(candidate, candidates, worker, limits)
+            materialized, accepted_lengths = self._materialize_with_refill(
+                candidate, candidates, worker, limits
+            )
             if not materialized:
                 continue
             required = (
@@ -315,7 +376,11 @@ class FlexiWebDataset(torch.utils.data.IterableDataset):
                 else limits.min_samples
             )
             if self.config.drop_last and len(materialized) < required:
+                self.metrics.increment("samples_filtered", len(materialized))
                 continue
+            self.metrics.record_batch(
+                accepted_lengths, time.perf_counter() - started
+            )
             yield materialized
             emitted += 1
 
@@ -348,6 +413,9 @@ class FlexiWebDataset(torch.utils.data.IterableDataset):
                 rejected_replacements = 0
             except Exception as exc:
                 errors += 1
+                self._record_error(
+                    exc, stage="materialize", logical=prepared.canonical
+                )
                 logger.warning(
                     "Skipping logical sample %s during audio materialization: %s",
                     prepared.canonical.uid,
@@ -357,7 +425,7 @@ class FlexiWebDataset(torch.utils.data.IterableDataset):
                     raise RuntimeError(
                         "maximum consecutive WebDataset materialization errors exceeded"
                     ) from exc
-        return output
+        return output, accepted_lengths
 
     def build_loader(
         self,

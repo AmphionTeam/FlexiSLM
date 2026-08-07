@@ -1,5 +1,7 @@
 """Canonical types and physical layout adapters for native WebDataset input."""
 
+from .manifest import load_shard_manifest
+from .observability import QuarantineWriter, SharedStreamMetrics
 from .layouts import (
     AdapterContext,
     AmbiguousLayoutError,
@@ -62,4 +64,7 @@ __all__ = [
     "StreamTopology",
     "assigned_shards",
     "assigned_source_shards",
+    "load_shard_manifest",
+    "QuarantineWriter",
+    "SharedStreamMetrics",
 ]

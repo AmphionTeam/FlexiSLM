@@ -163,6 +163,19 @@ class ATrainer(Trainer):
         # Run after DefaultFlowCallback so its forced final checkpoint is disabled.
         self.add_callback(SkipFinalCheckpointCallback)
 
+    def log(self, logs, start_time=None):
+        """Attach native WebDataset health and batching metrics to Trainer logs."""
+        dataset = getattr(self, "train_dataset", None)
+        snapshot_fn = getattr(dataset, "metrics_snapshot", None)
+        if callable(snapshot_fn):
+            snapshot = snapshot_fn()
+            logs = dict(logs)
+            for name, value in snapshot.items():
+                if name.endswith("_sum") or name == "unpadded_cost_sum":
+                    continue
+                logs[f"webdataset/{name}"] = value
+        return super().log(logs, start_time)
+
     def create_optimizer(self):
         talker_lr = getattr(self.args, "talker_learning_rate", None)
         audio_encoder_lr = getattr(self.args, "audio_encoder_learning_rate", None)

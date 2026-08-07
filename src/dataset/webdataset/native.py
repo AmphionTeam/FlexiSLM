@@ -12,6 +12,7 @@ from src.processor.constants import DEFAULT_TTS_SYSTEM_PROMPT, T2T_TTS_SYSTEM_PR
 
 from .bucketing import BatchLimits
 from .layouts import AdapterContext
+from .manifest import load_shard_manifest
 from .pipeline import (
     FlexiWebDataset,
     StreamingConfig,
@@ -101,14 +102,23 @@ def build_qwen2_webdataset(
     for source_name, source in stream_sources:
         web_cfg = source.get("webdataset", {})
         shards = source.get("data_paths", [])
-        if isinstance(shards, str):
-            shards = [shards]
-        expanded_shards = []
-        for value in shards:
-            if wds is None:
-                expanded_shards.append(value)
-            else:
-                expanded_shards.extend(wds.shardlists.expand_urls(value))
+        manifest = web_cfg.get("manifest", source.get("shard_manifest"))
+        if manifest and shards:
+            raise ValueError(
+                f"streaming source {source_name!r} cannot configure both "
+                "data_paths and a shard manifest"
+            )
+        if manifest:
+            expanded_shards = list(load_shard_manifest(str(manifest)))
+        else:
+            if isinstance(shards, str):
+                shards = [shards]
+            expanded_shards = []
+            for value in shards:
+                if wds is None:
+                    expanded_shards.append(value)
+                else:
+                    expanded_shards.extend(wds.shardlists.expand_urls(value))
         source_configs.append(
             StreamingSourceConfig(
                 name=source_name,
@@ -156,6 +166,7 @@ def build_qwen2_webdataset(
             oversized_sample=batch_cfg.get("oversized_sample", "drop"),
         ),
         max_consecutive_errors=int(errors_cfg.get("max_consecutive_errors", 100)),
+        quarantine_path=errors_cfg.get("quarantine_path"),
     )
 
     use_omni = bool(use_omni_token if use_omni_token is not None else cfg.get("use_omni_token", False))

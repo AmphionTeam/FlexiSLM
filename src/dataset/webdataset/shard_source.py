@@ -27,6 +27,23 @@ class SharedEpoch:
 
 
 @dataclass(frozen=True)
+class ShardSource:
+    """A named collection of shards participating in source-level mixing."""
+
+    name: str
+    shards: Sequence[str]
+    weight: float = 1.0
+
+
+@dataclass(frozen=True)
+class ShardRef:
+    """A shard URL tagged with the source whose layout should interpret it."""
+
+    url: str
+    source_name: str
+
+
+@dataclass(frozen=True)
 class StreamTopology:
     rank: int = 0
     world_size: int = 1
@@ -94,3 +111,63 @@ def assigned_shards(
         target = ((len(order) + consumers - 1) // consumers) * consumers
         order = list(itertools.islice(itertools.cycle(order), target))
     yield from order[topology.consumer_id :: consumers]
+
+
+def assigned_source_shards(
+    sources: Sequence[ShardSource],
+    *,
+    mode: str,
+    seed: int,
+    epoch: int,
+    topology: StreamTopology,
+    shuffle: bool = True,
+) -> Iterator[ShardRef]:
+    """Assign named shards, sampling sources by weight in resampled mode.
+
+    Source weights apply at source level rather than shard level, so adding
+    shards to a source does not silently change its sampling ratio. Finite
+    modes consume every shard and therefore require uniform weights.
+    """
+    if not sources:
+        return
+    names = [source.name for source in sources]
+    if len(names) != len(set(names)):
+        raise ValueError("WebDataset source names must be unique")
+    if any(not source.name or not source.shards for source in sources):
+        raise ValueError("each WebDataset source requires a name and at least one shard")
+    if any(source.weight <= 0 for source in sources):
+        raise ValueError("WebDataset source weights must be positive")
+
+    if mode != "resampled":
+        if any(source.weight != sources[0].weight for source in sources[1:]):
+            raise ValueError("non-uniform source weights require sampling.mode=resampled")
+        refs = [
+            ShardRef(url, source.name)
+            for source in sources
+            for url in source.shards
+        ]
+        yield from assigned_shards(
+            refs,
+            mode=mode,
+            seed=seed,
+            epoch=epoch,
+            topology=topology,
+            shuffle=shuffle,
+        )
+        return
+
+    rng = random.Random(seed + 1_000_003 * epoch + 97 * topology.consumer_id)
+    cumulative = []
+    total = 0.0
+    for source in sources:
+        total += float(source.weight)
+        cumulative.append(total)
+    while True:
+        value = rng.random() * total
+        source_index = next(
+            index for index, threshold in enumerate(cumulative) if value < threshold
+        )
+        source = sources[source_index]
+        yield ShardRef(
+            source.shards[rng.randrange(len(source.shards))], source.name
+        )

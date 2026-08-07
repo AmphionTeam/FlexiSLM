@@ -21,7 +21,14 @@ from .bucketing import (
     pool_sort_samples,
     projected_padding_cost,
 )
-from .shard_source import SharedEpoch, StreamTopology, assigned_shards
+from .shard_source import (
+    SharedEpoch,
+    ShardRef,
+    ShardSource,
+    StreamTopology,
+    assigned_shards,
+    assigned_source_shards,
+)
 from .shuffle import byte_bounded_shuffle, sample_nbytes
 from .types import AudioAsset, AudioBinding, CanonicalSample, LengthVector
 
@@ -50,6 +57,9 @@ __all__ = [
     "pool_sort_samples",
     "projected_padding_cost",
     "SharedEpoch",
+    "ShardRef",
+    "ShardSource",
     "StreamTopology",
     "assigned_shards",
+    "assigned_source_shards",
 ]

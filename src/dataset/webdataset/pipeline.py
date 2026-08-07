@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import random
 from dataclasses import dataclass, field
-from typing import Any, Callable, Iterable, Iterator, Mapping, Optional, Sequence
+from typing import Any, Callable, Iterable, Iterator, Mapping, Optional, Sequence, Union
 
 import torch
 
@@ -18,15 +18,38 @@ from .bucketing import (
     projected_padding_cost,
 )
 from .layouts import AdapterContext, PhysicalLayoutRegistry
-from .shard_source import SharedEpoch, assigned_shards, current_topology
+from .shard_source import (
+    SharedEpoch,
+    ShardRef,
+    ShardSource,
+    assigned_shards,
+    assigned_source_shards,
+    current_topology,
+)
 from .shuffle import byte_bounded_shuffle
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
-class StreamingConfig:
+class StreamingSourceConfig:
+    name: str
     shards: Sequence[str]
+    layout: str = "auto"
+    weight: float = 1.0
+
+    def __post_init__(self):
+        if not self.name:
+            raise ValueError("streaming source name must not be empty")
+        if not self.shards:
+            raise ValueError(f"streaming source {self.name!r} requires at least one shard")
+        if self.weight <= 0:
+            raise ValueError(f"streaming source {self.name!r} weight must be positive")
+
+
+@dataclass(frozen=True)
+class StreamingConfig:
+    shards: Sequence[str] = ()
     layout: str = "auto"
     batch_size: int = 1
     shuffle_max_samples: int = 4096
@@ -40,10 +63,22 @@ class StreamingConfig:
     shard_shuffle: bool = True
     batch_limits: Optional[BatchLimits] = None
     max_consecutive_errors: int = 100
+    sources: Sequence[StreamingSourceConfig] = ()
 
     def __post_init__(self):
-        if not self.shards:
+        if not self.shards and not self.sources:
             raise ValueError("native WebDataset requires at least one shard URL")
+        if self.shards and self.sources:
+            raise ValueError("configure either shards or sources, not both")
+        source_names = [source.name for source in self.sources]
+        if len(source_names) != len(set(source_names)):
+            raise ValueError("streaming source names must be unique")
+        if (
+            self.sampling_mode != "resampled"
+            and self.sources
+            and any(source.weight != self.sources[0].weight for source in self.sources[1:])
+        ):
+            raise ValueError("non-uniform source weights require sampling.mode=resampled")
         if self.batch_size <= 0:
             raise ValueError("batch_size must be positive")
         if self.shuffle_max_samples <= 0 or self.shuffle_max_bytes <= 0:
@@ -85,7 +120,9 @@ def _warn_and_continue(error: Exception) -> bool:
     return True
 
 
-def sequential_physical_samples(shards: Iterable[str]) -> Iterator[Mapping[str, Any]]:
+def sequential_physical_samples(
+    shards: Iterable[Union[str, ShardRef]],
+) -> Iterator[Mapping[str, Any]]:
     """Open assigned shards one at a time and yield grouped physical samples."""
     try:
         import webdataset as wds
@@ -97,16 +134,21 @@ def sequential_physical_samples(shards: Iterable[str]) -> Iterator[Mapping[str, 
     from webdataset.tariterators import group_by_keys, tar_file_expander
 
     for shard in shards:
+        source_name = shard.source_name if isinstance(shard, ShardRef) else None
+        url = shard.url if isinstance(shard, ShardRef) else shard
         # tarfile_to_samples does not explicitly close the stream returned by
         # gopen in WebDataset 1.0.2. Own it here so early epoch termination and
         # repeated/resampled reads cannot leak one descriptor per shard.
-        stream = wds.gopen(shard)
+        stream = wds.gopen(url)
         expanded = tar_file_expander(
-            [{"url": shard, "stream": stream}], handler=_warn_and_continue
+            [{"url": url, "stream": stream}], handler=_warn_and_continue
         )
         grouped = group_by_keys(expanded, handler=_warn_and_continue)
         try:
-            yield from grouped
+            for sample in grouped:
+                if source_name is not None:
+                    sample["__source__"] = source_name
+                yield sample
         finally:
             grouped.close()
             expanded.close()
@@ -125,6 +167,7 @@ class FlexiWebDataset(torch.utils.data.IterableDataset):
         worker_context_factory: Callable[[], WorkerContext],
         *,
         adapter_context: Optional[AdapterContext] = None,
+        adapter_contexts: Optional[Mapping[str, AdapterContext]] = None,
         registry: Optional[PhysicalLayoutRegistry] = None,
         physical_samples_factory: Optional[Callable[[], Iterable[Mapping[str, Any]]]] = None,
         shared_epoch: Optional[SharedEpoch] = None,
@@ -136,6 +179,12 @@ class FlexiWebDataset(torch.utils.data.IterableDataset):
         self.adapter_context = adapter_context or AdapterContext(
             source_name=config.source_name, seed=config.seed
         )
+        self.adapter_contexts = dict(adapter_contexts or {})
+        configured_names = {source.name for source in config.sources}
+        if self.adapter_contexts.keys() != configured_names and config.sources:
+            raise ValueError(
+                "adapter_contexts must contain exactly the configured source names"
+            )
         self.registry = registry or PhysicalLayoutRegistry()
         self.physical_samples_factory = physical_samples_factory
         self.shared_epoch = shared_epoch or SharedEpoch()
@@ -170,24 +219,43 @@ class FlexiWebDataset(torch.utils.data.IterableDataset):
             return iter(self.physical_samples_factory())
         topology = current_topology()
         mode = self.config.sampling_mode
-        shards = assigned_shards(
-            self.config.shards,
-            mode=mode,
-            seed=self.config.seed,
-            epoch=self.epoch,
-            topology=topology,
-            shuffle=self.config.shard_shuffle,
-        )
+        if self.config.sources:
+            sources = tuple(
+                ShardSource(source.name, source.shards, source.weight)
+                for source in self.config.sources
+            )
+            shards = assigned_source_shards(
+                sources,
+                mode=mode,
+                seed=self.config.seed,
+                epoch=self.epoch,
+                topology=topology,
+                shuffle=self.config.shard_shuffle,
+            )
+        else:
+            shards = assigned_shards(
+                self.config.shards,
+                mode=mode,
+                seed=self.config.seed,
+                epoch=self.epoch,
+                topology=topology,
+                shuffle=self.config.shard_shuffle,
+            )
         return sequential_physical_samples(shards)
 
     def _logical_samples(self):
         # AdapterContext is process-local after DataLoader worker creation.
-        context = self.adapter_context
-        context.epoch = self.epoch
+        self.adapter_context.epoch = self.epoch
+        for context in self.adapter_contexts.values():
+            context.epoch = self.epoch
+        layouts = {source.name: source.layout for source in self.config.sources}
         for physical in self._physical_samples():
+            source_name = physical.get("__source__")
+            context = self.adapter_contexts.get(source_name, self.adapter_context)
+            layout = layouts.get(source_name, self.config.layout)
             try:
                 yield from self.registry.expand(
-                    physical, context, expected_layout=self.config.layout
+                    physical, context, expected_layout=layout
                 )
             except Exception as exc:
                 logger.warning(

@@ -12,7 +12,12 @@ from src.processor.constants import DEFAULT_TTS_SYSTEM_PROMPT, T2T_TTS_SYSTEM_PR
 
 from .bucketing import BatchLimits
 from .layouts import AdapterContext
-from .pipeline import FlexiWebDataset, StreamingConfig, decode_audio_asset
+from .pipeline import (
+    FlexiWebDataset,
+    StreamingConfig,
+    StreamingSourceConfig,
+    decode_audio_asset,
+)
 
 
 def load_dataset_config(path: str) -> Mapping[str, Any]:
@@ -54,20 +59,14 @@ def build_qwen2_webdataset(
         for name, source in sources.items()
         if global_stream or source.get("data_format") == "webdataset_stream"
     ]
-    if len(stream_sources) != 1 or len(stream_sources) != len(sources):
+    if not stream_sources or len(stream_sources) != len(sources):
         raise ValueError(
-            "webdataset_stream currently requires exactly one streaming source; "
-            "multi-source mixing is scheduled for Phase 4"
+            "webdataset_stream cannot be mixed with non-streaming dataset sources"
         )
-    source_name, source = stream_sources[0]
-    web_cfg = source.get("webdataset", {})
     runtime = cfg.get("webdataset_runtime", {})
     shuffle_cfg = runtime.get("shuffle", {})
     batch_cfg = runtime.get("batching", {})
 
-    shards = source.get("data_paths", [])
-    if isinstance(shards, str):
-        shards = [shards]
     batch_size = int(
         batch_cfg.get(
             "fixed_batch_size",
@@ -91,25 +90,59 @@ def build_qwen2_webdataset(
     )
 
     # Expand brace patterns before rank/worker assignment so every process sees
-    # the same concrete shard list.
+    # the same concrete shard list. Mixing weights are source-level, independent
+    # of how many shards each source contains.
+    source_configs = []
+    adapter_contexts = {}
     try:
         import webdataset as wds
+    except ImportError:
+        wds = None
+    for source_name, source in stream_sources:
+        web_cfg = source.get("webdataset", {})
+        shards = source.get("data_paths", [])
+        if isinstance(shards, str):
+            shards = [shards]
         expanded_shards = []
         for value in shards:
-            expanded_shards.extend(wds.shardlists.expand_urls(value))
-    except ImportError:
-        expanded_shards = list(shards)
+            if wds is None:
+                expanded_shards.append(value)
+            else:
+                expanded_shards.extend(wds.shardlists.expand_urls(value))
+        source_configs.append(
+            StreamingSourceConfig(
+                name=source_name,
+                shards=tuple(expanded_shards),
+                layout=web_cfg.get("layout", "auto"),
+                weight=float(source.get("weight", web_cfg.get("weight", 1.0))),
+            )
+        )
+        adapter_contexts[source_name] = AdapterContext(
+            source_name=source_name,
+            tasks=tuple(web_cfg.get("tasks", ("asr", "tts"))),
+            task_policy=web_cfg.get("task_policy", "all"),
+            task_weights=web_cfg.get("task_weights", {"asr": 1.0, "tts": 1.0}),
+            seed=int(sampling_cfg.get("seed", runtime.get("seed", seed))),
+            duplicate_member_policy=web_cfg.get("duplicate_member_policy", "error"),
+            audio_extension_preference=tuple(
+                web_cfg.get("audio_extensions", ("wav", "flac", "mp3", "m4a", "ogg"))
+            ),
+            physical_sample_atomic=bool(web_cfg.get("physical_sample_atomic", False)),
+            asr_prompt=web_cfg.get("asr_prompt", "Transcribe the following audio:"),
+            tts_prompt_template=web_cfg.get(
+                "tts_prompt_template", "Read the following text out loud: {text}"
+            ),
+        )
 
     stream_config = StreamingConfig(
-        shards=tuple(expanded_shards),
-        layout=web_cfg.get("layout", "auto"),
+        sources=tuple(source_configs),
+        source_name=(source_configs[0].name if len(source_configs) == 1 else "mixed"),
         batch_size=batch_size,
         shuffle_max_samples=int(shuffle_cfg.get("max_samples", 4096)),
         shuffle_initial_samples=int(shuffle_cfg.get("initial_samples", 1024)),
         shuffle_max_bytes=int(shuffle_cfg.get("max_bytes", 2 * 1024**3)),
         seed=int(sampling_cfg.get("seed", runtime.get("seed", seed))),
         drop_last=bool(batch_cfg.get("drop_last", False)),
-        source_name=source_name,
         num_batches=(int(configured_num_batches) if configured_num_batches is not None else None),
         sampling_mode=sampling_cfg.get("mode", "finite_exact"),
         shard_shuffle=bool(sampling_cfg.get("shuffle", True)),
@@ -160,25 +193,9 @@ def build_qwen2_webdataset(
             assistant_fbank_extractor=assistant_extractor,
         )
 
-    context = AdapterContext(
-        source_name=source_name,
-        tasks=tuple(web_cfg.get("tasks", ("asr", "tts"))),
-        task_policy=web_cfg.get("task_policy", "all"),
-        task_weights=web_cfg.get("task_weights", {"asr": 1.0, "tts": 1.0}),
-        seed=stream_config.seed,
-        duplicate_member_policy=web_cfg.get("duplicate_member_policy", "error"),
-        audio_extension_preference=tuple(
-            web_cfg.get("audio_extensions", ("wav", "flac", "mp3", "m4a", "ogg"))
-        ),
-        physical_sample_atomic=bool(web_cfg.get("physical_sample_atomic", False)),
-        asr_prompt=web_cfg.get("asr_prompt", "Transcribe the following audio:"),
-        tts_prompt_template=web_cfg.get(
-            "tts_prompt_template", "Read the following text out loud: {text}"
-        ),
-    )
     return FlexiWebDataset(
         stream_config,
         processor,
         worker_context_factory,
-        adapter_context=context,
+        adapter_contexts=adapter_contexts,
     )

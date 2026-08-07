@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import random
 import time
 from contextlib import nullcontext
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import Any, Callable, Iterable, Iterator, Mapping, Optional, Sequence, Union
 
 import torch
@@ -232,6 +234,49 @@ class FlexiWebDataset(torch.utils.data.IterableDataset):
 
     def set_epoch(self, epoch: int) -> None:
         self.shared_epoch.set(epoch)
+
+    def state_signature(self) -> str:
+        """Fingerprint stream settings that affect deterministic replay."""
+
+        def context_state(context: AdapterContext) -> dict[str, Any]:
+            return {
+                "source_name": context.source_name,
+                "tasks": list(context.tasks),
+                "task_policy": context.task_policy,
+                "task_weights": dict(context.task_weights),
+                "seed": context.seed,
+                "duplicate_member_policy": context.duplicate_member_policy,
+                "audio_extension_preference": list(
+                    context.audio_extension_preference
+                ),
+                "physical_sample_atomic": context.physical_sample_atomic,
+                "text_keys": list(context.text_keys),
+                "asr_prompt": context.asr_prompt,
+                "tts_prompt_template": context.tts_prompt_template,
+            }
+
+        payload = {
+            "shards": list(self.config.shards),
+            "sources": [asdict(source) for source in self.config.sources],
+            "layout": self.config.layout,
+            "batch_size": self.config.batch_size,
+            "shuffle_max_samples": self.config.shuffle_max_samples,
+            "shuffle_initial_samples": self.config.shuffle_initial_samples,
+            "shuffle_max_bytes": self.config.shuffle_max_bytes,
+            "seed": self.config.seed,
+            "drop_last": self.config.drop_last,
+            "num_batches": self.config.num_batches,
+            "sampling_mode": self.config.sampling_mode,
+            "shard_shuffle": self.config.shard_shuffle,
+            "batch_limits": asdict(self.config.effective_batch_limits),
+            "adapter_context": context_state(self.adapter_context),
+            "adapter_contexts": {
+                name: context_state(context)
+                for name, context in sorted(self.adapter_contexts.items())
+            },
+        }
+        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+        return hashlib.sha256(encoded).hexdigest()
 
     def metrics_snapshot(self) -> dict[str, float]:
         """Return process-safe cumulative stream metrics for logging."""
@@ -468,6 +513,119 @@ class FlexiWebDataset(torch.utils.data.IterableDataset):
         except ImportError as exc:
             raise RuntimeError("webdataset_stream requires 'webdataset'") from exc
         loader = wds.WebLoader(self, **kwargs)
-        # Transformers calls set_epoch on epoch dataloaders when available.
-        loader.set_epoch = self.set_epoch
-        return loader
+        return StatefulWebLoader(loader, self, num_workers=num_workers)
+
+
+class StatefulWebLoader:
+    """Track delivered batches and deterministically replay to a checkpoint.
+
+    State is recorded in the main training process, rather than in workers, so
+    DataLoader prefetch does not advance the checkpoint cursor. Restoring is
+    intentionally O(batches already consumed in the epoch): the stream is
+    recreated from its deterministic epoch seeds and replayed without exposing
+    skipped batches to the trainer.
+    """
+
+    STATE_VERSION = 1
+
+    def __init__(self, loader, dataset: FlexiWebDataset, *, num_workers: int):
+        self.loader = loader
+        self.dataset = dataset
+        self.num_workers = int(num_workers)
+        self._epoch = dataset.epoch
+        self._batches_yielded = 0
+        self._resume_batches: Optional[int] = None
+        self._resume_epoch: Optional[int] = None
+
+    def __len__(self):
+        return len(self.loader)
+
+    def set_epoch(self, epoch: int) -> None:
+        epoch = int(epoch)
+        preserve_resume = (
+            self._resume_batches is not None and self._resume_epoch == epoch
+        )
+        self.dataset.set_epoch(epoch)
+        self._epoch = epoch
+        if not preserve_resume:
+            self._batches_yielded = 0
+            self._resume_batches = None
+            self._resume_epoch = None
+
+    def __iter__(self):
+        skip = self._resume_batches or 0
+        self._resume_batches = None
+        self._resume_epoch = None
+        if skip:
+            # Trainer loads its checkpoint RNG before entering this iterator when
+            # native state restoration disables Trainer's own data skipping.
+            # Replay must not consume that model RNG state.
+            python_rng = random.getstate()
+            torch_rng = torch.random.get_rng_state()
+            cuda_rng = (
+                torch.cuda.get_rng_state_all()
+                if torch.cuda.is_available() and torch.cuda.is_initialized()
+                else None
+            )
+            try:
+                iterator = iter(self.loader)
+                for index in range(skip):
+                    try:
+                        next(iterator)
+                    except StopIteration as exc:
+                        raise RuntimeError(
+                            "native WebDataset checkpoint cursor exceeds the replayed "
+                            f"epoch ({skip} requested, {index} available)"
+                        ) from exc
+            finally:
+                random.setstate(python_rng)
+                torch.random.set_rng_state(torch_rng)
+                if cuda_rng is not None:
+                    torch.cuda.set_rng_state_all(cuda_rng)
+        else:
+            iterator = iter(self.loader)
+        for batch in iterator:
+            self._batches_yielded += 1
+            yield batch
+
+    def state_dict(self) -> dict[str, Any]:
+        topology = current_topology()
+        return {
+            "version": self.STATE_VERSION,
+            "epoch": self._epoch,
+            "batches_yielded": self._batches_yielded,
+            "rank": topology.rank,
+            "world_size": topology.world_size,
+            "num_workers": self.num_workers,
+            "stream_signature": self.dataset.state_signature(),
+        }
+
+    def load_state_dict(self, state: Mapping[str, Any]) -> None:
+        topology = current_topology()
+        expected = {
+            "version": self.STATE_VERSION,
+            "rank": topology.rank,
+            "world_size": topology.world_size,
+            "num_workers": self.num_workers,
+            "stream_signature": self.dataset.state_signature(),
+        }
+        mismatches = {
+            name: (state.get(name), value)
+            for name, value in expected.items()
+            if state.get(name) != value
+        }
+        if mismatches:
+            detail = ", ".join(
+                f"{name}={actual!r} (expected {wanted!r})"
+                for name, (actual, wanted) in mismatches.items()
+            )
+            raise ValueError(f"incompatible native WebDataset checkpoint: {detail}")
+        epoch = int(state.get("epoch", 0))
+        batches = int(state.get("batches_yielded", 0))
+        if epoch < 0 or batches < 0:
+            raise ValueError("native WebDataset checkpoint cursor must be non-negative")
+        self.dataset.set_epoch(epoch)
+        self._epoch = epoch
+        self._batches_yielded = batches
+        self._resume_batches = batches
+        self._resume_epoch = epoch

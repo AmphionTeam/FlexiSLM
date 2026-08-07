@@ -21,6 +21,7 @@ The Trainer class, to easily train a 🤗 Transformers from scratch or finetune 
 _TEXT_LOSS_SKIP_THRESHOLD = 6.0
 _TEXT_LOSS_SKIP_AFTER_STEP = 30000
 
+import json
 import os
 import random
 import logging
@@ -164,10 +165,56 @@ class SkipFinalCheckpointCallback(TrainerCallback):
 
 
 class ATrainer(Trainer):
+    _NATIVE_DATALOADER_STATE = "native_dataloader_state_rank{rank}.json"
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self._native_resume_checkpoint = None
+        self._native_train_loader = None
         # Run after DefaultFlowCallback so its forced final checkpoint is disabled.
         self.add_callback(SkipFinalCheckpointCallback)
+
+    def _native_dataloader_state_path(self, checkpoint_dir):
+        return os.path.join(
+            checkpoint_dir,
+            self._NATIVE_DATALOADER_STATE.format(rank=self.args.process_index),
+        )
+
+    def _load_from_checkpoint(self, resume_from_checkpoint, model=None):
+        result = super()._load_from_checkpoint(resume_from_checkpoint, model=model)
+        if getattr(self.train_dataset, "is_native_webdataset", False):
+            state_path = self._native_dataloader_state_path(resume_from_checkpoint)
+            if os.path.isfile(state_path):
+                self._native_resume_checkpoint = resume_from_checkpoint
+                # The stateful loader performs deterministic replay itself. Letting
+                # Trainer also call skip_first_batches would advance the stream twice.
+                self.args.ignore_data_skip = True
+                logger.info("Will restore native WebDataset state from %s", state_path)
+            else:
+                logger.warning(
+                    "Native WebDataset state is absent from %s; falling back to "
+                    "Trainer batch skipping",
+                    resume_from_checkpoint,
+                )
+        return result
+
+    def _save_checkpoint(self, model, trial):
+        super()._save_checkpoint(model, trial)
+        loader = self._native_train_loader
+        state_fn = getattr(loader, "state_dict", None)
+        if not callable(state_fn):
+            return
+        run_dir = self._get_output_dir(trial=trial)
+        checkpoint_dir = os.path.join(run_dir, f"checkpoint-{self.state.global_step}")
+        os.makedirs(checkpoint_dir, exist_ok=True)
+        state_path = self._native_dataloader_state_path(checkpoint_dir)
+        temporary_path = f"{state_path}.tmp.{os.getpid()}"
+        with open(temporary_path, "w", encoding="utf-8") as stream:
+            json.dump(state_fn(), stream, sort_keys=True)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary_path, state_path)
 
     def log(self, logs, start_time=None):
         """Attach native WebDataset health and batching metrics to Trainer logs."""
@@ -304,13 +351,27 @@ class ATrainer(Trainer):
                 dataloader_config.dispatch_batches = False
                 dataloader_config.split_batches = False
                 dataloader_config.even_batches = False
-            return train_dataset.build_loader(
+            loader = train_dataset.build_loader(
                 collate_fn=self.data_collator,
                 num_workers=self.args.dataloader_num_workers,
                 pin_memory=self.args.dataloader_pin_memory,
                 persistent_workers=self.args.dataloader_persistent_workers,
                 prefetch_factor=getattr(self.args, "dataloader_prefetch_factor", None),
             )
+            if self._native_resume_checkpoint is not None:
+                state_path = self._native_dataloader_state_path(
+                    self._native_resume_checkpoint
+                )
+                with open(state_path, "r", encoding="utf-8") as stream:
+                    loader.load_state_dict(json.load(stream))
+                logger.info(
+                    "Restored native WebDataset cursor from %s; replay will occur "
+                    "from the start of the saved epoch",
+                    state_path,
+                )
+                self._native_resume_checkpoint = None
+            self._native_train_loader = loader
+            return loader
 
         max_tokens = getattr(self.args, "max_tokens_per_batch", None)
         if max_tokens is None:

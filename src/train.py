@@ -120,6 +120,46 @@ def _load_state_dict_from_checkpoint(checkpoint: str) -> dict:
     )
 
 
+def _validate_resume_batch_settings(training_args, checkpoint: str) -> None:
+    """Reject full-state resume when batch boundaries would change."""
+    saved_args_path = os.path.join(checkpoint, "training_args.bin")
+    if not os.path.isfile(saved_args_path):
+        raise ValueError(
+            "Cannot verify resume batch settings because the checkpoint is missing "
+            f"training_args.bin: {checkpoint}"
+        )
+
+    try:
+        saved_args = torch.load(
+            saved_args_path,
+            map_location="cpu",
+            weights_only=False,
+        )
+    except TypeError:
+        saved_args = torch.load(saved_args_path, map_location="cpu")
+
+    batch_fields = (
+        "per_device_train_batch_size",
+        "gradient_accumulation_steps",
+        "max_tokens_per_batch",
+    )
+    mismatches = []
+    for name in batch_fields:
+        saved_value = getattr(saved_args, name, None)
+        current_value = getattr(training_args, name, None)
+        if saved_value != current_value:
+            mismatches.append(
+                f"{name}: checkpoint={saved_value!r}, current={current_value!r}"
+            )
+
+    if mismatches:
+        raise ValueError(
+            "Batch settings changed since the checkpoint; checkpoint_load_mode='resume' "
+            "requires identical batch boundaries. Restore the checkpoint values or use "
+            "checkpoint_load_mode='weights_only' for a new training state. Mismatches: "
+            + "; ".join(mismatches)
+        )
+
 
 def make_inputs_require_grad(module, input, output):
     output.requires_grad_(True)
@@ -235,6 +275,18 @@ def main():
                         f"Output directory ({training_args.output_dir}) already exists and is not empty, "
                         "but no checkpoints found. Overwriting existing files."
                     )
+
+    if (
+        str(getattr(training_args, "checkpoint_load_mode", "weights_only"))
+        .strip()
+        .lower()
+        == "resume"
+    ):
+        resume_checkpoint = resume_from_checkpoint_value
+        if resume_checkpoint in (None, False, "auto"):
+            resume_checkpoint = last_checkpoint
+        if isinstance(resume_checkpoint, str) and os.path.isdir(resume_checkpoint):
+            _validate_resume_batch_settings(training_args, resume_checkpoint)
 
     # Set seed before initializing model.
     set_seed(training_args.seed)

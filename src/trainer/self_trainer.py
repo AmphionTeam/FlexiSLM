@@ -680,11 +680,17 @@ class ATrainer(Trainer):
             )
 
             if metrics_to_log and use_swanlab:
-                # Get step if available, otherwise swanlab will track automatically
+                # Gradient accumulation can call compute_loss multiple times before
+                # global_step advances. SwanLab accepts the first value for a key at
+                # a step and warns for every duplicate, so emit custom metrics only
+                # once per train/eval step.
                 step = None
                 if hasattr(self, "state") and hasattr(self.state, "global_step"):
                     step = self.state.global_step
-                swanlab.log(metrics_to_log, step=step)
+                metric_log_id = (metric_prefix, step)
+                if getattr(self, "_last_swanlab_metric_log_id", None) != metric_log_id:
+                    swanlab.log(metrics_to_log, step=step)
+                    self._last_swanlab_metric_log_id = metric_log_id
         
         return (loss, outputs) if return_outputs else loss
     def evaluate(self, eval_dataset=None, ignore_keys=None, metric_key_prefix="eval"):

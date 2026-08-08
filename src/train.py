@@ -561,6 +561,20 @@ def main():
         return names
 
     def component_parameters(component_name):
+        # ``llm_lora`` is a virtual component for selecting only PEFT adapter
+        # parameters without unfreezing the wrapped Qwen backbone.
+        if component_name == "llm_lora":
+            if not model_args.use_lora:
+                raise ValueError("only_train_modules=llm_lora requires use_lora=True")
+            parameters = [
+                param
+                for name, param in model.model.named_parameters()
+                if "lora_" in name or "modules_to_save" in name
+            ]
+            if not parameters:
+                raise ValueError("only_train_modules=llm_lora found no PEFT adapter parameters")
+            return parameters
+
         component = getattr(model, component_name, None)
         if component is None:
             raise ValueError(f"only_train_modules references missing component: {component_name}")
@@ -762,8 +776,76 @@ def main():
             elif last_checkpoint is not None:
                 checkpoint = last_checkpoint
 
-        # Instead of passing checkpoint to trainer, load checkpoint weights directly
-        if checkpoint is not None:
+        checkpoint_load_mode = str(
+            getattr(training_args, "checkpoint_load_mode", "weights_only")
+        ).strip().lower()
+        if checkpoint_load_mode not in {"resume", "weights_only"}:
+            raise ValueError(
+                "checkpoint_load_mode must be 'resume' or 'weights_only', got "
+                f"{checkpoint_load_mode!r}"
+            )
+        if convert_from_lora and checkpoint_load_mode == "resume":
+            raise ValueError(
+                "convert_from_lora is incompatible with checkpoint_load_mode='resume'; "
+                "use checkpoint_load_mode='weights_only'"
+            )
+
+        trainer_resume_checkpoint = None
+        if checkpoint is not None and checkpoint_load_mode == "resume":
+            if not os.path.isdir(checkpoint):
+                raise ValueError(
+                    "checkpoint_load_mode='resume' requires a checkpoint directory, got "
+                    f"{checkpoint}"
+                )
+            required_state_files = ["trainer_state.json", "optimizer.pt", "scheduler.pt"]
+            missing_state_files = [
+                name
+                for name in required_state_files
+                if not os.path.isfile(os.path.join(checkpoint, name))
+            ]
+            rank = training_args.process_index
+            rank_rng = os.path.join(checkpoint, f"rng_state_{rank}.pth")
+            shared_rng = os.path.join(checkpoint, "rng_state.pth")
+            if not os.path.isfile(rank_rng) and not os.path.isfile(shared_rng):
+                missing_state_files.append(os.path.basename(rank_rng))
+            if getattr(train_dataset, "is_native_webdataset", False):
+                native_state = f"native_dataloader_state_rank{rank}.json"
+                if not os.path.isfile(os.path.join(checkpoint, native_state)):
+                    missing_state_files.append(native_state)
+            if missing_state_files:
+                raise ValueError(
+                    "checkpoint_load_mode='resume' requires complete Trainer state; "
+                    f"missing from {checkpoint}: {', '.join(missing_state_files)}"
+                )
+            trainer_resume_checkpoint = checkpoint
+            logger.info(
+                "Checkpoint load mode 'resume': restoring complete Trainer state from %s",
+                checkpoint,
+            )
+        elif checkpoint is not None:
+            logger.info(
+                "Checkpoint load mode 'weights_only': loading model weights from %s and "
+                "starting optimizer, scheduler, step, RNG, and dataloader state from scratch",
+                checkpoint,
+            )
+
+        if checkpoint is not None and checkpoint_load_mode == "weights_only":
+            initial_merging_state = None
+            should_reinitialize_merging = bool(
+                getattr(training_args, "reinitialize_input_merging_transformer", False)
+            )
+            if should_reinitialize_merging:
+                merging_module = getattr(model, "input_merging_transformer", None)
+                if merging_module is None:
+                    raise ValueError(
+                        "reinitialize_input_merging_transformer=True requires "
+                        "model.input_merging_transformer"
+                    )
+                initial_merging_state = {
+                    name: tensor.detach().cpu().clone()
+                    for name, tensor in merging_module.state_dict().items()
+                }
+
             # Support single-file and sharded Hugging Face checkpoints
             if os.path.isdir(checkpoint):
                 state_dict = _load_state_dict_from_checkpoint(checkpoint)
@@ -784,6 +866,17 @@ def main():
                 raise FileNotFoundError(f"Checkpoint path {checkpoint} does not exist.")
             logger.info(f"{checkpoint = } state_dict keys: {state_dict.keys()}")
             load_result = model.load_state_dict(state_dict, strict=False, assign=True)
+            if initial_merging_state is not None:
+                model.input_merging_transformer.load_state_dict(
+                    initial_merging_state, strict=True, assign=True
+                )
+                logger.info(
+                    "Restored fresh Stage 2 input_merging_transformer initialization "
+                    "after loading exported model checkpoint %s",
+                    checkpoint,
+                )
+                initial_merging_state = None
+
             missing_keys = load_result.missing_keys
             unexpected_keys = load_result.unexpected_keys
             logger.info(f"Loaded checkpoint weights from {checkpoint}")
@@ -863,7 +956,9 @@ def main():
             ),
         )
         assert trainer.model is model, "Trainer must use the same model object; model_init would re-initialize weights"
-        train_result = trainer.train(resume_from_checkpoint=None)
+        train_result = trainer.train(
+            resume_from_checkpoint=trainer_resume_checkpoint
+        )
 
         if trainer.is_fsdp_enabled:
             trainer.accelerator.state.fsdp_plugin.set_state_dict_type("FULL_STATE_DICT")

@@ -144,7 +144,8 @@ class ModelArguments:
         metadata={
             "help": (
                 "Comma-separated top-level model module/parameter names. When set, freeze every parameter "
-                "and then unfreeze only the listed components."
+                "and then unfreeze only the listed components. The virtual component 'llm_lora' selects "
+                "only PEFT adapter parameters inside the wrapped LLM without unfreezing the backbone."
             )
         },
     )
@@ -751,6 +752,25 @@ class TrainingArguments(transformers.TrainingArguments):
             )
         },
     )
+    checkpoint_load_mode: str = field(
+        default="weights_only",
+        metadata={
+            "help": (
+                "How to load resume_from_checkpoint: 'resume' restores the complete Trainer "
+                "state (model, optimizer, scheduler, global step, RNG, and dataloader cursor); "
+                "'weights_only' loads only model weights and starts a new training state."
+            )
+        },
+    )
+    reinitialize_input_merging_transformer: bool = field(
+        default=False,
+        metadata={
+            "help": (
+                "Keep the freshly initialized input_merging_transformer after a weights_only "
+                "checkpoint load instead of restoring that component's checkpoint weights."
+            )
+        },
+    )
     combine_proj_learning_rate: Optional[float] = field(
         default=None,
         metadata={
@@ -788,4 +808,13 @@ class TrainingArguments(transformers.TrainingArguments):
             )
         },
     )
-    
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.checkpoint_load_mode = str(self.checkpoint_load_mode).strip().lower()
+        if self.checkpoint_load_mode not in {"resume", "weights_only"}:
+            raise ValueError(
+                "checkpoint_load_mode must be 'resume' or 'weights_only', got "
+                f"{self.checkpoint_load_mode!r}"
+            )
+

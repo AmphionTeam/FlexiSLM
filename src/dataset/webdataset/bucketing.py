@@ -14,7 +14,7 @@ from .types import LengthVector
 @dataclass(frozen=True)
 class BatchLimits:
     max_cost: Optional[float] = None
-    max_samples: int = 1
+    max_samples: Optional[int] = 1
     min_samples: int = 1
     pool_samples: int = 2048
     pool_bytes: int = 1024**3
@@ -24,7 +24,13 @@ class BatchLimits:
     def __post_init__(self):
         if self.max_cost is not None and self.max_cost <= 0:
             raise ValueError("max_cost must be positive")
-        if self.max_samples <= 0 or not 1 <= self.min_samples <= self.max_samples:
+        if self.max_samples is not None and (
+            self.max_samples <= 0 or not 1 <= self.min_samples <= self.max_samples
+        ):
+            raise ValueError("batch sample limits are invalid")
+        if self.max_samples is None and self.max_cost is None:
+            raise ValueError("at least one batch limit must be configured")
+        if self.min_samples <= 0:
             raise ValueError("batch sample limits are invalid")
         if self.pool_samples <= 0 or self.pool_bytes <= 0 or self.chunk_size <= 0:
             raise ValueError("bucketing bounds must be positive")
@@ -64,35 +70,82 @@ def pool_sort_samples(
     rng: random.Random,
     on_pool_drain: Optional[Callable[[float], None]] = None,
 ) -> Iterator[Any]:
-    """Sort bounded pools by length, then shuffle similarly sized chunks."""
+    """Continuously refill a bounded pool and emit similar-length chunks."""
+    source = iter(source)
     pool = []
+    ready = []
+    pending = None
     retained_bytes = 0
+    source_exhausted = False
 
-    def drain():
-        if on_pool_drain is not None:
-            fill_ratio = max(
-                len(pool) / pool_samples,
-                retained_bytes / pool_bytes,
-            )
-            on_pool_drain(min(1.0, fill_ratio))
-        pool.sort(key=lambda item: item.lengths.total)
-        chunks = [pool[index : index + chunk_size] for index in range(0, len(pool), chunk_size)]
-        rng.shuffle(chunks)
-        for chunk in chunks:
-            # Avoid a fixed order among samples with equal/near-equal lengths.
-            rng.shuffle(chunk)
-            yield from chunk
+    def observe_pool() -> None:
+        if on_pool_drain is None:
+            return
+        fill_ratio = max(
+            (len(pool) + len(ready)) / pool_samples,
+            retained_bytes / pool_bytes,
+        )
+        on_pool_drain(min(1.0, fill_ratio))
 
-    for sample in source:
+    def take_source():
+        nonlocal pending, source_exhausted
+        if pending is not None:
+            sample, pending = pending, None
+            return sample
+        if source_exhausted:
+            return None
+        try:
+            return next(source)
+        except StopIteration:
+            source_exhausted = True
+            return None
+
+    def refill_one() -> None:
+        nonlocal pending, retained_bytes
+        sample = take_source()
+        if sample is None:
+            return
         size = _prepared_nbytes(sample)
-        if pool and (len(pool) >= pool_samples or retained_bytes + size > pool_bytes):
-            yield from drain()
-            pool = []
-            retained_bytes = 0
+        retained_samples = len(pool) + len(ready)
+        if retained_samples and (
+            retained_samples >= pool_samples or retained_bytes + size > pool_bytes
+        ):
+            pending = sample
+            return
+        # A single item larger than the byte limit is allowed through without
+        # retaining another item beside it, matching byte_bounded_shuffle.
         pool.append(sample)
         retained_bytes += size
-    if pool:
-        yield from drain()
+
+    while len(pool) + len(ready) < pool_samples and not source_exhausted:
+        before = len(pool)
+        refill_one()
+        if pending is not None or len(pool) == before:
+            break
+
+    while pool or ready or pending is not None:
+        if not ready:
+            if not pool:
+                refill_one()
+                if not pool:
+                    break
+            observe_pool()
+            pool.sort(key=lambda item: item.lengths.total)
+            chunk_count = (len(pool) + chunk_size - 1) // chunk_size
+            chunk_index = rng.randrange(chunk_count)
+            start = chunk_index * chunk_size
+            ready = pool[start : start + chunk_size]
+            del pool[start : start + chunk_size]
+            # Avoid a fixed order among samples with equal/near-equal lengths.
+            rng.shuffle(ready)
+
+        sample = ready.pop()
+        retained_bytes -= _prepared_nbytes(sample)
+        yield sample
+
+        # This code runs when the consumer requests its next sample, spreading
+        # one upstream read/prepare operation across each delivered item.
+        refill_one()
 
 
 class DynamicBatchIterator(Iterator[list[Any]]):
@@ -146,7 +199,10 @@ class DynamicBatchIterator(Iterator[list[Any]]):
                 continue
 
             candidate = batch + [sample]
-            exceeds = len(candidate) > self.limits.max_samples or (
+            exceeds = (
+                self.limits.max_samples is not None
+                and len(candidate) > self.limits.max_samples
+            ) or (
                 self.limits.max_cost is not None
                 and projected_padding_cost(item.lengths for item in candidate)
                 > self.limits.max_cost

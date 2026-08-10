@@ -316,9 +316,15 @@ class SharedAudioTasksAdapter:
         if context.physical_sample_atomic and errors:
             raise errors[0]
         selected = self._select_tasks(sample, list(prepared_by_task), context)
-        shared_asset = _asset("audio", audio_key, sample[audio_key], {})
+        assets_by_audio_metadata = {}
         for task in selected:
             metadata, messages, bindings = prepared_by_task[task]
+            # ASR and TTS sidecars carry duration/token metadata independently.
+            # Preserve it for early rejection, while sharing the immutable asset
+            # when both task sidecars describe the same physical audio.
+            candidate = _asset("audio", audio_key, sample[audio_key], metadata)
+            asset_key = (candidate.duration, candidate.sample_rate, candidate.num_frames)
+            asset = assets_by_audio_metadata.setdefault(asset_key, candidate)
             key, url, physical_uid, uid = _ids(sample, context, task)
             yield CanonicalSample(
                 uid=uid,
@@ -328,7 +334,7 @@ class SharedAudioTasksAdapter:
                 shard_url=url,
                 task=task,
                 messages=messages,
-                assets={"audio": shared_asset},
+                assets={"audio": asset},
                 bindings=bindings,
                 metadata=dict(metadata),
             )

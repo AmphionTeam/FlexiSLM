@@ -149,6 +149,77 @@ class SkipFinalCheckpointCallback(TrainerCallback):
         return self._skip_final_save(args, state, control, SaveStrategy.EPOCH)
 
 
+class TrainingProfilerCallback(TrainerCallback):
+    """Capture a short CPU/CUDA/NCCL trace when explicitly enabled.
+
+    Set ``FLEXISLM_PROFILE_DIR`` to enable profiling. The wait, warmup, and
+    active step counts default to 10/5/20 and can be changed with matching
+    ``FLEXISLM_PROFILE_*_STEPS`` environment variables. Each distributed rank
+    writes a separate TensorBoard-compatible trace directory.
+    """
+
+    def __init__(self):
+        self.profiler = None
+        self.profile_steps = 0
+        self.total_profile_steps = 0
+
+    def on_train_begin(self, args, state, control, **kwargs):
+        root = os.environ.get("FLEXISLM_PROFILE_DIR")
+        if not root:
+            return control
+        wait = int(os.environ.get("FLEXISLM_PROFILE_WAIT_STEPS", "10"))
+        warmup = int(os.environ.get("FLEXISLM_PROFILE_WARMUP_STEPS", "5"))
+        active = int(os.environ.get("FLEXISLM_PROFILE_ACTIVE_STEPS", "20"))
+        if min(wait, warmup, active) < 0 or active == 0:
+            raise ValueError(
+                "FlexiSLM profiler step counts must be non-negative and active > 0"
+            )
+        trace_dir = os.path.join(root, f"rank{args.process_index}")
+        os.makedirs(trace_dir, exist_ok=True)
+        activities = [torch.profiler.ProfilerActivity.CPU]
+        if torch.cuda.is_available():
+            activities.append(torch.profiler.ProfilerActivity.CUDA)
+        self.profiler = torch.profiler.profile(
+            activities=activities,
+            schedule=torch.profiler.schedule(
+                wait=wait, warmup=warmup, active=active, repeat=1
+            ),
+            on_trace_ready=torch.profiler.tensorboard_trace_handler(trace_dir),
+            record_shapes=True,
+            profile_memory=True,
+            with_stack=False,
+        )
+        self.profiler.__enter__()
+        self.profile_steps = 0
+        self.total_profile_steps = wait + warmup + active
+        logger.info(
+            "Enabled training profiler for rank %d: wait=%d warmup=%d active=%d output=%s",
+            args.process_index,
+            wait,
+            warmup,
+            active,
+            trace_dir,
+        )
+        return control
+
+    def _close(self):
+        if self.profiler is not None:
+            self.profiler.__exit__(None, None, None)
+            self.profiler = None
+
+    def on_step_end(self, args, state, control, **kwargs):
+        if self.profiler is not None:
+            self.profiler.step()
+            self.profile_steps += 1
+            if self.profile_steps >= self.total_profile_steps:
+                self._close()
+        return control
+
+    def on_train_end(self, args, state, control, **kwargs):
+        self._close()
+        return control
+
+
 class ATrainer(Trainer):
     _NATIVE_DATALOADER_STATE = "native_dataloader_state_rank{rank}.json"
 
@@ -158,6 +229,7 @@ class ATrainer(Trainer):
         self._native_train_loader = None
         # Run after DefaultFlowCallback so its forced final checkpoint is disabled.
         self.add_callback(SkipFinalCheckpointCallback)
+        self.add_callback(TrainingProfilerCallback)
 
     def _native_dataloader_state_path(self, checkpoint_dir):
         return os.path.join(

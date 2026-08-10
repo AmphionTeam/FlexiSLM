@@ -119,11 +119,11 @@ def build_qwen2_webdataset(
     configured_max_cost = batch_cfg.get(
         "max_cost", getattr(training_args, "max_tokens_per_batch", None)
     )
-    max_samples = int(
-        batch_cfg.get(
-            "max_samples",
-            batch_cfg.get("fixed_batch_size", batch_size),
-        )
+    configured_max_samples = batch_cfg.get("max_samples")
+    if configured_max_samples is None and configured_max_cost is None:
+        configured_max_samples = batch_cfg.get("fixed_batch_size", batch_size)
+    max_samples = (
+        int(configured_max_samples) if configured_max_samples is not None else None
     )
 
     # Expand brace patterns before rank/worker assignment so every process sees

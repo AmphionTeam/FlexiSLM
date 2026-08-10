@@ -220,6 +220,24 @@ webdataset_runtime:
     max_samples: 5
 ```
 
+Duration metadata in `audios`/`audio_durations` sidecars is used to reject
+out-of-range audio before tokenization and full decoding. The streaming loader
+also reports `webdataset/main_loader_wait_time` plus starvation ratios at 50,
+100, 500, and 1000 ms, which measure how long the training process actually
+blocks waiting for prefetched batches.
+
+For a short CPU/CUDA/NCCL trace, set `FLEXISLM_PROFILE_DIR` before launching
+training. Every distributed rank writes a separate TensorBoard-compatible
+trace. The default capture waits 10 steps, warms up for 5, and records 20:
+
+```bash
+FLEXISLM_PROFILE_DIR=/tmp/flexislm-profile scripts/train.sh config/train_stage2.yaml
+```
+
+Override the window with `FLEXISLM_PROFILE_WAIT_STEPS`,
+`FLEXISLM_PROFILE_WARMUP_STEPS`, and `FLEXISLM_PROFILE_ACTIVE_STEPS`. Profiling
+adds overhead and should only be enabled for short diagnostic runs.
+
 Training does not construct evaluation datasets. Run inference through
 `src.infer` and metrics through `src.eval` as separate workflows.
 

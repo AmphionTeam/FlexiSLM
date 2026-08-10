@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import random
 import time
 from contextlib import nullcontext
@@ -259,6 +260,10 @@ class FlexiWebDataset(torch.utils.data.IterableDataset):
             }
 
         payload = {
+            # Bump when deterministic stream ordering changes. Rolling bucketing
+            # is intentionally incompatible with cursors from the drain/refill
+            # implementation.
+            "pipeline_version": 2,
             "shards": list(self.config.shards),
             "sources": [asdict(source) for source in self.config.sources],
             "layout": self.config.layout,
@@ -351,6 +356,18 @@ class FlexiWebDataset(torch.utils.data.IterableDataset):
             )
         return sequential_physical_samples(shards, shard_cache=shard_cache)
 
+    @staticmethod
+    def _invalid_metadata_duration(logical):
+        """Return the first invalid metadata duration without decoding audio."""
+        for binding in logical.bindings:
+            duration = logical.assets[binding.asset_id].duration
+            if duration is None:
+                continue
+            maximum = 30.0 if binding.role == "user" else 60.0
+            if not math.isfinite(duration) or duration < 1.5 or duration > maximum:
+                return binding.role, duration, maximum
+        return None
+
     def _logical_samples(self):
         # AdapterContext is process-local after DataLoader worker creation.
         self.adapter_context.epoch = self.epoch
@@ -366,6 +383,19 @@ class FlexiWebDataset(torch.utils.data.IterableDataset):
                 adapter = self.registry.resolve(physical, expected_layout)
                 self.metrics.record_layout(adapter.name)
                 for logical in adapter.expand(physical, context):
+                    invalid_duration = self._invalid_metadata_duration(logical)
+                    if invalid_duration is not None:
+                        role, duration, maximum = invalid_duration
+                        self.metrics.record_duration_filter(role)
+                        logger.debug(
+                            "Filtering logical sample %s from duration metadata: "
+                            "%s audio %.2fs is outside [1.5, %.0f]",
+                            logical.uid,
+                            role,
+                            duration,
+                            maximum,
+                        )
+                        continue
                     self.metrics.record_logical(logical.task)
                     yield logical
             except Exception as exc:
@@ -593,7 +623,15 @@ class StatefulWebLoader:
                     torch.cuda.set_rng_state_all(cuda_rng)
         else:
             iterator = iter(self.loader)
-        for batch in iterator:
+        while True:
+            started = time.perf_counter()
+            try:
+                batch = next(iterator)
+            except StopIteration:
+                return
+            metrics = getattr(self.dataset, "metrics", None)
+            if metrics is not None:
+                metrics.record_main_loader_wait(time.perf_counter() - started)
             self._batches_yielded += 1
             yield batch
 

@@ -36,13 +36,23 @@ _COUNTERS = (
     "samples_filtered_layout",
     "samples_filtered_prepare",
     "samples_filtered_materialize",
+    "samples_filtered_duration",
     "samples_filtered_drop_last",
     "samples_filtered_oversized",
+    "duration_filtered_user",
+    "duration_filtered_assistant",
     "batches_emitted",
     "batch_size_sum",
     "batch_cost_sum",
     "unpadded_cost_sum",
     "data_wait_time_sum",
+    "main_loader_batches",
+    "main_loader_wait_time_sum",
+    "main_loader_wait_time_max",
+    "main_loader_wait_over_050ms",
+    "main_loader_wait_over_100ms",
+    "main_loader_wait_over_500ms",
+    "main_loader_wait_over_1000ms",
     "shuffle_buffer_samples_peak",
     "shuffle_buffer_bytes_peak",
     "bucket_pools_drained",
@@ -113,6 +123,33 @@ class SharedStreamMetrics:
             self._values[_INDEX["samples_filtered"]] += float(value)
             self._values[_INDEX[counter]] += float(value)
 
+    def record_duration_filter(self, role: str) -> None:
+        """Count an expected metadata-based duration rejection by audio role."""
+        role_counter = f"duration_filtered_{role}"
+        if role_counter not in _INDEX:
+            raise KeyError(f"unknown audio role for duration filter: {role!r}")
+        with self._values.get_lock():
+            self._values[_INDEX["samples_filtered"]] += 1.0
+            self._values[_INDEX["samples_filtered_duration"]] += 1.0
+            self._values[_INDEX[role_counter]] += 1.0
+
+    def record_main_loader_wait(self, seconds: float) -> None:
+        """Record main-process time blocked obtaining one prefetched batch."""
+        value = max(0.0, float(seconds))
+        with self._values.get_lock():
+            self._values[_INDEX["main_loader_batches"]] += 1.0
+            self._values[_INDEX["main_loader_wait_time_sum"]] += value
+            maximum = _INDEX["main_loader_wait_time_max"]
+            self._values[maximum] = max(self._values[maximum], value)
+            for threshold, counter in (
+                (0.050, "main_loader_wait_over_050ms"),
+                (0.100, "main_loader_wait_over_100ms"),
+                (0.500, "main_loader_wait_over_500ms"),
+                (1.000, "main_loader_wait_over_1000ms"),
+            ):
+                if value >= threshold:
+                    self._values[_INDEX[counter]] += 1.0
+
     def record_error(self, error: Exception, *, stage: str) -> None:
         counter = _ERROR_COUNTERS.get(type(error).__name__)
         if counter is not None:
@@ -160,6 +197,15 @@ class SharedStreamMetrics:
         raw["batch_cost"] = padded / batches if batches else 0.0
         raw["padding_ratio"] = 1.0 - raw["unpadded_cost_sum"] / padded if padded else 0.0
         raw["data_wait_time"] = raw["data_wait_time_sum"] / batches if batches else 0.0
+        main_batches = raw["main_loader_batches"]
+        raw["main_loader_wait_time"] = (
+            raw["main_loader_wait_time_sum"] / main_batches if main_batches else 0.0
+        )
+        for suffix in ("050ms", "100ms", "500ms", "1000ms"):
+            count = raw[f"main_loader_wait_over_{suffix}"]
+            raw[f"main_loader_wait_over_{suffix}_ratio"] = (
+                count / main_batches if main_batches else 0.0
+            )
         pools = raw["bucket_pools_drained"]
         raw["bucket_fill_ratio"] = (
             raw["bucket_fill_ratio_sum"] / pools if pools else 0.0

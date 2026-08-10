@@ -27,19 +27,11 @@ import random
 import logging
 from functools import partial
 import torch
-from torch import nn
 from torch.utils.data import DataLoader
-from typing import Any, Union
 from tqdm import tqdm
 from transformers import Trainer, TrainerCallback
 from transformers.trainer_utils import SaveStrategy, seed_worker
-from transformers.utils import is_datasets_available, is_sagemaker_mp_enabled
-
-# Import datasets module
-try:
-    import datasets
-except ImportError:
-    datasets = None
+from transformers.utils import is_sagemaker_mp_enabled
 
 logger = logging.getLogger(__name__)
 logger.setLevel("INFO")
@@ -64,7 +56,6 @@ class TokenBudgetBatchSampler(torch.utils.data.Sampler):
         drop_last=False,
         rank=0,
         world_size=1,
-        pad_to_world_size=False,
     ):
         self.lengths = list(lengths)
         self.max_tokens = max_tokens
@@ -74,7 +65,6 @@ class TokenBudgetBatchSampler(torch.utils.data.Sampler):
         self.drop_last = drop_last
         self.rank = rank
         self.world_size = world_size
-        self.pad_to_world_size = pad_to_world_size
         self.epoch = 0
 
         self._batches = self._build_batches()      # all batches, same on every rank
@@ -116,15 +106,10 @@ class TokenBudgetBatchSampler(torch.utils.data.Sampler):
         return batches
 
     def _rank_batches(self):
-        """Slice batch order for one rank, optionally padding deterministic eval."""
+        """Slice complete batch groups evenly across training ranks."""
         total = len(self._order)
-        if self.pad_to_world_size and total:
-            usable = ((total + self.world_size - 1) // self.world_size) * self.world_size
-            padding = usable - total
-            order = self._order + [self._order[i % total] for i in range(padding)]
-        else:
-            usable = (total // self.world_size) * self.world_size
-            order = self._order[:usable]
+        usable = (total // self.world_size) * self.world_size
+        order = self._order[:usable]
         return order[self.rank::self.world_size]
 
     def set_epoch(self, epoch):
@@ -306,16 +291,6 @@ class ATrainer(Trainer):
         )
         return self.optimizer
 
-    def _get_dataset_lengths(self, dataset):
-        if hasattr(dataset, "lengths"):
-            return dataset.lengths
-        if (
-            isinstance(dataset, torch.utils.data.Subset)
-            and hasattr(dataset.dataset, "lengths")
-        ):
-            base_lengths = dataset.dataset.lengths
-            return [base_lengths[i] for i in dataset.indices]
-        return None
     def _get_train_sampler(self, train_dataset=None):
         if train_dataset is None:
             train_dataset = self.train_dataset
@@ -415,120 +390,6 @@ class ATrainer(Trainer):
         )
         return dataloader
         # return self.accelerator.prepare(dataloader)
-    def get_eval_dataloader(self, eval_dataset=None) -> DataLoader:
-        """
-        Build the eval dataloader without Hugging Face's RemoveColumnsCollator.
-
-        InterleavedDataCollator needs fields such as `input_ids_per_turn` that
-        are not standard model-forward columns for wrapped/PEFT models. The
-        default Trainer eval dataloader can strip them before collation.
-        """
-        if eval_dataset is None and self.eval_dataset is None:
-            raise ValueError("Trainer: evaluation requires an eval_dataset.")
-
-        dataloader_key = eval_dataset if isinstance(eval_dataset, str) else "eval"
-        if (
-            hasattr(self, "_eval_dataloaders")
-            and dataloader_key in self._eval_dataloaders
-            and self.args.dataloader_persistent_workers
-        ):
-            return self._eval_dataloaders[dataloader_key]
-
-        eval_dataset = (
-            self.eval_dataset[eval_dataset]
-            if isinstance(eval_dataset, str)
-            else eval_dataset
-            if eval_dataset is not None
-            else self.eval_dataset
-        )
-        max_tokens = getattr(self.args, "max_tokens_per_batch", None)
-        if max_tokens is not None:
-            max_batch_size = None
-            if getattr(self.args, "per_device_train_batch_size", None) is not None:
-                max_batch_size = max(1, 3 * self.args.per_device_train_batch_size)
-
-            eval_lengths = self._get_dataset_lengths(eval_dataset)
-            if eval_lengths is None:
-                raise ValueError(
-                    "Eval dataset has no 'lengths' attribute; "
-                    "cannot use the training token-budget sampler"
-                )
-
-            batch_sampler = TokenBudgetBatchSampler(
-                lengths=eval_lengths,
-                max_tokens=max_tokens,
-                max_batch_size=max_batch_size,
-                shuffle=False,
-                seed=self.args.seed,
-                # Evaluation must retain the final partial batch so indexed
-                # cardinality does not depend on the training drop-last policy.
-                drop_last=False,
-                rank=self.args.process_index,
-                world_size=self.args.world_size,
-                pad_to_world_size=True,
-            )
-
-            dataloader_params = {
-                "batch_sampler": batch_sampler,
-                "collate_fn": self.data_collator,
-                "num_workers": self.args.dataloader_num_workers,
-                "pin_memory": self.args.dataloader_pin_memory,
-                "worker_init_fn": partial(
-                    seed_worker,
-                    num_workers=self.args.dataloader_num_workers,
-                    rank=self.args.process_index,
-                ),
-            }
-            if self.args.dataloader_persistent_workers and self.args.dataloader_num_workers > 0:
-                dataloader_params["persistent_workers"] = True
-
-            dataloader = DataLoader(eval_dataset, **dataloader_params)
-
-            _sample = batch_sampler._batches[:500] if len(batch_sampler._batches) > 500 else batch_sampler._batches
-            batch_sizes = [len(b) for b in _sample]
-            logger.info(
-                f"Eval TokenBudgetBatchSampler: max_tokens={max_tokens}, "
-                f"max_batch_size={max_batch_size}, "
-                f"{len(batch_sampler)} batches/eval, "
-                f"batch_size (sampled) min={min(batch_sizes)} avg={sum(batch_sizes)/len(batch_sizes):.1f} "
-                f"max={max(batch_sizes)}"
-            )
-
-            if self.args.dataloader_persistent_workers:
-                if hasattr(self, "_eval_dataloaders"):
-                    self._eval_dataloaders[dataloader_key] = dataloader
-                else:
-                    self._eval_dataloaders = {dataloader_key: dataloader}
-
-            return dataloader
-
-        dataloader_params = {
-            "batch_size": self.args.eval_batch_size,
-            "collate_fn": self.data_collator,
-            "num_workers": self.args.dataloader_num_workers,
-            "pin_memory": self.args.dataloader_pin_memory,
-        }
-        if self.args.dataloader_persistent_workers and self.args.dataloader_num_workers > 0:
-            dataloader_params["persistent_workers"] = True
-        if self.args.dataloader_num_workers > 0:
-            dataloader_params["prefetch_factor"] = self.args.dataloader_prefetch_factor
-
-        if not isinstance(eval_dataset, torch.utils.data.IterableDataset):
-            sampler = self._get_eval_sampler(eval_dataset)
-            if sampler is not None:
-                dataloader_params["sampler"] = sampler
-            dataloader_params["drop_last"] = False
-
-        dataloader = self.accelerator.prepare(DataLoader(eval_dataset, **dataloader_params))
-
-        if self.args.dataloader_persistent_workers:
-            if hasattr(self, "_eval_dataloaders"):
-                self._eval_dataloaders[dataloader_key] = dataloader
-            else:
-                self._eval_dataloaders = {dataloader_key: dataloader}
-
-        return dataloader
-
     def _unwrap_model(self, model):
         if getattr(self, "accelerator", None) is not None:
             try:
@@ -593,8 +454,7 @@ class ATrainer(Trainer):
         """
         local_batch_size = None
         global_batch_size = None
-        is_training = model.training
-        if self.args.process_index == 0 and is_training:
+        if self.args.process_index == 0:
             local_batch_size, global_batch_size = self._update_total_samples_seen(inputs)
 
         outputs = model(**inputs)
@@ -636,37 +496,35 @@ class ATrainer(Trainer):
                 text_ce = getattr(outputs, "text_ce_loss", None)
                 text_tok_existing = getattr(outputs, "text_token_loss", None)
 
-            metric_prefix = "" if is_training else "eval/"
-
             if text_ce is not None and torch.is_tensor(text_ce):
-                metrics_to_log[f"{metric_prefix}text_ce_loss"] = text_ce.item()
-                metrics_to_log[f"{metric_prefix}text_token_loss"] = text_ce.item() * w
+                metrics_to_log[f"text_ce_loss"] = text_ce.item()
+                metrics_to_log[f"text_token_loss"] = text_ce.item() * w
             elif text_tok_existing is not None and torch.is_tensor(text_tok_existing):
-                metrics_to_log[f"{metric_prefix}text_token_loss"] = text_tok_existing.item()
+                metrics_to_log[f"text_token_loss"] = text_tok_existing.item()
             if hasattr(outputs, "length_loss") and outputs.length_loss is not None:
-                metrics_to_log[f"{metric_prefix}length_loss"] = outputs.length_loss.item()
+                metrics_to_log[f"length_loss"] = outputs.length_loss.item()
             
             if hasattr(outputs, "audio_token_loss") and outputs.audio_token_loss is not None:
-                metrics_to_log[f"{metric_prefix}audio_token_loss"] = outputs.audio_token_loss.item()
+                metrics_to_log[f"audio_token_loss"] = outputs.audio_token_loss.item()
 
             # Depth transformer (acoustic) losses
             if hasattr(outputs, "acoustic_loss") and outputs.acoustic_loss is not None:
-                metrics_to_log[f"{metric_prefix}acoustic_loss"] = outputs.acoustic_loss.item()
+                metrics_to_log[f"acoustic_loss"] = outputs.acoustic_loss.item()
             if hasattr(outputs, "acoustic_ce_loss") and outputs.acoustic_ce_loss is not None:
-                metrics_to_log[f"{metric_prefix}acoustic_ce_loss"] = outputs.acoustic_ce_loss.item()
+                metrics_to_log[f"acoustic_ce_loss"] = outputs.acoustic_ce_loss.item()
             if hasattr(outputs, "acoustic_per_codebook_loss") and outputs.acoustic_per_codebook_loss is not None:
                 per_q = outputs.acoustic_per_codebook_loss
                 if torch.is_tensor(per_q):
                     for q_idx, val in enumerate(per_q.tolist()):
-                        metrics_to_log[f"{metric_prefix}acoustic_loss_q{q_idx}"] = val
+                        metrics_to_log[f"acoustic_loss_q{q_idx}"] = val
             
             if hasattr(outputs, "loss_text_only_data") and outputs.loss_text_only_data is not None:
-                metrics_to_log[f"{metric_prefix}loss_text_only_data"] = outputs.loss_text_only_data.item()
+                metrics_to_log[f"loss_text_only_data"] = outputs.loss_text_only_data.item()
             
             if hasattr(outputs, "loss_audio_dialog_data") and outputs.loss_audio_dialog_data is not None:
-                metrics_to_log[f"{metric_prefix}loss_audio_dialog_data"] = outputs.loss_audio_dialog_data.item()
+                metrics_to_log[f"loss_audio_dialog_data"] = outputs.loss_audio_dialog_data.item()
 
-            if is_training and local_batch_size is not None:
+            if local_batch_size is not None:
                 metrics_to_log["effective_batch_size"] = local_batch_size
                 metrics_to_log["global_effective_batch_size"] = global_batch_size
                 metrics_to_log["total_samples_seen"] = getattr(self, "_total_samples_seen", 0)
@@ -683,68 +541,16 @@ class ATrainer(Trainer):
                 # Gradient accumulation can call compute_loss multiple times before
                 # global_step advances. SwanLab accepts the first value for a key at
                 # a step and warns for every duplicate, so emit custom metrics only
-                # once per train/eval step.
+                # once per training step.
                 step = None
                 if hasattr(self, "state") and hasattr(self.state, "global_step"):
                     step = self.state.global_step
-                metric_log_id = (metric_prefix, step)
+                metric_log_id = step
                 if getattr(self, "_last_swanlab_metric_log_id", None) != metric_log_id:
                     swanlab.log(metrics_to_log, step=step)
                     self._last_swanlab_metric_log_id = metric_log_id
         
         return (loss, outputs) if return_outputs else loss
-    def evaluate(self, eval_dataset=None, ignore_keys=None, metric_key_prefix="eval"):
-        """
-        Run eval with prediction_loss_only=False so custom eval metrics are emitted.
-
-        Hugging Face Trainer passes prediction_loss_only=True when compute_metrics
-        is None. This trainer logs model-specific metrics from compute_loss, so we
-        temporarily install a no-op compute_metrics and force args.prediction_loss_only
-        off for evaluation.
-        """
-        original_compute_metrics = self.compute_metrics
-        original_prediction_loss_only = getattr(self.args, "prediction_loss_only", False)
-
-        if original_compute_metrics is None:
-            self.compute_metrics = lambda eval_pred: {}
-        self.args.prediction_loss_only = False
-
-        try:
-            return super().evaluate(
-                eval_dataset=eval_dataset,
-                ignore_keys=ignore_keys,
-                metric_key_prefix=metric_key_prefix,
-            )
-        finally:
-            self.compute_metrics = original_compute_metrics
-            self.args.prediction_loss_only = original_prediction_loss_only
-
-    def prediction_step(
-        self,
-        model: nn.Module,
-        inputs: dict[str, Union[torch.Tensor, Any]],
-        prediction_loss_only: bool,
-        ignore_keys=None,
-    ):
-        """
-        Force loss computation for eval batches that do not contain `labels`.
-
-        The interleaved collator provides model-specific inputs instead of a
-        standard `labels` field. The base Trainer otherwise skips loss
-        computation during eval and only reports throughput metrics.
-        """
-
-        inputs = self._prepare_inputs(inputs)
-        with torch.no_grad():
-            with self.compute_loss_context_manager():
-                loss = self.compute_loss(model, inputs, return_outputs=False)
-
-        if loss is None:
-            return (None, None, None)
-        # Keep logits/labels as None to avoid retaining very large model outputs
-        # while still running with prediction_loss_only=False and collecting loss.
-
-        return (loss.detach().mean(), None, None)
     def on_epoch_begin(self, args, state, control, **kwargs):
         dl = self.get_train_dataloader()
         bs = getattr(dl, "batch_sampler", None) or getattr(

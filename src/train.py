@@ -6,7 +6,6 @@
 import argparse
 import json
 import logging
-import math
 import os
 import sys
 import time
@@ -52,8 +51,6 @@ from src.dataset.interleaved import Qwen2Dataset
 from src.dataset.interleaved_collator import InterleavedDataCollator
 from src.dataset.webdataset.native import (
     build_qwen2_webdataset,
-    build_qwen2_webdataset_indexed,
-    is_webdataset_indexed_config,
     is_webdataset_stream_config,
 )
 from src.trainer.self_trainer import ATrainer
@@ -211,6 +208,12 @@ def parse_training_args(argv=None):
 def main():
     model_args, data_args, training_args = parse_training_args()
 
+    if training_args.do_eval:
+        raise ValueError(
+            "src/train.py is training-only; run evaluation through src.eval or "
+            "inference through src.infer instead of setting do_eval"
+        )
+
     # Setup logging
     logging.basicConfig(
         format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
@@ -239,7 +242,7 @@ def main():
         f"Process rank: {training_args.local_rank}, device: {training_args.device}, n_gpu: {training_args.n_gpu}, "
         + f"distributed training: {training_args.parallel_mode.value == 'distributed'}, 16-bits training: {training_args.fp16}"
     )
-    logger.info(f"Training/evaluation parameters {training_args}")
+    logger.info(f"Training parameters {training_args}")
 
 
     # Detecting last checkpoint.
@@ -711,14 +714,12 @@ def main():
 
 
     # breakpoint()
-    # Load data. Native WebDataset streams bypass BaseDataset and therefore do
-    # not construct a JSONL index or wds:// member references.
-    if is_webdataset_stream_config(data_args.dataset_name):
-        train_dataset_builder = build_qwen2_webdataset
-    elif is_webdataset_indexed_config(data_args.dataset_name):
-        train_dataset_builder = build_qwen2_webdataset_indexed
-    else:
-        train_dataset_builder = Qwen2Dataset
+    # Native WebDataset streams bypass the map-style training dataset.
+    train_dataset_builder = (
+        build_qwen2_webdataset
+        if is_webdataset_stream_config(data_args.dataset_name)
+        else Qwen2Dataset
+    )
     train_dataset = train_dataset_builder(
         data_args.dataset_name,  # cfg_path
         tokenizer,               # tokenizer
@@ -745,65 +746,11 @@ def main():
         use_omni_token=getattr(model_args, "use_omni_token", False),
         disable_text_normalize_llm=data_args.disable_text_normalize,
     )
-    # Evaluation uses an exact-length map-style index. A native streaming eval
-    # would make sample cardinality and cross-rank reduction depend on shard
-    # assignment, so require the explicit indexed backend for WebDataset eval.
-    if training_args.do_eval:
-        if is_webdataset_stream_config(data_args.dataset_name_eval):
-            raise ValueError(
-                "WebDataset evaluation requires dataset_backend: "
-                "webdataset_eval_indexed and a precomputed webdataset_index_path"
-            )
-        eval_dataset_builder = (
-            build_qwen2_webdataset_indexed
-            if is_webdataset_indexed_config(data_args.dataset_name_eval)
-            else Qwen2Dataset
-        )
-        eval_dataset = eval_dataset_builder(
-            data_args.dataset_name_eval,  # cfg_path
-            tokenizer,                    # tokenizer
-            max_padding_length=model_args.model_max_length,
-            variable_length=data_args.variable_length,
-            output_dir=training_args.output_dir,
-            training_args=training_args,
-            shift_token=False,
-            create_position_ids=True,
-            create_attention_mask=False,
-            create_attention_mask_2d=False,
-            create_loss_mask=False,
-            max_num_frame=model_args.max_num_frame,
-            max_fps=model_args.max_fps,
-            reset_position_ids=data_args.reset_position_ids,
-            reset_attention_mask=data_args.reset_attention_mask,
-            seed=training_args.seed,
-            cross_dataset_joint=data_args.cross_dataset_joint,
-            dataset_joint=data_args.dataset_joint,
-            use_megatron=False,
-            use_qwen3_feature=getattr(model_args, "use_qwen3_feature", False),
-            use_qwen25o_feature=getattr(model_args, "use_qwen25omni_feature", False),
-            use_whisper_fetaure=getattr(model_args, "use_whisper_fetaure", False),
-            use_omni_token=getattr(model_args, "use_omni_token", False),
-            disable_text_normalize_llm=data_args.disable_text_normalize,
-        )
-
-
     if training_args.do_train:
         if data_args.max_train_samples is not None:
             max_train_samples = min(len(train_dataset), data_args.max_train_samples)
             # train_dataset = train_dataset.select(range(max_train_samples))
             train_dataset = train_dataset[:max_train_samples]
-
-    if training_args.do_eval:
-        if data_args.max_eval_samples is not None:
-            original_eval_samples = len(eval_dataset)
-            max_eval_samples = min(original_eval_samples, data_args.max_eval_samples)
-            if original_eval_samples > max_eval_samples:
-                from torch.utils.data import Subset
-                eval_dataset = Subset(eval_dataset, list(range(max_eval_samples)))
-                            
-            print(f"Using first {len(eval_dataset)} of {original_eval_samples} samples for evaluation")
-            # eval_dataset = eval_dataset[:max_eval_samples]
-   
 
 
     # Training
@@ -1000,7 +947,6 @@ def main():
             model=model,
             args=training_args,
             train_dataset=train_dataset if training_args.do_train else None,
-            eval_dataset=eval_dataset if training_args.do_eval else None,
             processing_class=tokenizer,
             data_collator=InterleavedDataCollator(
                 tokenizer,
@@ -1036,24 +982,6 @@ def main():
         trainer.log_metrics("train", metrics)
         trainer.save_metrics("train", metrics)
         trainer.save_state()
-
-
-    # Evaluation
-    # if training_args.do_eval:
-    #     logger.info("*** Evaluate ***")
-
-    #     metrics = trainer.evaluate()
-
-    #     max_eval_samples = data_args.max_eval_samples if data_args.max_eval_samples is not None else len(eval_dataset)
-    #     metrics["eval_samples"] = min(max_eval_samples, len(eval_dataset))
-    #     try:
-    #         perplexity = math.exp(metrics["eval_loss"])
-    #     except OverflowError:
-    #         perplexity = float("inf")
-    #     metrics["perplexity"] = perplexity
-
-    #     trainer.log_metrics("eval", metrics)
-    #     trainer.save_metrics("eval", metrics)
 
 
 

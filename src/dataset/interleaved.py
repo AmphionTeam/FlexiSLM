@@ -1,6 +1,5 @@
 # Copyright (c) 2025 ByteDance Ltd. and/or its affiliates
 # SPDX-License-Identifier: MIT
-import io
 import json
 import logging
 import math
@@ -10,11 +9,10 @@ import random
 import re
 import subprocess
 import sys
-import tarfile
 import tempfile
 import time
 import traceback
-from collections import OrderedDict, defaultdict
+from collections import defaultdict
 from typing import Dict, List, Optional, Sequence
 import re
 import librosa
@@ -39,24 +37,6 @@ from flexicodec.feature_extractors import FBankGen
 
 from transformers.models.whisper import WhisperFeatureExtractor
 
-
-def _parse_wds_uri(uri: str):
-    if not isinstance(uri, str) or not uri.startswith("wds://"):
-        return None
-    payload = uri[len("wds://") :]
-    channel = None
-    if "#ch=" in payload:
-        payload, ch_text = payload.rsplit("#ch=", 1)
-        try:
-            channel = int(ch_text)
-        except Exception:
-            channel = None
-    if "::" not in payload:
-        return None
-    tar_path, member = payload.split("::", 1)
-    if not tar_path or not member:
-        return None
-    return tar_path, member, channel
 
 
 class Qwen3FbankExtractor:
@@ -465,61 +445,7 @@ class Qwen2Dataset(BaseDataset):
         
         # Counter for filtered samples (e.g., code-containing samples)
         self.filtered_samples = 0
-        self._wds_tar_cache = OrderedDict()
-        self._wds_tar_cache_maxsize = max(
-            1, int(self.cfg.get("webdataset_tar_cache_size", 300))
-        )
 
-    def _close_all_wds_cache(self):
-        while self._wds_tar_cache:
-            _, tar_obj = self._wds_tar_cache.popitem(last=False)
-            try:
-                tar_obj.close()
-            except Exception:
-                pass
-
-    def __getstate__(self):
-        # TarFile objects cannot be pickled into spawned DataLoader workers.
-        state = self.__dict__.copy()
-        state["_wds_tar_cache"] = OrderedDict()
-        return state
-
-    def __del__(self):
-        try:
-            self._close_all_wds_cache()
-        except Exception:
-            pass
-
-    def _load_audio_from_wds_uri(self, uri: str):
-        parsed = _parse_wds_uri(uri)
-        if parsed is None:
-            raise ValueError(f"Invalid wds uri: {uri}")
-        tar_path, member, channel = parsed
-        tar_obj = self._wds_tar_cache.get(tar_path)
-        if tar_obj is not None:
-            self._wds_tar_cache.move_to_end(tar_path)
-        else:
-            tar_obj = tarfile.open(tar_path, mode="r")
-            self._wds_tar_cache[tar_path] = tar_obj
-            while len(self._wds_tar_cache) > self._wds_tar_cache_maxsize:
-                _, evicted = self._wds_tar_cache.popitem(last=False)
-                try:
-                    evicted.close()
-                except Exception:
-                    pass
-        fp = tar_obj.extractfile(member)
-        if fp is None:
-            raise FileNotFoundError(f"Member {member} not found in tar {tar_path}")
-        wav, sr = torchaudio.load(io.BytesIO(fp.read()))
-        if channel is not None and wav.dim() == 2 and wav.shape[0] > 1:
-            ch = max(0, min(int(channel), int(wav.shape[0]) - 1))
-            wav = wav[ch : ch + 1, :]
-        return wav, sr
-
-    def _load_audio_any(self, path_or_uri: str):
-        if isinstance(path_or_uri, str) and path_or_uri.startswith("wds://"):
-            return self._load_audio_from_wds_uri(path_or_uri)
-        return torchaudio.load(path_or_uri)
     @property
     def lengths(self):
         """Token count estimate per sample for TokenBudgetBatchSampler.
@@ -642,9 +568,7 @@ class Qwen2Dataset(BaseDataset):
                     for p in raw_audio_paths:
                         if p is None:
                             continue
-                        if isinstance(p, str) and p.startswith("wds://"):
-                            audio_paths.append(p)
-                        elif self.audio_root and not os.path.isabs(p):
+                        if self.audio_root and not os.path.isabs(p):
                             audio_paths.append(os.path.join(self.audio_root, p))
                         else:
                             audio_paths.append(p)
@@ -652,8 +576,6 @@ class Qwen2Dataset(BaseDataset):
                     # -------- File existence check: if missing, skip this sample and pick another --------
                     missing_paths = []
                     for p in audio_paths:
-                        if isinstance(p, str) and p.startswith("wds://"):
-                            continue
                         if p and not os.path.isfile(p):
                             missing_paths.append(p)
 
@@ -671,10 +593,8 @@ class Qwen2Dataset(BaseDataset):
                     for audio_idx, audio_path in enumerate(audio_paths):
                         try:
                             try:
-                                wav, sr = self._load_audio_any(audio_path)
+                                wav, sr = torchaudio.load(audio_path)
                             except UnicodeDecodeError:
-                                if isinstance(audio_path, str) and audio_path.startswith("wds://"):
-                                    raise
                                 with tempfile.NamedTemporaryFile(suffix=".wav") as tmp:
                                     subprocess.run(
                                         ["ffmpeg", "-y", "-i", audio_path, "-f", "wav", tmp.name],

@@ -190,46 +190,38 @@ dataset:
       - path/to/eval.with_durations.jsonl
 ```
 
-Supported `data_paths` types:
+Supported training `data_paths` types:
 - JSONL file
-- WebDataset tar path, directory, or glob (`data_format: webdataset`)
 - parquet/local HF dataset path or HF dataset id
+- native WebDataset shard URLs or brace patterns (`data_format: webdataset_stream`)
 
-For WebDataset, build an index before training so distributed workers do not
-scan every tar shard at startup:
-
-```bash
-python local/precompute_webdataset_index.py \
-  --input 'path/to/shards/*.tar' \
-  --output path/to/train.webdataset.jsonl \
-  --task tts \
-  --prompt-template 'Read the following text out loud: {text}'
-```
-
-Then point the recipe at both the tar source and precomputed index:
+Native WebDataset training reads assigned shards sequentially and does not
+build a per-sample index. Select it at the dataset level and configure each
+source's physical layout:
 
 ```yaml
+dataset_backend: webdataset_stream
+
 dataset:
-  my_webdataset:
+  speech2speech:
     ratio: 1.0
-    data_format: webdataset
-    webdataset_index_path: path/to/train.webdataset.jsonl
+    data_format: webdataset_stream
     data_paths:
-      - path/to/shards/*.tar
+      - path/to/shards/train-{00000..00099}.tar
+    webdataset:
+      layout: s2s_pair
+
+webdataset_runtime:
+  sampling:
+    mode: finite_padded
+    steps_per_epoch: 1000
+  batching:
+    max_cost: 5000
+    max_samples: 5
 ```
 
-The index stores `wds://<tar>::<member>#ch=<channel>` references. Audio remains
-inside the tar shards and is decoded on demand during training.
-
-Run a one-step Stage 2 smoke test against the local S2S WebDataset with:
-
-```bash
-bash scripts/debug_stage2_s2s_webdataset.sh
-```
-
-The launcher indexes four samples from the first training shard, uses one GPU
-by default, disables remote reporting and checkpoint saving, and runs a single
-optimizer step. Override `S2S_DATA_ROOT` or `S2S_DEBUG_SHARD` when needed.
+Training does not construct evaluation datasets. Run inference through
+`src.infer` and metrics through `src.eval` as separate workflows.
 
 ## Inference Guide
 

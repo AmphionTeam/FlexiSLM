@@ -633,37 +633,21 @@ class ModelArguments:
 @dataclass
 class DataTrainingArguments:
     """
-    Arguments pertaining to what data we are going to input our model for training and eval.
+    Arguments pertaining to the data used for training.
     """
 
     dataset_name: Optional[str] = field(
         default="dataset/sts_finetune_stage1.yaml", metadata={"help": "The name of the dataset to use (via the datasets library)."}
     )
-    dataset_name_eval: Optional[str] = field(
-        default="dataset/sts_finetune_stage1_eval.yaml", metadata={"help": "The name of the eval dataset to use (via the datasets library)."}
-    )
     dataset_config_name: Optional[str] = field(
         default=None, metadata={"help": "The configuration name of the dataset to use (via the datasets library)."}
     )
     train_file: Optional[str] = field(default=None, metadata={"help": "The input training data file (a text file)."})
-    validation_file: Optional[str] = field(
-        default=None,
-        metadata={"help": "An optional input evaluation data file to evaluate the perplexity on (a text file)."},
-    )
     max_train_samples: Optional[int] = field(
         default=None,
         metadata={
             "help": (
                 "For debugging purposes or quicker training, truncate the number of training examples to this "
-                "value if set."
-            )
-        },
-    )
-    max_eval_samples: Optional[int] = field(
-        default=None,
-        metadata={
-            "help": (
-                "For debugging purposes or quicker training, truncate the number of evaluation examples to this "
                 "value if set."
             )
         },
@@ -680,7 +664,7 @@ class DataTrainingArguments:
         },
     )
     overwrite_cache: bool = field(
-        default=False, metadata={"help": "Overwrite the cached training and evaluation sets"}
+        default=False, metadata={"help": "Overwrite the cached training datasets"}
     )
     validation_split_percentage: Optional[int] = field(
         default=5,
@@ -725,15 +709,12 @@ class DataTrainingArguments:
         if self.streaming:
             require_version("datasets>=2.0.0", "The streaming feature requires `datasets>=2.0.0`")
 
-        if self.dataset_name is None and self.train_file is None and self.validation_file is None:
-            raise ValueError("Need either a dataset name or a training/validation file.")
+        if self.dataset_name is None and self.train_file is None:
+            raise ValueError("Need either a dataset name or a training file.")
         else:
             if self.train_file is not None:
                 extension = self.train_file.split(".")[-1]
                 assert extension in ["csv", "json", "txt"], "`train_file` should be a csv, a json or a txt file."
-            if self.validation_file is not None:
-                extension = self.validation_file.split(".")[-1]
-                assert extension in ["csv", "json", "txt"], "`validation_file` should be a csv, a json or a txt file."
 
 
 @dataclass

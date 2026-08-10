@@ -47,27 +47,19 @@ talker_learning_rate: 2.0e-4
 
 # Data
 dataset_name: config/datasets/train_stage2_3.yaml
-dataset_name_eval: config/datasets/eval.yaml
-max_eval_samples: 5000
 
 # Training
 do_train: true
-do_eval: true
 output_dir: outputs/train_stage2
 run_name: train_stage2
 num_train_epochs: 1
 per_device_train_batch_size: 3
 max_tokens_per_batch: 3000
-per_device_eval_batch_size: 4
 gradient_accumulation_steps: 1
 auto_find_batch_size: false
-eval_strategy: steps
-eval_steps: 5000
-eval_accumulation_steps: 1
-bf16_full_eval: true
 save_strategy: steps
 save_steps: 5000
-save_total_limit: 120
+save_total_limit: 10
 max_grad_norm: 1.0
 learning_rate: 2.0e-5
 weight_decay: 0.01

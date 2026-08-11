@@ -90,9 +90,14 @@ def _direct_text(record: dict[str, Any]) -> str:
 
 
 def _full_prompt(trace: dict[str, Any], item: dict[str, Any]) -> str:
-    """The complete prompt actually sent to the model (for ifeval / vb-qa)."""
+    """The complete prompt actually sent to the model (for ifeval / vb-qa).
+
+    Priority: instruction (str) > audio_content > model_prompt > input text >
+    dataset question. For audio-QA benchmarks the question/instruction text
+    lives in ``audio_content`` (the spoken content), which vb-qa/ifeval need.
+    """
     evaluation = trace["evaluation"]
-    for key in ("instruction", "prompt"):
+    for key in ("instruction", "audio_content", "prompt"):
         value = evaluation.get(key)
         if isinstance(value, str) and value.strip():
             return value

@@ -1,4 +1,9 @@
-"""ASR-based WER evaluation for generated TTS traces."""
+"""ASR transcription of generated TTS audio.
+
+WER is computed by the pinned Kimi-Audio-Evalkit ``FlexiSLM-WER`` benchmark;
+this module only transcribes generated WAVs (with resume/details support) and
+returns ``{index: hypothesis}`` for the eval adapter.
+"""
 
 from __future__ import annotations
 
@@ -10,7 +15,6 @@ from typing import Any, Iterable
 import numpy as np
 
 from .asr import _load_trace_records
-from .text import load_english_normalizer
 
 
 def _load_audio(path: Path, sample_rate: int = 16_000) -> np.ndarray:
@@ -127,26 +131,20 @@ def _load_resumable_details(
     return completed
 
 
-def evaluate_tts_wer(
+def transcribe_tts_trace(
     *,
     trace_file: Path,
-    evalkit_path: Path,
-    language: str,
     backend: str,
     model_path: str,
     device: str,
     batch_size: int,
     details_path: Path,
     resume: bool = True,
-) -> dict[str, Any]:
-    """Transcribe generated WAVs and compute corpus and legacy mean-sample WER."""
-    import editdistance
+    language: str = "en",
+) -> dict[int, str]:
+    """Transcribe generated TTS WAVs with resume; return ``{index: hypothesis}``."""
     import torch
 
-    if not evalkit_path.is_dir():
-        raise FileNotFoundError(f"Evalkit directory does not exist: {evalkit_path}")
-    if not trace_file.is_file():
-        raise FileNotFoundError(f"Trace file does not exist: {trace_file}")
     if batch_size < 1:
         raise ValueError("batch_size must be at least 1")
 
@@ -159,10 +157,6 @@ def evaluate_tts_wer(
             raise FileNotFoundError(
                 f"Trace index {record['index']} has no existing output audio: {audio_path}"
             )
-
-    if language != "en":
-        raise ValueError("TTS WER currently supports English traces only")
-    normalizer = load_english_normalizer(evalkit_path)
 
     details_path.parent.mkdir(parents=True, exist_ok=True)
     completed = (
@@ -205,27 +199,4 @@ def evaluate_tts_wer(
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
-    ordered = [completed[int(record["index"])] for record in records]
-    references = [normalizer(str(row["reference_text"])).split() for row in ordered]
-    hypotheses = [normalizer(str(row["asr_hypothesis"])).split() for row in ordered]
-    error_counts = [
-        int(editdistance.eval(reference, hypothesis))
-        for reference, hypothesis in zip(references, hypotheses)
-    ]
-    reference_word_counts = [len(reference) for reference in references]
-    total_reference_words = sum(reference_word_counts)
-    if not total_reference_words:
-        raise ValueError("TTS trace contains no reference words after normalization")
-    corpus_wer = sum(error_counts) / total_reference_words
-    sample_wers = [
-        min(errors / max(words, 1), 1.0)
-        for errors, words in zip(error_counts, reference_word_counts)
-    ]
-    return {
-        "word_error_rate_percent": round(float(corpus_wer) * 100, 2),
-        "legacy_mean_sample_wer_percent": round(float(np.mean(sample_wers)) * 100, 2),
-        "evaluated_record_count": len(records),
-        "asr_backend": backend,
-        "asr_model_path": model_path,
-        "details_path": str(details_path),
-    }
+    return {int(row["index"]): row["asr_hypothesis"] for row in completed.values()}

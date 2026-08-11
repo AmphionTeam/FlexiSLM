@@ -245,6 +245,29 @@ def archive_judge_artifacts(eval_file: Path, work_dir: Path) -> list[Path]:
     return [path for path in artifacts if path.is_file()]
 
 
+def _configure_judge_env(
+    judge_api_base: str | None,
+    judge_api_key: str | None,
+    judge_api_key_env: str | None,
+) -> None:
+    """Route the LLM judge to the configured model endpoint.
+
+    evalkit's OpenAIWrapper reads OPENAI_API_BASE / OPENAI_API_KEY from the
+    environment; this injects the eval-YAML judge settings so third-party
+    OpenAI-compatible endpoints (e.g. DeepSeek) work without code changes.
+    The key itself is referenced by env-var name (judge_api_key_env) to avoid
+    plaintext keys in YAML; an inline judge_api_key is allowed as a fallback.
+    """
+    if judge_api_base:
+        os.environ["OPENAI_API_BASE"] = judge_api_base
+    if judge_api_key:
+        os.environ["OPENAI_API_KEY"] = judge_api_key
+    elif judge_api_key_env:
+        value = os.environ.get(judge_api_key_env)
+        if value:
+            os.environ["OPENAI_API_KEY"] = value
+
+
 def run_evalkit_evaluate(
     *,
     eval_file: Path,
@@ -256,6 +279,9 @@ def run_evalkit_evaluate(
     work_dir: Path,
     dump_judge: bool = True,
     wer_high_threshold: float = 50.0,
+    judge_api_base: str | None = None,
+    judge_api_key: str | None = None,
+    judge_api_key_env: str | None = None,
 ) -> tuple[dict[str, Any], list[Path]]:
     """Run evalkit's ``dataset.evaluate()`` and archive raw judge artifacts.
 
@@ -263,6 +289,7 @@ def run_evalkit_evaluate(
     ``format_performance`` dict produced by evalkit.
     """
     activate_evalkit(evalkit_path, data_root, work_dir)
+    _configure_judge_env(judge_api_base, judge_api_key, judge_api_key_env)
     from almeval.datasets import build_dataset
 
     effective_method = method

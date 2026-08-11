@@ -111,6 +111,9 @@ def _run_evalkit_job(
         evalkit_path=evalkit_path,
         data_root=data_root,
         work_dir=result_path.parent,
+        judge_api_base=config.get("judge_api_base"),
+        judge_api_key=config.get("judge_api_key"),
+        judge_api_key_env=config.get("judge_api_key_env"),
     )
     result = {
         **result,

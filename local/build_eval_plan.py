@@ -288,6 +288,7 @@ def build_eval_config(
         "judge_api_key_env": eval_cfg.get("judge_api_key_env"),
         "judge_api_key": eval_cfg.get("judge_api_key"),
         "evalkit_commit": eval_cfg.get("evalkit_commit"),
+        "log_dir": str(output_root / "logs"),
         "jobs": [],
     }
     for job in jobs:

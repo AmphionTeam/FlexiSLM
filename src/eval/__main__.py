@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -58,6 +59,23 @@ def _job_meta(config: dict[str, Any], job: dict[str, Any], evalkit_commit: str |
         "data_root": str(resolve_path(config["data_root"])),
         "judge_model": str(config.get("judge_model", DEFAULT_JUDGE_MODEL)),
     }
+
+
+def _configure_run_logs(config: dict[str, Any], config_path: Path) -> Path:
+    """Keep evalkit API logs in one explicit directory for this eval run."""
+    configured_dir = config.get("log_dir")
+    log_dir = (
+        resolve_path(configured_dir)
+        if configured_dir is not None
+        else config_path.parent / "logs"
+    )
+    log_dir.mkdir(parents=True, exist_ok=True)
+    api_log = (log_dir / "llm_api_logs.jsonl").resolve()
+    # Always override evalkit's cwd-based fallback, which otherwise creates
+    # llm_api_logs.jsonl in whichever directory launched the evaluator.
+    os.environ["LLM_API_LOG_FILE"] = str(api_log)
+    print(f"Evaluation logs: {log_dir.resolve()}", flush=True)
+    return api_log
 
 
 def _write_result(result: dict[str, Any], result_path: Path) -> Path:
@@ -204,7 +222,9 @@ def _run_tts_job(
 
 
 def run(config_path: Path, selected_jobs: set[str] | None = None) -> list[Path]:
+    config_path = config_path.expanduser().resolve()
     config = load_config(config_path)
+    _configure_run_logs(config, config_path)
     evalkit_path = resolve_path(config["evalkit_path"])
     data_root = resolve_path(config["data_root"])
     model_name = str(config["model_name"])

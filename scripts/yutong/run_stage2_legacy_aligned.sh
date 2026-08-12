@@ -79,7 +79,6 @@ export PATH="$CONDA_ENV_PATH/bin:$PATH"
 export PYTORCH_CUDA_ALLOC_CONF=${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}
 export LD_LIBRARY_PATH="$CONDA_ENV_PATH/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 export HF_HOME=${HF_HOME:-/F00120260003/flexislm_project/yutong/models/huggingface}
-export LLM_API_LOG_FILE=${LLM_API_LOG_FILE:-/F00120260003/flexislm_project/yutong/logs/kimi-audio-evalkit/llm_api_logs.jsonl}
 
 GPU_COUNT=0
 if [[ -v CUDA_VISIBLE_DEVICES ]]; then

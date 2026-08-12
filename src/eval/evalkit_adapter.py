@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -269,8 +268,8 @@ def subset_row_counts(
 
 
 def archive_judge_artifacts(eval_file: Path, work_dir: Path) -> list[Path]:
-    """Enumerate judge artifacts produced next to ``eval_file`` and copy the
-    global LLM API log into ``work_dir``. Returns the archived file paths."""
+    """Return judge artifacts without copying the shared API log per job."""
+    del work_dir  # Kept in the signature for compatibility with existing callers.
     artifacts: list[Path] = []
     stem = eval_file.stem
     for pattern in (
@@ -280,13 +279,8 @@ def archive_judge_artifacts(eval_file: Path, work_dir: Path) -> list[Path]:
     ):
         artifacts.extend(sorted(eval_file.parent.glob(pattern)))
     llm_log = os.environ.get("LLM_API_LOG_FILE")
-    if llm_log and Path(llm_log).is_file():
-        dest = work_dir / "llm_api_logs.jsonl"
-        try:
-            shutil.copy2(llm_log, dest)
-            artifacts.append(dest)
-        except OSError as error:
-            print(f"WARNING: could not archive LLM API log: {error}", flush=True)
+    if llm_log:
+        artifacts.append(Path(llm_log).expanduser().resolve())
     return [path for path in artifacts if path.is_file()]
 
 

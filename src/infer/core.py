@@ -461,15 +461,17 @@ def _wav_name(index: int, sample_id: Any) -> str:
 def _save_wav(path: Path, audio: Any, sample_rate: int) -> float:
     if sample_rate <= 0:
         raise ValueError("output_sample_rate must be positive")
+    import soundfile as sf
     import torch
-    import torchaudio
 
     waveform = torch.as_tensor(audio).detach().float().cpu().squeeze()
     if waveform.ndim == 1:
         waveform = waveform.unsqueeze(0)
     if waveform.ndim != 2:
         raise ValueError(f"Unexpected generated audio shape: {tuple(waveform.shape)}")
-    torchaudio.save(str(path), waveform, sample_rate)
+    # SoundFile avoids torchaudio's TorchCodec backend, whose shared-library
+    # requirements vary across PyTorch/FFmpeg builds.
+    sf.write(str(path), waveform.transpose(0, 1).numpy(), sample_rate)
     return waveform.shape[-1] / sample_rate
 
 

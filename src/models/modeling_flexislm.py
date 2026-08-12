@@ -3889,16 +3889,21 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
                     next_talker_id = int(next_audio_token.item())
                     if next_talker_id >= AUDIO_TOKEN_OFFSET:
                         generated_audio_ids.append(next_audio_token_offset)  # audio code for output
-                    if getattr(self.config, "predict_second_audio_token", False):
-                        # In the second-audio-token ablation, ``next_length`` is a
-                        # talker-vocab id (0=AUD_END, 1=AUD_START, 3+=audio code).
-                        # Only record real audio codes; report them in audio-vocab
-                        # space (i.e. ``length_ids`` becomes the second-audio-token
-                        # stream, aligned with ``audio_ids``).
-                        if int(next_length.item()) >= AUDIO_TOKEN_OFFSET:
-                            generated_length_ids.append(next_length - AUDIO_TOKEN_OFFSET)
-                    else:
-                        if int(next_length.item()) != 0:
+                        if getattr(self.config, "predict_second_audio_token", False):
+                            # In the second-audio-token ablation, ``next_length`` is a
+                            # talker-vocab id (0=AUD_END, 1=AUD_START, 3+=audio code).
+                            # Keep only aligned pairs of real audio codes.
+                            if int(next_length.item()) >= AUDIO_TOKEN_OFFSET:
+                                generated_length_ids.append(
+                                    next_length - AUDIO_TOKEN_OFFSET
+                                )
+                            else:
+                                # The primary stream has no valid secondary pair.
+                                generated_audio_ids.pop()
+                        else:
+                            # Length class zero is valid and decodes to one frame.
+                            # Append it whenever an audio code is appended so the
+                            # FlexiCodec group and token-length axes stay aligned.
                             generated_length_ids.append(next_length)
 
 

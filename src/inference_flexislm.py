@@ -1205,16 +1205,34 @@ class InterleavedS2SInference:
             return None
         
         try:
-            # Remove text_vocab_size offset to get raw codec indices
-            semantic_codes = audio_tokens - self.model.text_vocab_size
+            # ``generate()`` returns raw FlexiCodec indices in the separate
+            # talker-vocab mode used by Stage2. Joint-vocab checkpoints retain
+            # the historical text-vocabulary offset.
+            semantic_codes = audio_tokens
+            if self.model.talker_vocab_size is None:
+                semantic_codes = semantic_codes - self.model.text_vocab_size
             semantic_codes = semantic_codes.unsqueeze(0).unsqueeze(0)  # [1, 1, T]
-            
-            # Convert length_ids to token_lengths (add 1 since classes are 0-indexed)
+
+            # Convert length classes to frame counts (classes are zero-indexed).
             if length_ids is not None:
                 token_lengths = length_ids.unsqueeze(0) + 1  # [1, T]
+                if token_lengths.size(1) != semantic_codes.size(2):
+                    aligned = min(token_lengths.size(1), semantic_codes.size(2))
+                    logger.warning(
+                        "FlexiCodec audio/length count mismatch: "
+                        f"audio={semantic_codes.size(2)}, "
+                        f"length={token_lengths.size(1)}; "
+                        f"truncating both to {aligned}"
+                    )
+                    semantic_codes = semantic_codes[:, :, :aligned]
+                    token_lengths = token_lengths[:, :aligned]
             else:
-                # Default to length class 1 if not provided
-                token_lengths = torch.ones(1, semantic_codes.size(1), dtype=torch.long, device=semantic_codes.device)
+                token_lengths = torch.ones(
+                    1,
+                    semantic_codes.size(2),
+                    dtype=torch.long,
+                    device=semantic_codes.device,
+                )
             
             # Decode using FlexiCodec
             with torch.no_grad():

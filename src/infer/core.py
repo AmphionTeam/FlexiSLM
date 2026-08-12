@@ -9,7 +9,6 @@ from typing import Any, Mapping
 
 
 DEFAULT_ASR_PROMPT = "Please transcribe the audio."
-DEFAULT_QA_PROMPT = "Please answer the question based on the audio content."
 DEFAULT_OUTPUT_SAMPLE_RATE = 24_000
 
 # Lazy per-(model_path, device) Whisper transcriber cache for s2s traces.
@@ -152,6 +151,7 @@ def _infer_asr(
         output_audio_path=None,
         reference_text=parts.evaluation.get("reference_text"),
         prediction_text=prediction,
+        subset=parts.evaluation.get("subset"),
         group=parts.evaluation.get("group"),
         metadata=parts.metadata,
         checkpoint=checkpoint,
@@ -172,7 +172,9 @@ def _infer_audio_qa(
     parts = _request_parts(request)
     audio_path = _required_string(parts.input, "audio_path", task="audio_qa")
     framerate = _target_framerate(engine, parts.metadata, target_framerate_hz)
-    model_prompt = parts.input.get("model_prompt") or DEFAULT_QA_PROMPT
+    # audio-only by default (matches legacy VoiceBench s2t): empty text query,
+    # the user turn contains only the audio token.
+    model_prompt = parts.input.get("model_prompt") or ""
 
     result = engine.generate_from_audio(
         audio_path=audio_path,
@@ -223,7 +225,9 @@ def _infer_s2s(
     parts = _request_parts(request)
     audio_path = _required_string(parts.input, "audio_path", task="s2s")
     framerate = _target_framerate(engine, parts.metadata, target_framerate_hz)
-    model_prompt = parts.input.get("model_prompt") or DEFAULT_QA_PROMPT
+    # audio-only by default (matches legacy s2s): empty text query, the user
+    # turn contains only the audio token.
+    model_prompt = parts.input.get("model_prompt") or ""
 
     result = engine.generate_from_audio(
         audio_path=audio_path,

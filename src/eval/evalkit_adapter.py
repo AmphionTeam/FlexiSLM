@@ -81,12 +81,38 @@ def activate_evalkit(evalkit_path: Path, data_root: Path, work_dir: Path) -> Pat
 
 
 def _direct_text(record: dict[str, Any]) -> str:
-    """Model's direct text output (evaluation.prediction_text or output.text)."""
+    """Return the model's direct text output.
+
+    ``evaluation.prediction_text`` is only a compatibility fallback. For S2S
+    traces it contains the generated audio's Whisper transcription, while the
+    model's actual direct text is stored in ``output.text``.
+    """
+    output_text = record["output"].get("text")
+    if isinstance(output_text, str) and output_text.strip().lower() != "null":
+        return output_text
+    output_audio = record["output"].get("audio_path")
+    if isinstance(output_audio, str) and output_audio:
+        # S2S prediction_text is the generated audio's ASR transcription, not
+        # a fallback for a missing direct-text response.
+        return ""
     prediction_text = record["evaluation"].get("prediction_text")
     if isinstance(prediction_text, str) and prediction_text.strip().lower() != "null":
         return prediction_text
-    output_text = record["output"].get("text")
-    return str(output_text) if isinstance(output_text, str) else ""
+    return ""
+
+
+def _audio_transcription(record: dict[str, Any]) -> str:
+    """Return the ASR transcription attached to a generated-audio trace."""
+    output_audio = record["output"].get("audio_path")
+    prediction_text = record["evaluation"].get("prediction_text")
+    if (
+        isinstance(output_audio, str)
+        and output_audio
+        and isinstance(prediction_text, str)
+        and prediction_text.strip().lower() != "null"
+    ):
+        return prediction_text
+    return ""
 
 
 def _full_prompt(trace: dict[str, Any], item: dict[str, Any]) -> str:
@@ -117,7 +143,10 @@ def _wer_row(
     reference = evaluation.get("reference_text") or evaluation.get("answer")
     prediction_text = _direct_text(record)
     prediction = (
-        transcriptions.get(int(record["index"])) or prediction_text or "null"
+        transcriptions.get(int(record["index"]))
+        or _audio_transcription(record)
+        or prediction_text
+        or "null"
     )
     subset = (
         evaluation.get("subset")
@@ -147,12 +176,20 @@ def build_evalkit_dataset_file(
     transcribe_callback: Callable[
         [list[dict[str, Any]]], dict[int, str]
     ] | None = None,
+    subsets: list[str] | None = None,
+    trace_indices_only: bool = False,
 ) -> Path:
     """Build ``{model}_{DATASET_NAME}.jsonl`` for evalkit from a unified trace.
 
     For official datasets (VoiceBench / OpenAudioBench) the eval file rows come
     from evalkit's own ``dataset.data`` (field consistency guaranteed), overlaid
     with prediction / prompt / prediction_text from the trace by ``index``.
+    When ``subsets`` is given, only dataset rows whose subset is listed are
+    emitted (e.g. evaluate only llama_questions/web_questions/trivia_qa of
+    OpenAudioBench without polluting scores with un-inferred subsets). When
+    ``trace_indices_only`` is true, official dataset rows missing from the
+    trace are omitted; this keeps limited smoke runs from judging ``null``
+    predictions for the rest of the dataset.
 
     For ``FlexiSLM-WER`` (ASR / TTS WER) there is no standalone dataset file:
     rows are built directly from trace records (subset=group, answer=reference).
@@ -175,10 +212,15 @@ def build_evalkit_dataset_file(
 
         dataset = build_dataset(dataset_name)
         by_index = {int(record["index"]): record for record in records}
+        selected_subsets = set(subsets) if subsets is not None else None
         rows = []
         for item in dataset.data:
             index = int(item["index"])
             subset = str(item.get("subset") or dataset_name)
+            if selected_subsets is not None and subset not in selected_subsets:
+                continue
+            if trace_indices_only and index not in by_index:
+                continue
             row = dict(item)
             row["subset"] = subset
             trace = by_index.get(index)
@@ -189,7 +231,10 @@ def build_evalkit_dataset_file(
             else:
                 prediction_text = _direct_text(trace)
                 row["prediction"] = (
-                    transcriptions.get(index) or prediction_text or "null"
+                    transcriptions.get(index)
+                    or _audio_transcription(trace)
+                    or prediction_text
+                    or "null"
                 )
                 row["prediction_text"] = prediction_text or None
                 row["prompt"] = _full_prompt(trace, item)

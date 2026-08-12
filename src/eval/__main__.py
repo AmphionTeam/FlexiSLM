@@ -102,6 +102,8 @@ def _run_evalkit_job(
         data_root=data_root,
         out_dir=out_dir,
         transcribe_callback=transcribe_callback,
+        subsets=job.get("subsets"),
+        trace_indices_only=bool(job.get("trace_indices_only", False)),
     )
     result, archived = run_evalkit_evaluate(
         eval_file=eval_file,

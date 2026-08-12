@@ -803,11 +803,12 @@ class InterleavedS2SInference:
         return prompt, prompt1
     
     def _load_audio(self, audio_path: str) -> Optional[torch.Tensor]:
-        """Load and resample audio to 16kHz."""
-        wav, sr = torchaudio.load(audio_path)
+        """Load audio with SoundFile and resample it to 16 kHz."""
+        audio, sr = sf.read(audio_path, dtype="float32", always_2d=True)
+        # SoundFile returns [time, channels]; inference expects [channels, time].
+        wav = torch.from_numpy(np.ascontiguousarray(audio.T))
         if sr != 16000:
-            resampler = T.Resample(sr, 16000)
-            wav = resampler(wav)
+            wav = T.Resample(sr, 16000)(wav)
         return wav
 
     def _encode_audio(self, audio_tensor: torch.Tensor, framerate: float = 1.0) -> Union[Dict, torch.Tensor]:

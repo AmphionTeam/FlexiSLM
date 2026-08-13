@@ -1968,10 +1968,18 @@ def run_interactive_mode(engine: InterleavedS2SInference, args):
             if isinstance(reconstructed_audio, torch.Tensor):
                 if reconstructed_audio.dim() == 1:
                     reconstructed_audio = reconstructed_audio.unsqueeze(0)
-                torchaudio.save(output_wav_path, reconstructed_audio.float().cpu(), 24000)
+                torchaudio.save(
+                    output_wav_path,
+                    reconstructed_audio.float().cpu(),
+                    engine.config.output_sample_rate,
+                )
             else:
                 # If it's numpy array, convert to tensor
-                torchaudio.save(output_wav_path, torch.from_numpy(reconstructed_audio).float().unsqueeze(0).cpu(), 24000)
+                torchaudio.save(
+                    output_wav_path,
+                    torch.from_numpy(reconstructed_audio).float().unsqueeze(0).cpu(),
+                    engine.config.output_sample_rate,
+                )
             print(f"Generated Audio saved: {output_wav_path}")
             chat_count += 1
         return output_wav_path
@@ -2692,8 +2700,8 @@ def main():
                         help="Input JSONL file for batch mode")
     parser.add_argument("--output_dir", type=str, default=None,
                         help="Output directory")
-    parser.add_argument("--output_sample_rate", type=int, default=24000,
-                        help="Output audio sample rate")
+    parser.add_argument("--output_sample_rate", type=int, default=16000,
+                        help="Output audio sample rate (FlexiCodec native: 16000)")
     parser.add_argument("--no_audio", action="store_true",
                         help="Disable audio decoding")
     

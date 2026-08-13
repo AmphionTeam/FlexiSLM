@@ -39,6 +39,7 @@ import deepspeed
 import torch.distributed as dist
 import os
 from src.models.configuration_flexislm import MultimodalQwen2Config
+from src.models.generation_alignment import DelayedAudioLengthBuffer
 from accelerate import init_empty_weights
 from flexicodec.infer import prepare_model, encode_flexicodec
 import flexicodec.model_blocks.mimi.transformer as Stransformer
@@ -3629,8 +3630,11 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
         
         # Initialize generation state
         generated_text_ids = []
-        generated_audio_ids = []
-        generated_length_ids = []
+        # Training prepends D audio-delay positions but D+1 length-delay
+        # positions, so a sampled length describes the previous step's audio
+        # token. Buffer one audio token and pair it with the next sampled
+        # length before handing the streams to FlexiCodec.
+        delayed_audio_lengths = DelayedAudioLengthBuffer()
         generated_acoustic_codes = None
         all_scores = [] if output_scores else None
         all_length_scores = [] if output_scores else None
@@ -3887,24 +3891,23 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
                     force_audio_idx += 1
                 else:
                     next_talker_id = int(next_audio_token.item())
-                    if next_talker_id >= AUDIO_TOKEN_OFFSET:
-                        generated_audio_ids.append(next_audio_token_offset)  # audio code for output
-                        if getattr(self.config, "predict_second_audio_token", False):
-                            # In the second-audio-token ablation, ``next_length`` is a
-                            # talker-vocab id (0=AUD_END, 1=AUD_START, 3+=audio code).
-                            # Keep only aligned pairs of real audio codes.
-                            if int(next_length.item()) >= AUDIO_TOKEN_OFFSET:
-                                generated_length_ids.append(
-                                    next_length - AUDIO_TOKEN_OFFSET
-                                )
-                            else:
-                                # The primary stream has no valid secondary pair.
-                                generated_audio_ids.pop()
-                        else:
-                            # Length class zero is valid and decodes to one frame.
-                            # Append it whenever an audio code is appended so the
-                            # FlexiCodec group and token-length axes stay aligned.
-                            generated_length_ids.append(next_length)
+                    predict_second_audio = getattr(
+                        self.config, "predict_second_audio_token", False
+                    )
+                    delayed_audio_lengths.push(
+                        next_audio_token_offset,
+                        (
+                            next_length - AUDIO_TOKEN_OFFSET
+                            if predict_second_audio
+                            else next_length
+                        ),
+                        is_audio_code=next_talker_id >= AUDIO_TOKEN_OFFSET,
+                        is_valid_length=(
+                            int(next_length.item()) >= AUDIO_TOKEN_OFFSET
+                            if predict_second_audio
+                            else True
+                        ),
+                    )
 
 
                 # qwen3 talker vocab: 0 = AUD_END, 1 = AUD_START, 3+ = audio codes
@@ -4092,20 +4095,29 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
                 zero_talker_text_cond |= freeze_next
                 
         
-        # Stack generated tokens. Acoustic codes (if any) were already produced
-        # in-step inside the loop using talker_hidden[t] + semantic[t-1], matching
-        # training -- no trailing flush needed.
+        # Stack generated tokens. An audio token is only returned after the
+        # following generation step supplies its delayed length. If generation
+        # exhausts max_new_tokens before AUD_END, the final token has no valid
+        # length and must not be decoded with fabricated metadata.
+        if delayed_audio_lengths.discard_pending():
+            logger.warning(
+                "Dropping final generated audio token because generation ended "
+                "before its delayed length was emitted"
+            )
+        if delayed_audio_lengths.dropped_pairs:
+            logger.warning(
+                f"Dropped {delayed_audio_lengths.dropped_pairs} generated audio "
+                "token(s) without valid delayed metadata"
+            )
         if len(generated_text_ids) > 0:
             generated_text_ids = torch.stack(generated_text_ids, dim=1)  # [B, num_generated]
         else:
             generated_text_ids = torch.empty((batch_size, 0), device=device, dtype=torch.long)
-        if len(generated_audio_ids) > 0:
-            generated_audio_ids = torch.stack(generated_audio_ids, dim=1)  # [B, num_generated]
+        if delayed_audio_lengths.audio_ids:
+            generated_audio_ids = torch.stack(delayed_audio_lengths.audio_ids, dim=1)
+            generated_length_ids = torch.stack(delayed_audio_lengths.length_ids, dim=1)
         else:
             generated_audio_ids = torch.empty((batch_size, 0), device=device, dtype=torch.long)
-        if len(generated_length_ids) > 0:
-            generated_length_ids = torch.stack(generated_length_ids, dim=1)  # [B, num_generated]
-        else:
             generated_length_ids = torch.empty((batch_size, 0), device=device, dtype=torch.long)
         # Concatenate with input_ids if available
         if input_ids is not None:
@@ -4113,9 +4125,6 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
         else:
             sequences = generated_text_ids
         
-        if force_audio_ids is not None:
-            generated_length_ids = generated_length_ids[:, 1:]
-            assert generated_length_ids.shape == generated_audio_ids.shape
         # Second-audio-token ablation: at inference, combine the primary and
         # secondary streams into a single audio sequence by interleaving the
         # two tokens emitted at each step (matching the training-time format),

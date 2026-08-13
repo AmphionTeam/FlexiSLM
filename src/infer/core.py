@@ -9,7 +9,9 @@ from typing import Any, Mapping
 
 
 DEFAULT_ASR_PROMPT = "Please transcribe the audio."
-DEFAULT_OUTPUT_SAMPLE_RATE = 24_000
+# FlexiCodec waveforms are natively decoded at 16 kHz. Saving the unchanged
+# samples with another rate changes playback speed and invalidates audio ASR.
+DEFAULT_OUTPUT_SAMPLE_RATE = 16_000
 
 # Lazy per-(model_path, device) Whisper transcriber cache for s2s traces.
 _TRANSCRIBER_CACHE: dict[tuple[str, str], Any] = {}

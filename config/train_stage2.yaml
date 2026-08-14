@@ -30,7 +30,7 @@ talker_hidden_size: 1024
 talker_num_layers: 20
 text_loss_weight: 2.0
 use_omni_token: true
-no_pad: false
+no_pad: true
 force_use_combined_embedding: false
 use_combined_embedding: false
 use_input_merging_transformer: true

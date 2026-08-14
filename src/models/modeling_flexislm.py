@@ -62,6 +62,29 @@ def _resolve_text_alignment_pad_loss_weight(config) -> float:
     return 0.0 if getattr(config, "freeze_talker", False) else 0.1
 
 
+def _qwen25o_output_dim_from_config(config_path: str) -> int:
+    """Read the retained Qwen2.5-Omni audio projection output dimension."""
+    if not config_path or not os.path.isfile(config_path):
+        raise FileNotFoundError(
+            f"qwen25o_encoder_config_path not found: {config_path}"
+        )
+    import json
+
+    with open(config_path, "r", encoding="utf-8") as stream:
+        config = json.load(stream)
+    if "thinker_config" in config:
+        config = config["thinker_config"]
+    if "audio_config" in config:
+        config = config["audio_config"]
+    output_dim = config.get("output_dim")
+    if not isinstance(output_dim, int) or output_dim <= 0:
+        raise ValueError(
+            "Qwen2.5-Omni audio config requires a positive integer output_dim: "
+            f"{config_path}"
+        )
+    return output_dim
+
+
 # Talker vocab: first 3 tokens are special (AUD_START, AUD_END, AUD_TAG), then audio codes
 AUDIO_TOKEN_OFFSET = 3  # offset for audio codes in talker vocab (indices 0,1,2 = special tokens)
 def _patch_qwen3_audio_encoder_forward(encoder):
@@ -967,11 +990,38 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
             self.config.codec_hidden_size = 1280
             self._whisper_encoder_dim = 1280
         if getattr(config, "use_qwen25o_feature", False):
-            self.config.codec_hidden_size = config.hidden_size
+            self.config.codec_hidden_size = _qwen25o_output_dim_from_config(
+                config.qwen25o_encoder_config_path
+            )
         if getattr(config, "use_qwen25o_feature", False):
-            self.audio_embed_transform = nn.Identity()
-            logger.info(f"  - Created Identity audio embed transform for Qwen2.5-Omni (encoder already projects to {config.hidden_size})")
-            logger.warning(f"  - use_qwen25o_feature is True, audio_embed_transform is set to Identity. --use_mlp_for_audio_embed will be ignored if set.")
+            encoder_dim = self.config.codec_hidden_size
+            if encoder_dim == config.hidden_size:
+                self.audio_embed_transform = nn.Identity()
+                logger.info(
+                    f"  - Created Identity audio embed transform for Qwen2.5-Omni "
+                    f"({encoder_dim} -> {config.hidden_size})"
+                )
+            elif config.use_mlp_for_audio_embed:
+                hidden_features = int(config.hidden_size * config.audio_embed_mlp_hidden_ratio)
+                self.audio_embed_transform = Mlp(
+                    in_features=encoder_dim,
+                    hidden_features=hidden_features,
+                    out_features=config.hidden_size,
+                    act_layer=nn.GELU,
+                    drop=config.audio_embed_mlp_dropout,
+                )
+                logger.info(
+                    f"  - Created MLP audio embed transform for Qwen2.5-Omni: "
+                    f"{encoder_dim} -> {hidden_features} -> {config.hidden_size}"
+                )
+            else:
+                self.audio_embed_transform = nn.Linear(
+                    encoder_dim, config.hidden_size
+                )
+                logger.info(
+                    f"  - Created Linear audio embed transform for Qwen2.5-Omni: "
+                    f"{encoder_dim} -> {config.hidden_size}"
+                )
         elif config.use_mlp_for_audio_embed:
             hidden_features = int(config.hidden_size * config.audio_embed_mlp_hidden_ratio)
             self.audio_embed_transform = Mlp(
@@ -1622,6 +1672,12 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
             if encoder_dim is None:
                 raise RuntimeError("Failed to infer Qwen2.5-Omni encoder dim from config.output_dim")
             self._qwen25o_encoder_dim = encoder_dim
+            if encoder_dim != self.config.codec_hidden_size:
+                raise RuntimeError(
+                    "Qwen2.5-Omni encoder output_dim changed after model "
+                    f"initialization: expected {self.config.codec_hidden_size}, "
+                    f"loaded {encoder_dim}"
+                )
 
             try:
                 ctx = deepspeed.zero.Init(enabled=False) if self.training else contextlib.nullcontext()

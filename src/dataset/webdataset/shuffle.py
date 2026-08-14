@@ -19,20 +19,23 @@ def byte_bounded_shuffle(
     source: Iterable[Any],
     *,
     max_samples: int,
-    max_bytes: int,
+    max_bytes: Optional[int] = None,
     initial_samples: int = 0,
     rng: random.Random | None = None,
     on_buffer_change: Optional[Callable[[int, int], None]] = None,
 ) -> Iterator[Any]:
-    """Shuffle a stream while bounding both retained sample count and bytes.
+    """Shuffle a stream while bounding retained sample count and optional bytes.
 
     Once either bound is reached, a random buffered item is emitted before the
     next input item is retained. The final buffer is drained in random order.
     ``initial_samples`` controls startup latency and must not exceed the sample
-    bound; byte pressure may start output earlier.
+    bound; byte pressure may start output earlier. ``max_bytes=None`` disables
+    the storage cap so only ``max_samples`` limits the window.
     """
-    if max_samples <= 0 or max_bytes <= 0:
-        raise ValueError("shuffle max_samples and max_bytes must be positive")
+    if max_samples <= 0:
+        raise ValueError("shuffle max_samples must be positive")
+    if max_bytes is not None and max_bytes <= 0:
+        raise ValueError("shuffle max_bytes must be positive when set")
     if initial_samples < 0 or initial_samples > max_samples:
         raise ValueError("initial_samples must be in [0, max_samples]")
 
@@ -59,10 +62,11 @@ def byte_bounded_shuffle(
     for item in source:
         size = sample_nbytes(item)
         while buffer and (
-            len(buffer) >= max_samples or buffered_bytes + size > max_bytes
+            len(buffer) >= max_samples
+            or (max_bytes is not None and buffered_bytes + size > max_bytes)
         ):
             yield pop_random()
-        if size > max_bytes:
+        if max_bytes is not None and size > max_bytes:
             # The source already materialized this one item; do not retain it in
             # addition to the bounded shuffle buffer.
             yield item

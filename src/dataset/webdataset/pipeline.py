@@ -75,7 +75,7 @@ class StreamingConfig:
     batch_size: int = 1
     shuffle_max_samples: int = 4096
     shuffle_initial_samples: int = 1024
-    shuffle_max_bytes: int = 2 * 1024**3
+    shuffle_max_bytes: Optional[int] = 2 * 1024**3
     seed: int = 0
     drop_last: bool = False
     source_name: str = "webdataset"
@@ -104,8 +104,10 @@ class StreamingConfig:
             raise ValueError("non-uniform source weights require sampling.mode=resampled")
         if self.batch_size <= 0:
             raise ValueError("batch_size must be positive")
-        if self.shuffle_max_samples <= 0 or self.shuffle_max_bytes <= 0:
-            raise ValueError("shuffle sample and byte bounds must be positive")
+        if self.shuffle_max_samples <= 0:
+            raise ValueError("shuffle max_samples must be positive")
+        if self.shuffle_max_bytes is not None and self.shuffle_max_bytes <= 0:
+            raise ValueError("shuffle max_bytes must be positive when set")
         if not 0 <= self.shuffle_initial_samples <= self.shuffle_max_samples:
             raise ValueError("shuffle_initial_samples must not exceed shuffle_max_samples")
         if self.num_batches is not None and self.num_batches <= 0:

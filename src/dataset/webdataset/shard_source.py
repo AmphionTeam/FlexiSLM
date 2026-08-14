@@ -16,7 +16,7 @@ import torch
 
 
 def validate_shard_ratio(source_name: str, ratio: object) -> float:
-    """Validate and normalize one source's shard retention ratio."""
+    """Validate and normalize one source's shard retention or repeat ratio."""
     normalized_ratio = None
     if not isinstance(ratio, bool) and isinstance(ratio, numbers.Real):
         try:
@@ -26,13 +26,32 @@ def validate_shard_ratio(source_name: str, ratio: object) -> float:
     if (
         normalized_ratio is None
         or not math.isfinite(normalized_ratio)
-        or not 0 < normalized_ratio <= 1
+        or not normalized_ratio > 0
     ):
         raise ValueError(
             f"WebDataset source {source_name!r} has invalid ratio {ratio!r}; "
-            "expected a finite number in the range 0 < ratio <= 1"
+            "expected a finite number > 0"
         )
     return normalized_ratio
+
+
+def _source_rng(seed: int, source_name: str) -> random.Random:
+    # Derive a source-specific seed without Python's process-randomized hash().
+    digest = hashlib.sha256(
+        f"{int(seed)}\0{source_name}".encode("utf-8")
+    ).digest()
+    return random.Random(int.from_bytes(digest, "big"))
+
+
+def _sample_shard_indices(
+    count: int,
+    selected_count: int,
+    *,
+    seed: int,
+    source_name: str,
+) -> tuple[int, ...]:
+    rng = _source_rng(seed, source_name)
+    return tuple(sorted(rng.sample(range(count), selected_count)))
 
 
 def select_shards_by_ratio(
@@ -42,7 +61,14 @@ def select_shards_by_ratio(
     seed: int,
     source_name: str,
 ) -> tuple[str, ...]:
-    """Select a stable, seed-based shard subset while preserving input order."""
+    """Select a stable, seed-based shard subset or repetition, preserving input order.
+
+    ``ratio < 1`` keeps ``floor(N * ratio)`` unique shards (at least one).
+    ``ratio == 1`` keeps every unique shard once.
+    ``ratio > 1`` expands to ``floor(N * ratio)`` slots: every shard is repeated
+    ``floor(ratio)`` times, then a seed-based remainder subset is appended.
+    Finite mixing treats those repeated slots as extra copies of the source.
+    """
     normalized_ratio = validate_shard_ratio(source_name, ratio)
     # Treat each URL as one candidate if data paths overlap after expansion.
     candidates = tuple(dict.fromkeys(shards))
@@ -50,13 +76,27 @@ def select_shards_by_ratio(
         return candidates
 
     selected_count = max(1, math.floor(len(candidates) * normalized_ratio))
-    # Derive a source-specific seed without Python's process-randomized hash().
-    digest = hashlib.sha256(
-        f"{int(seed)}\0{source_name}".encode("utf-8")
-    ).digest()
-    rng = random.Random(int.from_bytes(digest, "big"))
-    selected_indices = sorted(rng.sample(range(len(candidates)), selected_count))
-    return tuple(candidates[index] for index in selected_indices)
+    if normalized_ratio < 1.0:
+        selected_indices = _sample_shard_indices(
+            len(candidates),
+            selected_count,
+            seed=seed,
+            source_name=source_name,
+        )
+        return tuple(candidates[index] for index in selected_indices)
+
+    full_copies, remainder = divmod(selected_count, len(candidates))
+    repeated = candidates * full_copies
+    if remainder == 0:
+        return repeated
+    extra_indices = _sample_shard_indices(
+        len(candidates),
+        remainder,
+        seed=seed,
+        source_name=source_name,
+    )
+    extra = tuple(candidates[index] for index in extra_indices)
+    return repeated + extra
 
 
 class SharedEpoch:

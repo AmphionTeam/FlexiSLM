@@ -101,6 +101,10 @@ def build_qwen2_webdataset(
     runtime = cfg.get("webdataset_runtime", {})
     shuffle_cfg = runtime.get("shuffle", {})
     batch_cfg = runtime.get("batching", {})
+    configured_shuffle_max_bytes = shuffle_cfg.get("max_bytes", 2 * 1024**3)
+    shuffle_max_bytes = (
+        None if configured_shuffle_max_bytes is None else int(configured_shuffle_max_bytes)
+    )
 
     batch_size = int(
         batch_cfg.get(
@@ -165,7 +169,7 @@ def build_qwen2_webdataset(
         )
         normalized_ratio = float(ratio)
         logger.info(
-            "WebDataset source %s: ratio=%s selected %d/%d shards with seed=%d",
+            "WebDataset source %s: ratio=%s selected %d shard slots from %d unique shards with seed=%d",
             source_name,
             normalized_ratio,
             len(selected_shards),
@@ -213,7 +217,7 @@ def build_qwen2_webdataset(
         batch_size=batch_size,
         shuffle_max_samples=int(shuffle_cfg.get("max_samples", 4096)),
         shuffle_initial_samples=int(shuffle_cfg.get("initial_samples", 1024)),
-        shuffle_max_bytes=int(shuffle_cfg.get("max_bytes", 2 * 1024**3)),
+        shuffle_max_bytes=shuffle_max_bytes,
         seed=sampling_seed,
         drop_last=bool(batch_cfg.get("drop_last", False)),
         num_batches=(int(configured_num_batches) if configured_num_batches is not None else None),

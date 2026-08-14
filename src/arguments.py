@@ -110,15 +110,6 @@ class ModelArguments:
     )
     add_length_embeddings: bool = field(default=True, metadata={"help": ""})
 
-    extend_lm_head: bool = field(
-        default=False,
-        metadata={
-            "help": (
-                "When enabled, add one extra text-vocab entry outside the base LM vocab for alignment padding "
-                "and extend the text LM head accordingly. Only used when no_pad is False."
-            )
-        },
-    )
     no_pad: bool = field(
         default=False,
         metadata={"help": "Use the no-padding text/audio alignment path."},

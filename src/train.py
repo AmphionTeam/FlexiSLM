@@ -655,21 +655,6 @@ def main():
             logger.info("freeze_llm skipped due to LoRA usage")
 
     if (
-        not getattr(model_args, "no_pad", False)
-        and getattr(model_args, "extend_lm_head", False)
-    ):
-        logger.info("extend_lm_head=True and no_pad=False: train external alignment_text_pad_embedding/extended_text_lm_head for alignment padding.")
-        if hasattr(model, "model") and hasattr(model.model, "embed_tokens") and model.model.embed_tokens is not None:
-            for p in model.model.embed_tokens.parameters():
-                p.requires_grad = False
-        if hasattr(model, "alignment_text_pad_embedding") and model.alignment_text_pad_embedding is not None:
-            for p in model.alignment_text_pad_embedding.parameters():
-                p.requires_grad = True
-        if hasattr(model, "extended_text_lm_head") and model.extended_text_lm_head is not None:
-            for p in model.extended_text_lm_head.parameters():
-                p.requires_grad = True
-
-    if (
         model_args.freeze_adaptor
         and not getattr(model_args, "only_train_talker", False)
         and not getattr(model_args, "only_train_llm", False)

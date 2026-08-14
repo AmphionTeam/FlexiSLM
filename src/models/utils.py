@@ -228,7 +228,6 @@ def load_train_flexislm_model_and_tokenizer(
         talker_concat_lm_text_output=getattr(model_args, 'talker_concat_lm_text_output', False),
         use_concat_len_emb=getattr(model_args, 'use_concat_len_emb', False),
         talker_embed_v2=getattr(model_args, 'talker_embed_v2', False),
-        extend_lm_head=getattr(model_args, "extend_lm_head", False),
         no_pad=getattr(model_args, "no_pad", False),
         AUD_START_TOKEN=AUD_START_ID,
         AUD_END_TOKEN=AUD_END_ID,

@@ -37,7 +37,6 @@ use_input_merging_transformer: true
 use_input_merging_transformer_v2: true
 input_merging_transformer_d_model: 768
 use_learnable_audio_boundary: true
-extend_lm_head: false
 use_lora: false
 
 # Data

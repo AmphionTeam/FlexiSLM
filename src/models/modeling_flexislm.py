@@ -537,7 +537,6 @@ class ParallelS2SConfig(MultimodalQwen2Config):
         text_loss_weight: float = 1.0,
         length_loss_weight: float = 1.0,
         text_alignment_pad_loss_weight: Optional[float] = None,
-        extend_lm_head: bool = False,
         no_pad: bool = False,
         freeze_llm: bool = False,
         only_train_llm: bool = False,
@@ -622,7 +621,6 @@ class ParallelS2SConfig(MultimodalQwen2Config):
         self.text_loss_weight = text_loss_weight
         self.length_loss_weight = length_loss_weight
         self.text_alignment_pad_loss_weight = text_alignment_pad_loss_weight
-        self.extend_lm_head = bool(extend_lm_head)
         self.no_pad = bool(no_pad)
         # Combined embeddings: whether main LM receives text+audio+length embeddings
         self.use_combined_embedding = kwargs.get('use_combined_embedding', True)
@@ -892,9 +890,7 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
             
         self.config = config
         self.vocab_size = config.vocab_size
-        # lm_head will be created later dynamically or as extended_text_lm_head,
-        # but Qwen2ForCausalLM expects self.lm_head to exist if tie_word_embeddings is true.
-        # We'll create a standard lm_head for compatibility, though it may be replaced.
+        # Qwen2ForCausalLM expects self.lm_head to exist if tie_word_embeddings is true.
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
 
         # Training-time option: freeze everything except talker; also disables
@@ -937,19 +933,8 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
         logger.info(
             f"  - Created combined_embed_proj: {combined_in} -> {config.hidden_size} (talker_embed_v2={getattr(config, 'talker_embed_v2', False)}); will be initialized as identity on text_emb slice after post_init()",
         )
-        self.extend_lm_head = bool(getattr(config, "extend_lm_head", False))
-        self.extended_text_vocab_size = 1 if self.extend_lm_head else 0
-        self.alignment_text_pad_token_id = self.text_vocab_size + 1 if self.extend_lm_head else 151643
+        self.alignment_text_pad_token_id = 151643
         self.config.alignment_text_pad_token_id = self.alignment_text_pad_token_id
-        if self.extend_lm_head:
-            self.alignment_text_pad_embedding = nn.Embedding(1, config.hidden_size)
-            self.extended_text_lm_head = nn.Linear(config.hidden_size, 1, bias=False)
-            logger.info(
-                f"  - Created extended text vocab: size=1, pad_token_id={self.alignment_text_pad_token_id}",
-            )
-        else:
-            self.alignment_text_pad_embedding = None
-            self.extended_text_lm_head = None
         
         # Talker transformer for parallel speech generation (always enabled)
         logger.info(f"Initializing talker transformer for parallel speech generation")
@@ -1117,37 +1102,12 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
         logger.info(f"ParallelS2SForCausalLM initialization complete")
 
     def _embed_text_tokens(self, token_ids: torch.LongTensor) -> torch.Tensor:
-        """Embed text ids, including the external alignment-pad token."""
-        if bool(getattr(self.config, "no_pad", False)) or not self.extend_lm_head:
-            return self.model.embed_tokens(token_ids)
-
-        pad_mask = token_ids.eq(self.alignment_text_pad_token_id)
-        safe_token_ids = token_ids.masked_fill(pad_mask, 0)
-        embeds = self.model.embed_tokens(safe_token_ids)
-        if not bool(pad_mask.any().item()):
-            return embeds
-
-        pad_embed = self.alignment_text_pad_embedding.weight[0].to(
-            device=embeds.device, dtype=embeds.dtype
-        )
-        view_shape = [1] * pad_mask.dim() + [pad_embed.shape[0]]
-        pad_embed = pad_embed.view(*view_shape)
-        return torch.where(pad_mask.unsqueeze(-1), pad_embed, embeds)
+        """Embed text token ids."""
+        return self.model.embed_tokens(token_ids)
 
     def _compute_text_logits(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        """Project hidden states to text logits, including the external pad token."""
-        base_logits = self.lm_head(hidden_states)
-        if bool(getattr(self.config, "no_pad", False)) or not self.extend_lm_head:
-            return base_logits
-
-        gap_logits = torch.zeros(
-            *base_logits.shape[:-1],
-            1,
-            device=base_logits.device,
-            dtype=base_logits.dtype,
-        )
-        extra_pad_logits = self.extended_text_lm_head(hidden_states)
-        return torch.cat([base_logits, gap_logits, extra_pad_logits], dim=-1)
+        """Project hidden states to text logits."""
+        return self.lm_head(hidden_states)
 
     
     # ------------------------------------------------------------------
@@ -3072,7 +3032,7 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
 
         # Compute text logits from main LM
         debug_print(f"  - Computing text logits...", rank=rank)
-        text_logits = self._compute_text_logits(hidden_states)  # [B, L, V_text_ext]
+        text_logits = self._compute_text_logits(hidden_states)  # [B, L, V_text]
         debug_print(f"    - text_logits shape: {text_logits.shape}", rank=rank)
         logits = text_logits  # Text-only logits
         
@@ -3836,13 +3796,8 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
 
             if not all_zero_state:
                 # Get text logits from main LM
-                text_logits = self._compute_text_logits(main_hidden_last).squeeze(1)  # [B, V_text or V_text_ext]
-                if not self.config.use_joint_text_audio_vocab:
-                    # Separate mode: lm_head is text-only, no need to mask
-                    if self.extend_lm_head:
-                        text_logits[:, self.text_vocab_size] = -float('inf')
-                        text_logits[:, self.alignment_text_pad_token_id] = -float('inf')
-                else:
+                text_logits = self._compute_text_logits(main_hidden_last).squeeze(1)  # [B, V_text]
+                if self.config.use_joint_text_audio_vocab:
                     text_logits[:, self.text_vocab_size:] = -float('inf')
                     text_logits[:, self.text_vocab_size-3] = -float('inf')
             else:

@@ -161,12 +161,6 @@ def build_qwen2_webdataset(
         None if configured_shuffle_max_bytes is None else int(configured_shuffle_max_bytes)
     )
 
-    batch_size = int(
-        batch_cfg.get(
-            "fixed_batch_size",
-            getattr(training_args, "per_device_train_batch_size", 1),
-        )
-    )
     sampling_cfg = runtime.get("sampling", {})
     sampling_seed = int(sampling_cfg.get("seed", runtime.get("seed", seed)))
     bucketing_cfg = runtime.get("bucketing", {})
@@ -175,10 +169,20 @@ def build_qwen2_webdataset(
     configured_num_batches = batch_cfg.get(
         "num_batches", sampling_cfg.get("steps_per_epoch")
     )
-    train_max_cost = getattr(training_args, "max_tokens_per_batch", None)
+    train_max_cost = (
+        getattr(training_args, "max_tokens_per_batch", None)
+        if training_args is not None
+        else None
+    )
+    train_max_samples = (
+        getattr(training_args, "per_device_train_batch_size", None)
+        if training_args is not None
+        else None
+    )
+    dataset_max_cost = batch_cfg.get("max_cost")
+    dataset_max_samples = batch_cfg.get("max_samples")
     if train_max_cost is not None:
         configured_max_cost = train_max_cost
-        dataset_max_cost = batch_cfg.get("max_cost")
         if dataset_max_cost is not None and float(dataset_max_cost) != float(train_max_cost):
             logger.info(
                 "Using training max_tokens_per_batch=%s instead of dataset batching.max_cost=%s",
@@ -186,10 +190,27 @@ def build_qwen2_webdataset(
                 dataset_max_cost,
             )
     else:
-        configured_max_cost = batch_cfg.get("max_cost")
-    configured_max_samples = batch_cfg.get("max_samples")
-    if configured_max_samples is None and configured_max_cost is None:
-        configured_max_samples = batch_cfg.get("fixed_batch_size", batch_size)
+        configured_max_cost = dataset_max_cost
+    if train_max_samples is not None:
+        configured_max_samples = train_max_samples
+        if (
+            dataset_max_samples is not None
+            and int(dataset_max_samples) != int(train_max_samples)
+        ):
+            logger.info(
+                "Using training per_device_train_batch_size=%s instead of dataset batching.max_samples=%s",
+                train_max_samples,
+                dataset_max_samples,
+            )
+    else:
+        configured_max_samples = dataset_max_samples
+        if configured_max_samples is None and configured_max_cost is None:
+            configured_max_samples = batch_cfg.get("fixed_batch_size", 1)
+    batch_size = int(
+        train_max_samples
+        if train_max_samples is not None
+        else batch_cfg.get("fixed_batch_size", configured_max_samples or 1)
+    )
     max_samples = (
         int(configured_max_samples) if configured_max_samples is not None else None
     )

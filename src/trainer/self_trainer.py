@@ -740,26 +740,63 @@ class ATrainer(Trainer):
             loss = loss + auxiliary_loss
         return loss
 
+    def _get_local_batch_tokens(self, inputs):
+        cost = inputs.get("batch_cost") if isinstance(inputs, dict) else None
+        if cost is not None:
+            if torch.is_tensor(cost):
+                return float(cost.detach().float().reshape(-1)[0].item())
+            return float(cost)
+
+        tokens = 0.0
+        for key in ("user_input_ids", "assistant_input_ids"):
+            value = inputs.get(key) if isinstance(inputs, dict) else None
+            if value is not None and torch.is_tensor(value) and value.dim() >= 2:
+                tokens += float(value.shape[0] * value.shape[1])
+        if tokens > 0:
+            return tokens
+        value = inputs.get("input_ids") if isinstance(inputs, dict) else None
+        if value is not None and torch.is_tensor(value) and value.dim() >= 2:
+            return float(value.shape[0] * value.shape[1])
+        return None
+
     def _update_total_samples_seen(self, inputs):
         local_batch_size = self._get_local_batch_size(inputs)
         if local_batch_size is None:
-            return None, None
+            return None, None, None, None
 
         device = next(
-            (value.device for value in inputs.values() if torch.is_tensor(value)),
+            (
+                value.device
+                for key, value in inputs.items()
+                if key != "batch_cost" and torch.is_tensor(value)
+            ),
             self.args.device,
         )
         global_batch = torch.tensor(local_batch_size, device=device, dtype=torch.long)
         global_batch = self._distributed_sum(global_batch)
         global_batch_size = int(global_batch.item())
 
+        local_batch_tokens = self._get_local_batch_tokens(inputs)
+        global_batch_tokens = None
+        if local_batch_tokens is not None:
+            global_tokens = torch.tensor(
+                local_batch_tokens, device=device, dtype=torch.float64
+            )
+            global_tokens = self._distributed_sum(global_tokens)
+            global_batch_tokens = float(global_tokens.item())
+
+        if isinstance(inputs, dict):
+            inputs.pop("batch_cost", None)
+
         if self.args.process_index == 0:
             self._latest_local_batch_size = local_batch_size
             self._latest_global_batch_size = global_batch_size
+            self._latest_local_batch_tokens = local_batch_tokens
+            self._latest_global_batch_tokens = global_batch_tokens
             self._total_samples_seen = (
                 int(getattr(self, "_total_samples_seen", 0)) + global_batch_size
             )
-        return local_batch_size, global_batch_size
+        return local_batch_size, global_batch_size, local_batch_tokens, global_batch_tokens
 
     def log(self, logs, start_time=None):
         logs = dict(logs)
@@ -782,6 +819,13 @@ class ATrainer(Trainer):
             if global_batch_size is not None and not is_eval_log:
                 logs["global_effective_batch_size"] = global_batch_size
 
+            global_batch_tokens = getattr(self, "_latest_global_batch_tokens", None)
+            if global_batch_tokens is not None and not is_eval_log:
+                logs["effective_batch_tokens"] = getattr(
+                    self, "_latest_local_batch_tokens", global_batch_tokens
+                )
+                logs["global_effective_batch_tokens"] = global_batch_tokens
+
         return super().log(logs, start_time=start_time)
 
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
@@ -790,9 +834,15 @@ class ATrainer(Trainer):
         """
         is_training_step = bool(model.training)
         if is_training_step:
-            local_batch_size, global_batch_size = self._update_total_samples_seen(inputs)
+            (
+                local_batch_size,
+                global_batch_size,
+                local_batch_tokens,
+                global_batch_tokens,
+            ) = self._update_total_samples_seen(inputs)
         else:
             local_batch_size, global_batch_size = None, None
+            local_batch_tokens, global_batch_tokens = None, None
 
         outputs = model(**inputs)
 
@@ -889,6 +939,9 @@ class ATrainer(Trainer):
                 metrics_to_log["effective_batch_size"] = local_batch_size
                 metrics_to_log["global_effective_batch_size"] = global_batch_size
                 metrics_to_log["total_samples_seen"] = getattr(self, "_total_samples_seen", 0)
+            if local_batch_tokens is not None:
+                metrics_to_log["effective_batch_tokens"] = local_batch_tokens
+                metrics_to_log["global_effective_batch_tokens"] = global_batch_tokens
 
             # Log metrics only when SwanLab is enabled for this run.
             report_to = getattr(self.args, "report_to", []) if hasattr(self, "args") else []

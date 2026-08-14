@@ -38,6 +38,29 @@ from .shuffle import byte_bounded_shuffle
 
 logger = logging.getLogger(__name__)
 
+_BATCH_COST_KEY = "_batch_cost"
+
+
+def collate_with_batch_cost(collate_fn: Callable):
+    """Preserve the WebDataset padding cost through the collator as ``batch_cost``."""
+
+    def wrapped(batch):
+        cost = None
+        if isinstance(batch, list):
+            for sample in batch:
+                if not isinstance(sample, dict) or _BATCH_COST_KEY not in sample:
+                    continue
+                if cost is None:
+                    cost = sample[_BATCH_COST_KEY]
+                sample.pop(_BATCH_COST_KEY, None)
+        collated = collate_fn(batch)
+        if cost is not None and isinstance(collated, dict):
+            value = torch.as_tensor(cost, dtype=torch.float32)
+            collated["batch_cost"] = value.reshape(())
+        return collated
+
+    return wrapped
+
 
 class AudioDecodeError(RuntimeError):
     """Compressed audio bytes could not be decoded by the configured backend."""
@@ -499,6 +522,10 @@ class FlexiWebDataset(torch.utils.data.IterableDataset):
             self.metrics.record_batch(
                 accepted_lengths, time.perf_counter() - started
             )
+            if materialized:
+                materialized[0][_BATCH_COST_KEY] = projected_padding_cost(
+                    accepted_lengths
+                )
             yield materialized
             emitted += 1
 
@@ -559,7 +586,7 @@ class FlexiWebDataset(torch.utils.data.IterableDataset):
             shuffle=False,
             num_workers=num_workers,
             pin_memory=pin_memory,
-            collate_fn=collate_fn,
+            collate_fn=collate_with_batch_cost(collate_fn),
         )
         if num_workers > 0:
             kwargs["persistent_workers"] = persistent_workers

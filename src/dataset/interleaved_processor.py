@@ -529,7 +529,21 @@ class FlexiSampleProcessor:
 
         for binding_index, binding in enumerate(bindings):
             asset = sample.assets[binding.asset_id]
-            audio_tokens = token_by_member.get(asset.member_key)
+            # Grouping a WebDataset sample strips its physical key, so metadata
+            # may say ``02065792.audio.mp3`` while the grouped member is only
+            # ``audio.mp3``. Resolve a unique key-prefixed match as well as an
+            # exact basename; otherwise dynamic batching underestimates audio
+            # cost for real ASR/TTS shards.
+            member_basename = os.path.basename(asset.member_key)
+            audio_tokens = token_by_member.get(member_basename)
+            if audio_tokens is None:
+                suffix = f".{member_basename}"
+                prefixed_matches = [
+                    value for name, value in token_by_member.items()
+                    if name.endswith(suffix)
+                ]
+                if len(prefixed_matches) == 1:
+                    audio_tokens = prefixed_matches[0]
             if (
                 audio_tokens is None
                 and not token_by_member

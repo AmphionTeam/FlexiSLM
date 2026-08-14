@@ -229,11 +229,23 @@ def _asset(asset_id: str, member: str, data: Any, metadata: Mapping[str, Any]) -
     durations = metadata.get("audio_durations")
     audios = metadata.get("audios")
     if isinstance(durations, list) and isinstance(audios, list) and len(durations) == len(audios):
-        basename = member
-        for path, candidate_duration in zip(audios, durations):
-            if os.path.basename(str(path)) == basename and candidate_duration is not None:
-                duration = float(candidate_duration)
-                break
+        # WebDataset strips the physical sample key from grouped member names:
+        # ``02065792.audio.mp3`` becomes ``audio.mp3``. Sidecar metadata keeps
+        # the original basename, so accept either an exact name or that
+        # key-prefixed form. Role-qualified S2S members remain unambiguous.
+        member_basename = os.path.basename(member)
+        suffix = f".{member_basename}"
+        matches = [
+            candidate_duration
+            for path, candidate_duration in zip(audios, durations)
+            if (
+                os.path.basename(str(path)) == member_basename
+                or os.path.basename(str(path)).endswith(suffix)
+            )
+            and candidate_duration is not None
+        ]
+        if len(matches) == 1:
+            duration = float(matches[0])
     return AudioAsset(asset_id, member, member.rsplit(".", 1)[-1].lower(), data, duration)
 
 

@@ -252,11 +252,6 @@ def load_train_flexislm_model_and_tokenizer(
         # Second-audio-token ablation (group size 2)
         predict_second_audio_token=getattr(model_args, 'predict_second_audio_token', False),
         thinker_concat_user_speech=getattr(model_args, 'thinker_concat_user_speech', False),
-        thinker_duplex_use_both_streams=getattr(model_args, 'thinker_duplex_use_both_streams', True),
-        thinker_duplex_query_num_heads=getattr(model_args, 'thinker_duplex_query_num_heads', 8),
-        thinker_duplex_supervision_warmup_steps=getattr(model_args, 'thinker_duplex_supervision_warmup_steps', 1000),
-        thinker_duplex_supervision_weight=getattr(model_args, 'thinker_duplex_supervision_weight', 0.1),
-        assistant_text_start_after_speech=getattr(model_args, 'assistant_text_start_after_speech', True),
         assistant_text_start_delay_tokens=getattr(model_args, 'assistant_text_start_delay_tokens', -1),
         **base_config,
     )

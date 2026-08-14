@@ -29,7 +29,7 @@ requests>=2.31.0
 safetensors>=0.4.0
 sentencepiece>=0.1.99
 soundfile>=0.12.1
-swanlab[dashboard]==0.6.0
+swanlab[dashboard]==0.9.4
 torch>=2.1.0
 torchaudio>=2.1.0
 torchvision>=0.16.0

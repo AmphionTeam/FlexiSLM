@@ -86,6 +86,8 @@ coverage.xml
 # Local files
 scripts/yutong
 config/yutong
+scripts/jiaqi
+config/jiaqi
 
 # Local path reference documentation
 /docs/

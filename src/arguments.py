@@ -469,26 +469,6 @@ class ModelArguments:
         default=False,
         metadata={"help": "If True (v5), thinker input applies concat+proj conditioning to user-speech positions as well."}
     )
-    thinker_duplex_use_both_streams: bool = field(
-        default=True,
-        metadata={"help": "If True (v5), thinker fuses both user and assistant audio streams for both turns via query-attention."}
-    )
-    thinker_duplex_query_num_heads: int = field(
-        default=8,
-        metadata={"help": "Number of heads for thinker duplex query-attention fusion."}
-    )
-    thinker_duplex_supervision_warmup_steps: int = field(
-        default=1000,
-        metadata={"help": "Warmup steps for duplex stream-selection supervision (user turn->user stream, assistant turn->assistant stream)."}
-    )
-    thinker_duplex_supervision_weight: float = field(
-        default=0.1,
-        metadata={"help": "Loss weight for duplex stream-selection supervision during warmup."}
-    )
-    assistant_text_start_after_speech: bool = field(
-        default=True,
-        metadata={"help": "If True, assistant text labels are masked for initial delay steps and generation text output is suppressed until speech starts."}
-    )
     assistant_text_start_delay_tokens: int = field(
         default=-1,
         metadata={"help": "Delay tokens before assistant text starts. -1 means reuse speech_delay_tokens."}

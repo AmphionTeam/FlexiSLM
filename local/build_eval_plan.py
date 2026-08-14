@@ -40,11 +40,14 @@ OPEN_AUDIO_BENCH_SUBSETS = {
 }
 LIBRISPEECH_SUBSETS = {"test-clean", "test-other"}
 
-# VoiceBench per-subset evaluation methods (evalkit dataset.evaluate methods).
+# VoiceBench per-subset primary evaluation methods (evalkit
+# dataset.evaluate methods). IFEval uses the same OpenQA 1--5 LLM judge as
+# AlpacaEval/CommonEval for the paper table; its canonical strict/loose rules
+# are run separately as auxiliary metrics.
 VOICEBENCH_EVAL_METHOD = {
     "alpacaeval_full": "default",
     "commoneval": "default",
-    "ifeval": "vb-ifeval",
+    "ifeval": "default",
     "sd-qa": "vb-qa",
     "advbench": "vb-advbench",
     "mmsu": "vb-mcq",
@@ -290,6 +293,7 @@ def build_eval_config(
         "judge_api_key": eval_cfg.get("judge_api_key"),
         "evalkit_commit": eval_cfg.get("evalkit_commit"),
         "log_dir": str(output_root / "logs"),
+        "voicebench_summary_path": str(output_root / "voicebench_summary.json"),
         "jobs": [],
     }
     for job in jobs:
@@ -315,14 +319,27 @@ def build_eval_config(
                 }
             )
         elif benchmark == "voicebench":
-            config["jobs"].append(
-                {
-                    **common_job,
-                    "benchmark": "voicebench",
-                    "dataset": subset,
-                    "method": VOICEBENCH_EVAL_METHOD[subset],
-                }
-            )
+            voicebench_job = {
+                **common_job,
+                "benchmark": "voicebench",
+                "dataset": subset,
+                "method": VOICEBENCH_EVAL_METHOD[subset],
+            }
+            if subset == "ifeval":
+                # Be explicit about the paper-table channel. Do not ask
+                # evalkit to judge prediction_text as a second channel: S2T's
+                # primary prediction is direct text, while S2S's is the cached
+                # generated-audio ASR transcription.
+                voicebench_job.update(
+                    {
+                        "prediction_source": (
+                            "direct_text" if mode == "s2t" else "audio_asr"
+                        ),
+                        "include_prediction_text": False,
+                        "auxiliary_method": "vb-ifeval",
+                    }
+                )
+            config["jobs"].append(voicebench_job)
         elif benchmark == "librispeech":
             config["jobs"].append(
                 {

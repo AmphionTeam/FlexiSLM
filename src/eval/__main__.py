@@ -122,6 +122,8 @@ def _run_evalkit_job(
         transcribe_callback=transcribe_callback,
         subsets=job.get("subsets"),
         trace_indices_only=bool(job.get("trace_indices_only", False)),
+        prediction_source=str(job.get("prediction_source", "auto")),
+        include_prediction_text=bool(job.get("include_prediction_text", True)),
     )
     result, archived = run_evalkit_evaluate(
         eval_file=eval_file,
@@ -134,15 +136,42 @@ def _run_evalkit_job(
         judge_api_base=config.get("judge_api_base"),
         judge_api_key=config.get("judge_api_key"),
         judge_api_key_env=config.get("judge_api_key_env"),
+        prediction_source=str(job.get("prediction_source", "auto")),
     )
+    auxiliary_method = job.get("auxiliary_method")
+    auxiliary_metrics = None
+    auxiliary_archived: list[Path] = []
+    if auxiliary_method:
+        auxiliary_result, auxiliary_archived = run_evalkit_evaluate(
+            eval_file=eval_file,
+            dataset_name=dataset_name,
+            method=str(auxiliary_method),
+            judge_model=judge_model,
+            evalkit_path=evalkit_path,
+            data_root=data_root,
+            work_dir=result_path.parent,
+            dump_judge=False,
+            judge_api_base=config.get("judge_api_base"),
+            judge_api_key=config.get("judge_api_key"),
+            judge_api_key_env=config.get("judge_api_key_env"),
+        )
+        auxiliary_metrics = {
+            "eval_method": auxiliary_result.get("eval_method"),
+            "performance": auxiliary_result.get("performance"),
+        }
+
+    all_archived = list(dict.fromkeys([*archived, *auxiliary_archived]))
     result = {
         **result,
         **_job_meta(config, job, evalkit_commit),
         "benchmark": benchmark,
+        "prediction_source": str(job.get("prediction_source", "auto")),
         "trace_file": str(trace_file),
         "eval_file": str(eval_file),
-        "archived_files": [str(path) for path in archived],
+        "archived_files": [str(path) for path in all_archived],
     }
+    if auxiliary_metrics is not None:
+        result["auxiliary_metrics"] = auxiliary_metrics
     _write_result(result, result_path)
     return result
 
@@ -244,7 +273,12 @@ def run(config_path: Path, selected_jobs: set[str] | None = None) -> list[Path]:
 
     voicebench_results: list[dict[str, Any]] = []
     voicebench_data_manifest: dict[str, dict[str, int]] = {}
-    voicebench_summary_path: Path | None = None
+    configured_summary_path = config.get("voicebench_summary_path")
+    voicebench_summary_path = (
+        resolve_path(configured_summary_path)
+        if configured_summary_path is not None
+        else config_path.parent / "voicebench_summary.json"
+    )
 
     for index, job in enumerate(config["jobs"]):
         if not isinstance(job, dict):
@@ -286,17 +320,12 @@ def run(config_path: Path, selected_jobs: set[str] | None = None) -> list[Path]:
                     evalkit_path, data_root, dataset_name,
                     resolve_path(job["result_path"]).parent,
                 )
-                if voicebench_summary_path is None:
-                    voicebench_summary_path = (
-                        resolve_path(job["result_path"]).parent / "voicebench_summary.json"
-                    )
 
         result_path = resolve_path(job["result_path"])
         if result_path not in written_results:
             written_results.append(result_path)
 
     if voicebench_results:
-        assert voicebench_summary_path is not None
         summary_path = write_voicebench_summary(
             results=voicebench_results,
             data_manifest=voicebench_data_manifest,

@@ -11,8 +11,10 @@ All scoring logic lives inside the pinned Kimi-Audio-Evalkit repository
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -114,6 +116,24 @@ def _audio_transcription(record: dict[str, Any]) -> str:
     return ""
 
 
+def _select_prediction(
+    record: dict[str, Any],
+    index: int,
+    transcriptions: dict[int, str],
+    source: str,
+) -> tuple[str, str]:
+    """Return ``(primary_prediction, direct_text)`` for one trace."""
+    direct_text = _direct_text(record)
+    audio_asr = transcriptions.get(index) or _audio_transcription(record)
+    if source == "direct_text":
+        prediction = direct_text
+    elif source == "audio_asr":
+        prediction = audio_asr
+    else:
+        prediction = audio_asr or direct_text
+    return prediction or "null", direct_text
+
+
 def _full_prompt(trace: dict[str, Any], item: dict[str, Any]) -> str:
     """The complete prompt actually sent to the model (for ifeval / vb-qa).
 
@@ -177,6 +197,8 @@ def build_evalkit_dataset_file(
     ] | None = None,
     subsets: list[str] | None = None,
     trace_indices_only: bool = False,
+    prediction_source: str = "auto",
+    include_prediction_text: bool = True,
 ) -> Path:
     """Build ``{model}_{DATASET_NAME}.jsonl`` for evalkit from a unified trace.
 
@@ -194,7 +216,16 @@ def build_evalkit_dataset_file(
     rows are built directly from trace records (subset=group, answer=reference).
     ``transcribe_callback`` maps trace index -> transcription of generated
     audio (used by TTS / s2s); without it the direct text output is used.
+
+    ``prediction_source`` can pin the primary evaluation channel to
+    ``direct_text`` or ``audio_asr``. The default ``auto`` preserves the
+    historical audio-ASR-first fallback. ``include_prediction_text=False``
+    prevents evalkit's OpenQA evaluator from launching a second judge pass for
+    the auxiliary direct-text column.
     """
+    if prediction_source not in {"auto", "direct_text", "audio_asr"}:
+        raise ValueError(f"Unsupported prediction_source: {prediction_source!r}")
+
     activate_evalkit(evalkit_path, data_root, out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     eval_file = out_dir / f"{model_name}_{dataset_name}.jsonl"
@@ -226,17 +257,17 @@ def build_evalkit_dataset_file(
             if trace is None:
                 row["prediction"] = "null"
                 row["prompt"] = str(item.get("question") or "")
-                row["prediction_text"] = None
+                prediction_text = ""
             else:
-                prediction_text = _direct_text(trace)
-                row["prediction"] = (
-                    transcriptions.get(index)
-                    or _audio_transcription(trace)
-                    or prediction_text
-                    or "null"
+                prediction, prediction_text = _select_prediction(
+                    trace, index, transcriptions, prediction_source
                 )
-                row["prediction_text"] = prediction_text or None
+                row["prediction"] = prediction
                 row["prompt"] = _full_prompt(trace, item)
+            if include_prediction_text:
+                row["prediction_text"] = prediction_text or None
+            else:
+                row.pop("prediction_text", None)
             rows.append(row)
 
     with eval_file.open("w", encoding="utf-8") as file:
@@ -307,6 +338,212 @@ def _configure_judge_env(
             os.environ["OPENAI_API_KEY"] = value
 
 
+def _openqa_score(value: Any) -> float | None:
+    """Parse one OpenQA judge response and enforce the 1--5 scale."""
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    try:
+        score = float(text)
+    except ValueError:
+        match = re.search(r"\[\[(\d+(?:\.\d+)?)\]\]", text)
+        if match is None:
+            return None
+        score = float(match.group(1))
+    return score if 1.0 <= score <= 5.0 else None
+
+
+def _run_openqa_judge(
+    judge_model: Any,
+    prompt_template: str,
+    predictions: list[str],
+    questions: list[str],
+    *,
+    threads: int = 10,
+    timeout: float = 180.0,
+    max_tokens: int = 4096,
+) -> list[tuple[int, str | None]]:
+    """Run the evalkit OpenQA judge with room for hidden reasoning tokens.
+
+    Some configured OpenAI-compatible reasoning models consume evalkit's
+    default 1024-token response budget before emitting the requested score.
+    The rubric and sampling settings remain unchanged; only the response
+    budget and outer timeout are increased.
+    """
+    from almeval.judge_models import judge_response
+
+    async def process_one(index: int, semaphore: asyncio.Semaphore):
+        async with semaphore:
+            prompt = prompt_template.format(
+                question=questions[index].strip(),
+                prediction=predictions[index],
+            )
+            try:
+                response = await asyncio.wait_for(
+                    judge_response(
+                        prompt,
+                        judge_model=judge_model,
+                        temperature=0.5,
+                        top_p=0.95,
+                        max_tokens=max_tokens,
+                    ),
+                    timeout=timeout,
+                )
+            except asyncio.TimeoutError:
+                print(
+                    f"IFEval OpenQA sample {index} timed out after {timeout}s.",
+                    flush=True,
+                )
+                response = None
+            except Exception as error:
+                print(
+                    f"IFEval OpenQA sample {index} failed: {error}",
+                    flush=True,
+                )
+                response = None
+            return index, response
+
+    async def process_all():
+        semaphore = asyncio.Semaphore(threads)
+        return await asyncio.gather(
+            *(process_one(index, semaphore) for index in range(len(predictions)))
+        )
+
+    return asyncio.run(process_all())
+
+
+def _ifeval_openqa_cached_evaluate(
+    *,
+    dataset: Any,
+    eval_file: Path,
+    judge_model_name: str,
+    prediction_source: str,
+    dump_judge: bool,
+    max_attempts: int = 3,
+) -> dict[str, Any]:
+    """Judge IFEval with VoiceBench's OpenQA rubric, reusing valid rows.
+
+    Unlike evalkit's generic OpenQA path, this requires a valid 1--5 score for
+    every sample before reporting an average. Existing judge JSONL rows are
+    reused only when their index, instruction, and prediction still match.
+    Failed/time-out rows are retried without re-judging successful samples.
+    """
+    from almeval.datasets.ds_openqa import OPEN_QA_PROMPT
+    from almeval.judge_models import get_judge_model
+
+    rows: list[dict[str, Any]] = []
+    with eval_file.open(encoding="utf-8") as file:
+        for line in file:
+            if line.strip():
+                rows.append(json.loads(line))
+    if not rows:
+        raise ValueError(f"IFEval eval file contains no samples: {eval_file}")
+
+    safe_model = judge_model_name.replace("/", "-")
+    judge_file = eval_file.with_name(
+        f"{eval_file.stem}_{safe_model}_judge.jsonl"
+    )
+    cached_by_index: dict[int, dict[str, Any]] = {}
+    if judge_file.is_file():
+        with judge_file.open(encoding="utf-8") as file:
+            for line in file:
+                if not line.strip():
+                    continue
+                cached = json.loads(line)
+                try:
+                    cached_by_index[int(cached["index"])] = cached
+                except (KeyError, TypeError, ValueError):
+                    continue
+
+    def question(row: dict[str, Any]) -> str:
+        return str(row.get("audio_content") or row.get("prompt") or "")
+
+    judged_rows: list[dict[str, Any]] = []
+    scores: dict[int, float] = {}
+    for row in rows:
+        index = int(row["index"])
+        cached = cached_by_index.get(index)
+        if (
+            cached is not None
+            and str(cached.get("prediction")) == str(row.get("prediction"))
+            and question(cached) == question(row)
+        ):
+            score = _openqa_score(cached.get("judge_result"))
+            if score is not None:
+                scores[index] = score
+                judged_rows.append(cached)
+                continue
+        judged_rows.append({**row, "judge_result": None})
+
+    judge_model = get_judge_model(judge_model_name)
+    for attempt in range(1, max_attempts + 1):
+        pending_positions = [
+            position
+            for position, row in enumerate(judged_rows)
+            if int(row["index"]) not in scores
+        ]
+        if not pending_positions:
+            break
+        print(
+            f"IFEval OpenQA judge attempt {attempt}/{max_attempts}: "
+            f"{len(pending_positions)} uncached samples",
+            flush=True,
+        )
+        pending_predictions = [
+            str(judged_rows[position].get("prediction") or "null")
+            for position in pending_positions
+        ]
+        pending_questions = [
+            question(judged_rows[position]) for position in pending_positions
+        ]
+        results = _run_openqa_judge(
+            judge_model,
+            OPEN_QA_PROMPT,
+            pending_predictions,
+            pending_questions,
+        )
+        for pending_index, response in results:
+            position = pending_positions[pending_index]
+            row = judged_rows[position]
+            row["judge_result"] = response
+            score = _openqa_score(response)
+            if score is not None:
+                scores[int(row["index"])] = score
+
+        if dump_judge:
+            with judge_file.open("w", encoding="utf-8") as file:
+                for row in judged_rows:
+                    file.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+    missing = [int(row["index"]) for row in judged_rows if int(row["index"]) not in scores]
+    if missing:
+        raise RuntimeError(
+            "IFEval OpenQA judge did not return valid 1--5 scores for all "
+            f"samples after {max_attempts} attempts; missing indices: {missing}"
+        )
+
+    if dump_judge:
+        with judge_file.open("w", encoding="utf-8") as file:
+            for row in judged_rows:
+                file.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+    average = round(sum(scores.values()) / len(rows), 2)
+    task_result: dict[str, Any] = {
+        "score": average,
+        "total": len(rows),
+        "invalid": 0,
+    }
+    if prediction_source == "direct_text":
+        task_result["score_direct_text"] = average
+    elif prediction_source == "audio_asr":
+        task_result["score_audio_asr"] = average
+    return dataset.format_performance(
+        dataset.get_model_name(str(eval_file)),
+        {"ifeval": task_result},
+        eval_method=judge_model_name,
+    )
+
+
 def run_evalkit_evaluate(
     *,
     eval_file: Path,
@@ -321,6 +558,7 @@ def run_evalkit_evaluate(
     judge_api_base: str | None = None,
     judge_api_key: str | None = None,
     judge_api_key_env: str | None = None,
+    prediction_source: str = "auto",
 ) -> tuple[dict[str, Any], list[Path]]:
     """Run evalkit's ``dataset.evaluate()`` and archive raw judge artifacts.
 
@@ -342,6 +580,14 @@ def run_evalkit_evaluate(
             dump_judge=dump_judge,
             method=effective_method,
             wer_high_threshold=wer_high_threshold,
+        )
+    elif dataset_name == "ifeval" and effective_method != "vb-ifeval":
+        result = _ifeval_openqa_cached_evaluate(
+            dataset=dataset,
+            eval_file=eval_file,
+            judge_model_name=effective_method,
+            prediction_source=prediction_source,
+            dump_judge=dump_judge,
         )
     else:
         result = dataset.evaluate(

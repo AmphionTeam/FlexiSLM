@@ -225,6 +225,8 @@ class ATrainer(Trainer):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        # This trainer performs its own task/token normalization.
+        self.model_accepts_loss_kwargs = False
         self._native_resume_checkpoint = None
         self._native_train_loader = None
         # Run after DefaultFlowCallback so its forced final checkpoint is disabled.
@@ -483,20 +485,92 @@ class ATrainer(Trainer):
                 return int(value.shape[0])
         return None
 
-    def _update_total_samples_seen(self, inputs):
-        if self.args.process_index != 0:
-            return None, None
+    @staticmethod
+    def _output_value(outputs, name):
+        if isinstance(outputs, dict):
+            return outputs.get(name)
+        return getattr(outputs, name, None)
 
+    @staticmethod
+    def _distributed_sum(value):
+        total = value.detach().clone()
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
+            torch.distributed.all_reduce(total, op=torch.distributed.ReduceOp.SUM)
+        return total
+
+    @staticmethod
+    def _zero_loss_from_model(model, reference):
+        zero_loss = None
+        for parameter in model.parameters():
+            if parameter.requires_grad and parameter.numel() > 0:
+                term = parameter.reshape(-1)[0] * 0.0
+                zero_loss = term if zero_loss is None else zero_loss + term
+        if zero_loss is None:
+            zero_loss = reference.new_zeros((), requires_grad=True)
+        return zero_loss
+
+    def _normalize_model_loss(self, model, outputs, fallback_loss):
+        component_names = (
+            ("text_loss_sum", "text_token_count"),
+            ("audio_loss_sum", "audio_token_count"),
+            ("length_loss_sum", "length_token_count"),
+        )
+        local_sums = []
+        local_counts = []
+        for loss_name, count_name in component_names:
+            local_sum = self._output_value(outputs, loss_name)
+            local_count = self._output_value(outputs, count_name)
+            if local_sum is None or local_count is None:
+                return fallback_loss
+            local_sums.append(local_sum)
+            local_counts.append(local_count.float().reshape(()))
+
+        global_counts = self._distributed_sum(torch.stack(local_counts))
+        world_size = (
+            torch.distributed.get_world_size()
+            if torch.distributed.is_available()
+            and torch.distributed.is_initialized()
+            else 1
+        )
+        components = [
+            local_sum * world_size / global_count
+            if bool(global_count.gt(0).item())
+            else local_sum
+            for local_sum, global_count in zip(local_sums, global_counts)
+        ]
+        text_loss, audio_loss, length_loss = components
+        config = getattr(self._unwrap_model(model), "config", None)
+        if getattr(config, "freeze_talker", False):
+            loss = text_loss
+        elif getattr(config, "only_train_talker", False):
+            loss = audio_loss + length_loss
+        else:
+            loss = text_loss + audio_loss + length_loss
+
+        auxiliary_loss = self._output_value(outputs, "auxiliary_loss")
+        if auxiliary_loss is not None:
+            loss = loss + auxiliary_loss
+        return loss
+
+    def _update_total_samples_seen(self, inputs):
         local_batch_size = self._get_local_batch_size(inputs)
         if local_batch_size is None:
             return None, None
 
-        world_size = max(1, int(getattr(self.args, "world_size", 1) or 1))
-        global_batch_size = local_batch_size * world_size
+        device = next(
+            (value.device for value in inputs.values() if torch.is_tensor(value)),
+            self.args.device,
+        )
+        global_batch = torch.tensor(local_batch_size, device=device, dtype=torch.long)
+        global_batch = self._distributed_sum(global_batch)
+        global_batch_size = int(global_batch.item())
 
-        self._latest_local_batch_size = local_batch_size
-        self._latest_global_batch_size = global_batch_size
-        self._total_samples_seen = int(getattr(self, "_total_samples_seen", 0)) + global_batch_size
+        if self.args.process_index == 0:
+            self._latest_local_batch_size = local_batch_size
+            self._latest_global_batch_size = global_batch_size
+            self._total_samples_seen = (
+                int(getattr(self, "_total_samples_seen", 0)) + global_batch_size
+            )
         return local_batch_size, global_batch_size
 
     def log(self, logs, start_time=None):
@@ -524,36 +598,54 @@ class ATrainer(Trainer):
         """
         Override compute_loss to extract and log text_loss and length_loss.
         """
-        local_batch_size = None
-        global_batch_size = None
-        if self.args.process_index == 0:
-            local_batch_size, global_batch_size = self._update_total_samples_seen(inputs)
+        local_batch_size, global_batch_size = self._update_total_samples_seen(inputs)
 
         outputs = model(**inputs)
-        
-        # Extract the main loss
+
+        # Extract and globally normalize the model's summed task losses.
         if isinstance(outputs, dict):
             loss = outputs.get("loss")
         else:
             loss = outputs.loss if hasattr(outputs, "loss") else outputs[0]
-        
+        if loss is None:
+            raise RuntimeError("model did not return a loss")
+        loss = self._normalize_model_loss(model, outputs, loss)
+
+        text_for_skip = self._output_value(outputs, "text_ce_loss")
+        if text_for_skip is None:
+            text_for_skip = self._output_value(outputs, "text_token_loss")
+        local_nonfinite = not bool(torch.isfinite(loss.detach()).all().item())
+        local_spike = False
         if (
-            loss is not None
+            text_for_skip is not None
+            and torch.is_tensor(text_for_skip)
             and getattr(self.state, "global_step", 0) > _TEXT_LOSS_SKIP_AFTER_STEP
         ):
-            if isinstance(outputs, dict):
-                text_for_skip = outputs.get("text_ce_loss")
-                if text_for_skip is None:
-                    text_for_skip = outputs.get("text_token_loss")
-            else:
-                text_for_skip = getattr(outputs, "text_ce_loss", None)
-                if text_for_skip is None:
-                    text_for_skip = getattr(outputs, "text_token_loss", None)
-            if text_for_skip is not None and torch.is_tensor(text_for_skip):
-                if bool((text_for_skip.detach() > _TEXT_LOSS_SKIP_THRESHOLD).item()):
-                    print(f"Trigger text loss skip threshold: {text_for_skip.item()}, loss: {loss.item()}")
-                    loss = torch.nan_to_num(loss, nan=0.0, posinf=0.0, neginf=0.0)
-                    loss = loss * 0.0
+            local_spike = bool(
+                torch.isfinite(text_for_skip.detach()).all().item()
+                and (text_for_skip.detach() > _TEXT_LOSS_SKIP_THRESHOLD).any().item()
+            )
+
+        skip_flags = torch.tensor(
+            [int(local_nonfinite), int(local_spike)],
+            device=loss.device,
+            dtype=torch.int32,
+        )
+        skip_flags = self._distributed_sum(skip_flags)
+        if bool(skip_flags.any().item()):
+            if int(skip_flags[0].item()) > 0:
+                self._nonfinite_loss_count = int(
+                    getattr(self, "_nonfinite_loss_count", 0)
+                ) + 1
+            if self.args.process_index == 0:
+                logger.warning(
+                    "Skipping micro-step %s before backward: "
+                    "nonfinite_ranks=%d, spike_ranks=%d",
+                    getattr(self.state, "global_step", 0),
+                    int(skip_flags[0].item()),
+                    int(skip_flags[1].item()),
+                )
+            loss = self._zero_loss_from_model(model, loss)
 
         # Log metrics to swanlab if available (only on main process)
         if SWANLAB_AVAILABLE and self.args.process_index == 0:
@@ -651,13 +743,10 @@ class ATrainer(Trainer):
         if inputs is None or len(inputs) == 0:
             raise RuntimeError("inputs is None or empty")
 
-        loss = super().training_step(model, inputs)
+        loss = super().training_step(model, inputs, num_items_in_batch)
 
         if loss is None:
             raise RuntimeError("training_step returned None")
-
-        if torch.is_tensor(loss):
-            loss = torch.nan_to_num(loss, nan=0.0, posinf=0.0, neginf=0.0)
 
         return loss
 

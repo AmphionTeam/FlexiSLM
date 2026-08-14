@@ -203,6 +203,12 @@ class FlexiWebDataset(torch.utils.data.IterableDataset):
         metrics: Optional[SharedStreamMetrics] = None,
     ):
         super().__init__()
+        topology = current_topology()
+        if topology.world_size > 1 and config.sampling_mode != "resampled":
+            raise ValueError(
+                "distributed native WebDataset training requires "
+                "sampling.mode=resampled with a fixed number of batches"
+            )
         self.config = config
         self.processor = processor
         self.worker_context_factory = worker_context_factory
@@ -464,6 +470,11 @@ class FlexiWebDataset(torch.utils.data.IterableDataset):
             try:
                 candidate = next(candidates)
             except StopIteration:
+                if batch_limit is not None:
+                    raise RuntimeError(
+                        "WebDataset stream ended after "
+                        f"{emitted}/{batch_limit} batches for this worker"
+                    )
                 return
             materialized, accepted_lengths = self._materialize_with_refill(
                 candidate, candidates, worker, limits

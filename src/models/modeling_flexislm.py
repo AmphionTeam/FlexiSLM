@@ -679,7 +679,14 @@ class InterleavedS2SOutputWithPast(CausalLMOutputWithPast):
     text_loss: Optional[torch.FloatTensor] = None
     text_ce_loss: Optional[torch.FloatTensor] = None  # unweighted mean text CE (before text_loss_weight)
     text_token_loss: Optional[torch.FloatTensor] = None
+    text_loss_sum: Optional[torch.FloatTensor] = None
+    text_token_count: Optional[torch.FloatTensor] = None
     audio_token_loss: Optional[torch.FloatTensor] = None
+    audio_loss_sum: Optional[torch.FloatTensor] = None
+    audio_token_count: Optional[torch.FloatTensor] = None
+    length_loss_sum: Optional[torch.FloatTensor] = None
+    length_token_count: Optional[torch.FloatTensor] = None
+    auxiliary_loss: Optional[torch.FloatTensor] = None
     acoustic_loss: Optional[torch.FloatTensor] = None
     acoustic_ce_loss: Optional[torch.FloatTensor] = None  # unweighted mean acoustic CE
     acoustic_per_codebook_loss: Optional[torch.FloatTensor] = None  # [n_q_a] unweighted CE per codebook
@@ -3212,7 +3219,14 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
         text_ce_loss = None
         len_loss = None
         text_token_loss = None
+        text_loss_sum = None
+        text_token_count = None
         audio_token_loss = None
+        audio_loss_sum = None
+        audio_token_count = None
+        length_loss_sum = None
+        length_token_count = None
+        auxiliary_loss = None
         acoustic_loss = None
         acoustic_ce_loss = None
         acoustic_per_codebook_loss = None
@@ -3226,11 +3240,12 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
             # Text loss (unweighted CE for logging; weighted tensor drives gradients / total loss)
             w = float(getattr(self.config, "text_loss_weight", 1.0) or 1.0)
             pad_w = _resolve_text_alignment_pad_loss_weight(self.config)
-            if (
+            use_weighted_text_loss = (
                 pad_w > 0.0
                 and alignment_pad_mask is not None
                 and bool(alignment_pad_mask.any().item())
-            ):
+            )
+            if use_weighted_text_loss:
                 text_ce = self._weighted_text_causal_lm_loss(
                     logits,
                     labels,
@@ -3246,7 +3261,21 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
                     ignore_index=IGNORE_TOKEN_ID,
                     vocab_size=logits.size(-1),
                 )
+            text_valid = labels[..., 1:].ne(IGNORE_TOKEN_ID)
+            if use_weighted_text_loss:
+                shifted_pad = alignment_pad_mask[..., 1:].to(
+                    device=logits.device, dtype=torch.bool
+                )
+                text_weights = torch.where(
+                    shifted_pad,
+                    logits.new_tensor(pad_w, dtype=torch.float32),
+                    logits.new_tensor(1.0, dtype=torch.float32),
+                )
+                text_token_count = (text_weights * text_valid.float()).sum()
+            else:
+                text_token_count = text_valid.sum(dtype=torch.float32)
             text_loss = text_ce * w + dummy_encoder_loss
+            text_loss_sum = text_ce * w * text_token_count + dummy_encoder_loss
             text_ce_loss = text_ce.detach()
             debug_print(f"    - text_loss: {text_loss.item() if text_loss is not None else None:.4f}", rank=rank)
             
@@ -3279,26 +3308,24 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
                 debug_print(f"    - speech_len_loss: {speech_len_loss.item():.4f}", rank=rank)
                 
                 audio_token_loss = speech_loss.detach()  # For logging
-                try:
-                    assert not torch.isnan(speech_loss)
-                except:
-                    print(f'error encountered nan in speech_loss: {speech_loss.item()}')
-                    print(f'length_labels: {length_labels}')
-                    print(f'speech_labels: {speech_labels}')
-                    print(f'speech_logits: {speech_logits}')
-                    print(f'length_labels.max: {length_labels.max()}')
-                    print(f'speech_labels.max: {speech_labels.max()}')
-                    print(f'speech_logits.max: {speech_logits.max()}')
-                    print(f'length_labels.shape: {length_labels.shape}')
-                    print(f'speech_labels.shape: {speech_labels.shape}')
-                    print(f'speech_logits.shape: {speech_logits.shape}')
-                    raise
-
-                # if torch.isnan(speech_len_loss): 
-                    # speech_len_loss = torch.zeros_like(speech_len_loss, requires_grad=True)
-                    # speech_loss = torch.zeros_like(speech_loss, requires_grad=True)
+                if self.talker_vocab_size is not None:
+                    speech_targets = speech_labels_for_loss
+                    speech_ignore_index = (
+                        IGNORE_TOKEN_ID - self.text_vocab_size + AUDIO_TOKEN_OFFSET
+                    )
+                else:
+                    speech_targets = speech_labels
+                    speech_ignore_index = IGNORE_TOKEN_ID
+                audio_token_count = speech_targets[..., 1:].ne(
+                    speech_ignore_index
+                ).sum(dtype=torch.float32)
+                length_token_count = length_labels[..., 1:].ne(
+                    IGNORE_TOKEN_ID
+                ).sum(dtype=torch.float32)
+                audio_loss_sum = speech_loss * audio_token_count
                 length_loss_weight = getattr(self.config, "length_loss_weight", 1.0)
                 len_loss = speech_len_loss * length_loss_weight
+                length_loss_sum = speech_len_loss * length_loss_weight * length_token_count
 
             else:
                 # DeepSpeed ZeRO-2 fix: use zero-valued contributions from model
@@ -3307,6 +3334,10 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
                 speech_loss = (speech_logits.mean() * 0.0 if speech_logits.numel() > 0 else speech_logits.sum() * 0.0) + dummy_assistant_audio
                 len_loss = speech_length_logits.mean() * 0.0 if speech_length_logits.numel() > 0 else speech_length_logits.sum() * 0.0
                 audio_token_loss = torch.tensor(0.0, device=text_loss.device, dtype=text_loss.dtype) + dummy_assistant_audio
+                audio_token_count = speech_logits.new_zeros((), dtype=torch.float32)
+                length_token_count = speech_length_logits.new_zeros((), dtype=torch.float32)
+                audio_loss_sum = speech_loss
+                length_loss_sum = len_loss
                 debug_print(f"    - No speech sequences, speech_loss=0, len_loss=0", rank=rank)
 
             text_token_loss = text_loss.detach()  # weighted text term (same as text_ce_loss * w)
@@ -3341,8 +3372,14 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
             # DeepSpeed ZeRO-2: keep audio_embed_transform in the backward
             # graph even when no user audio is present (its output gets sliced
             # to length 0, disconnecting it from the loss).
+            auxiliary_loss = loss.new_zeros(())
             if user_semantic_embeds is not None:
-                loss = loss + (user_semantic_embeds.mean() * 0.0 if user_semantic_embeds.numel() > 0 else user_semantic_embeds.sum() * 0.0)
+                auxiliary_loss = (
+                    user_semantic_embeds.mean() * 0.0
+                    if user_semantic_embeds.numel() > 0
+                    else user_semantic_embeds.sum() * 0.0
+                )
+                loss = loss + auxiliary_loss
 
             debug_print(f"    - Combined loss: {loss.item() if loss is not None else None:.4f}", rank=rank)
         else:
@@ -3374,7 +3411,14 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
             text_loss=text_loss,
             text_ce_loss=text_ce_loss,
             text_token_loss=text_token_loss,
+            text_loss_sum=text_loss_sum,
+            text_token_count=text_token_count,
             audio_token_loss=audio_token_loss,
+            audio_loss_sum=audio_loss_sum,
+            audio_token_count=audio_token_count,
+            length_loss_sum=length_loss_sum,
+            length_token_count=length_token_count,
+            auxiliary_loss=auxiliary_loss,
             acoustic_loss=acoustic_loss,
             acoustic_ce_loss=acoustic_ce_loss,
             acoustic_per_codebook_loss=acoustic_per_codebook_loss,

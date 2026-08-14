@@ -1574,7 +1574,7 @@ class InterleavedS2SInference:
             temperature=self.config.temperature,
             top_k=self.config.top_k,
             top_p=self.config.top_p,
-            do_sample=True,
+            do_sample=self.config.do_sample,
             length_temperature=self.config.length_temperature,
             length_top_k=self.config.length_top_k,
             length_top_p=self.config.length_top_p,

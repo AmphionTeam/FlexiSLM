@@ -3889,10 +3889,10 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
                     # Separate mode: speech_logits [B, V_talker], 0=AUD_START, 1=AUD_END, 2=AUD_TAG, 3..=audio codes
                     next_audio_token = self._sample_token(
                         speech_logits,
-                        temperature=1.0,
-                        top_k=20,
+                        temperature=temperature,
+                        top_k=top_k,
                         top_p=top_p,
-                        do_sample=True,
+                        do_sample=do_sample,
                     )  # [B] - talker token id
                     next_audio_token_offset = next_audio_token - AUDIO_TOKEN_OFFSET  # audio code for embedding lookup
                 else:
@@ -3904,7 +3904,7 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
                         temperature=temperature,
                         top_k=top_k,
                         top_p=top_p,
-                        do_sample=True,
+                        do_sample=do_sample,
                     )  # [B] - indices in [text_vocab_size, V_total)
                     next_audio_token_offset = next_audio_token - self.text_vocab_size
 

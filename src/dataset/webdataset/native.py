@@ -120,9 +120,18 @@ def build_qwen2_webdataset(
     configured_num_batches = batch_cfg.get(
         "num_batches", sampling_cfg.get("steps_per_epoch")
     )
-    configured_max_cost = batch_cfg.get(
-        "max_cost", getattr(training_args, "max_tokens_per_batch", None)
-    )
+    train_max_cost = getattr(training_args, "max_tokens_per_batch", None)
+    if train_max_cost is not None:
+        configured_max_cost = train_max_cost
+        dataset_max_cost = batch_cfg.get("max_cost")
+        if dataset_max_cost is not None and float(dataset_max_cost) != float(train_max_cost):
+            logger.info(
+                "Using training max_tokens_per_batch=%s instead of dataset batching.max_cost=%s",
+                train_max_cost,
+                dataset_max_cost,
+            )
+    else:
+        configured_max_cost = batch_cfg.get("max_cost")
     configured_max_samples = batch_cfg.get("max_samples")
     if configured_max_samples is None and configured_max_cost is None:
         configured_max_samples = batch_cfg.get("fixed_batch_size", batch_size)

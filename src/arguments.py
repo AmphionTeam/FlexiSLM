@@ -756,7 +756,8 @@ class TrainingArguments(transformers.TrainingArguments):
             "help": (
                 "Max total tokens per batch. When set, enables dynamic batching + sequence packing: "
                 "short-audio batches get more samples, long-audio batches get fewer. "
-                "Overrides per_device_train_batch_size for batch formation."
+                "Overrides per_device_train_batch_size for batch formation, and overrides "
+                "dataset YAML batching.max_cost for native WebDataset streams."
             )
         },
     )

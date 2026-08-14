@@ -117,6 +117,93 @@ def _load_state_dict_from_checkpoint(checkpoint: str) -> dict:
     )
 
 
+_REQUIRED_TRANSFER_COMPONENTS = {
+    "talker_model": ("talker_model.",),
+    "input_merging_transformer": ("input_merging_transformer.",),
+    "audio_boundaries": ("audio_start_embedding", "audio_end_embedding"),
+}
+
+
+def _keys_with_prefixes(keys, prefixes):
+    return {key for key in keys if any(key.startswith(prefix) for prefix in prefixes)}
+
+
+def _validate_weights_only_transfer_components(
+    model,
+    state_dict: dict,
+    *,
+    reinitialize_input_merging_transformer: bool = False,
+) -> dict:
+    """Require complete Stage 1 components while allowing a separately initialized backbone."""
+    target_keys = set(model.state_dict())
+    source_keys = set(state_dict)
+    counts = {}
+
+    for component, prefixes in _REQUIRED_TRANSFER_COMPONENTS.items():
+        if component == "input_merging_transformer" and reinitialize_input_merging_transformer:
+            continue
+        expected = _keys_with_prefixes(target_keys, prefixes)
+        provided = _keys_with_prefixes(source_keys, prefixes)
+        missing = sorted(expected - provided)
+        unexpected = sorted(provided - expected)
+        if not expected or missing or unexpected:
+            raise RuntimeError(
+                f"Incomplete weights_only checkpoint component {component!r}: "
+                f"target_count={len(expected)}, checkpoint_count={len(provided)}, "
+                f"missing={missing[:20]}, unexpected={unexpected[:20]}"
+            )
+        counts[component] = len(provided)
+
+    return counts
+
+
+def _validate_ignored_frozen_checkpoint_weights(
+    checkpoint: str,
+    unexpected_keys,
+) -> dict:
+    """Reject silently ignored trained backbone weights when checkpoint metadata is available."""
+    ignored = {
+        "thinker": _keys_with_prefixes(unexpected_keys, ("model.",)),
+        "qwen25o_encoder": _keys_with_prefixes(
+            unexpected_keys, ("_qwen25o_encoder.",)
+        ),
+    }
+    ignored = {name: keys for name, keys in ignored.items() if keys}
+    if not ignored or not os.path.isdir(checkpoint):
+        return {name: len(keys) for name, keys in ignored.items()}
+
+    config_path = os.path.join(checkpoint, "config.json")
+    if not os.path.isfile(config_path):
+        logger.warning(
+            "Cannot verify whether ignored checkpoint backbone weights were frozen: "
+            "missing {}",
+            config_path,
+        )
+        return {name: len(keys) for name, keys in ignored.items()}
+
+    with open(config_path, "r", encoding="utf-8") as stream:
+        checkpoint_config = json.load(stream)
+
+    if "thinker" in ignored and not (
+        checkpoint_config.get("freeze_llm", False)
+        or checkpoint_config.get("only_train_talker", False)
+    ):
+        raise RuntimeError(
+            "weights_only loading would ignore checkpoint Thinker weights, but the "
+            "checkpoint does not declare freeze_llm=True or only_train_talker=True. "
+            "Load the plain model before applying LoRA or use a compatible checkpoint."
+        )
+    if "qwen25o_encoder" in ignored and checkpoint_config.get(
+        "finetune_speech_encoder", False
+    ):
+        raise RuntimeError(
+            "weights_only loading would ignore a finetuned Qwen2.5-Omni encoder. "
+            "Materialize and load the encoder before continuing."
+        )
+
+    return {name: len(keys) for name, keys in ignored.items()}
+
+
 def _validate_resume_batch_settings(training_args, checkpoint: str) -> None:
     """Reject full-state resume when batch boundaries would change."""
     saved_args_path = os.path.join(checkpoint, "training_args.bin")
@@ -863,7 +950,18 @@ def main():
                     raise FileNotFoundError(f"Checkpoint file {checkpoint} does not have a supported extension.")
             else:
                 raise FileNotFoundError(f"Checkpoint path {checkpoint} does not exist.")
-            logger.info(f"{checkpoint = } state_dict keys: {state_dict.keys()}")
+            transfer_counts = _validate_weights_only_transfer_components(
+                model,
+                state_dict,
+                reinitialize_input_merging_transformer=should_reinitialize_merging,
+            )
+            logger.info(
+                "Validated weights_only transfer components from {}: {}",
+                checkpoint,
+                ", ".join(
+                    f"{name}={count}" for name, count in transfer_counts.items()
+                ),
+            )
             load_result = model.load_state_dict(state_dict, strict=False, assign=True)
             if initial_merging_state is not None:
                 model.input_merging_transformer.load_state_dict(
@@ -876,24 +974,45 @@ def main():
                 )
                 initial_merging_state = None
 
-            missing_keys = load_result.missing_keys
-            unexpected_keys = load_result.unexpected_keys
-            logger.info(f"Loaded checkpoint weights from {checkpoint}")
-            if missing_keys:
-                logger.info(f"Parameters NOT loaded (missing in checkpoint): {len(missing_keys)} keys")
-                for k in missing_keys[:20]:  # show first 20
-                    logger.info(f"  - {k}")
-                if len(missing_keys) > 20:
-                    logger.info(f"  ... and {len(missing_keys) - 20} more")
-            else:
-                logger.info("All model parameters were loaded from checkpoint.")
-            if unexpected_keys:
-                print(f"Parameters in checkpoint NOT loaded (unexpected): {len(unexpected_keys)} keys")
-                for k in unexpected_keys[:20]:  # show first 20
-                    print(f"  - {k}")
-                if len(unexpected_keys) > 20:
-                    print(f"  ... and {len(unexpected_keys) - 20} more")
-                # raise RuntimeError(f"Parameters in checkpoint NOT loaded (unexpected): {len(unexpected_keys)} keys")
+            missing_keys = set(load_result.missing_keys)
+            unexpected_keys = set(load_result.unexpected_keys)
+            ignored_counts = _validate_ignored_frozen_checkpoint_weights(
+                checkpoint,
+                unexpected_keys,
+            )
+
+            expected_missing = _keys_with_prefixes(
+                missing_keys,
+                ("model.base_model.model.",),
+            )
+            expected_unexpected = _keys_with_prefixes(
+                unexpected_keys,
+                ("model.", "_qwen25o_encoder."),
+            )
+            remaining_missing = sorted(missing_keys - expected_missing)
+            remaining_unexpected = sorted(unexpected_keys - expected_unexpected)
+
+            logger.info(
+                "Loaded checkpoint weights from {}; kept {} initialized PEFT Thinker/LoRA "
+                "parameters and ignored frozen checkpoint weights: {}",
+                checkpoint,
+                len(expected_missing),
+                ", ".join(
+                    f"{name}={count}" for name, count in ignored_counts.items()
+                ) or "none",
+            )
+            if remaining_missing:
+                logger.warning(
+                    "Checkpoint is missing {} non-backbone parameters: {}",
+                    len(remaining_missing),
+                    remaining_missing[:20],
+                )
+            if remaining_unexpected:
+                logger.warning(
+                    "Checkpoint contains {} additional non-backbone parameters: {}",
+                    len(remaining_unexpected),
+                    remaining_unexpected[:20],
+                )
 
             # convert_from_lora: merge LoRA into base, then switch to full-parameter training
             if convert_from_lora:

@@ -295,10 +295,11 @@ def parse_training_args(argv=None):
 def main():
     model_args, data_args, training_args = parse_training_args()
 
-    if training_args.do_eval:
+    if training_args.do_eval and not is_webdataset_stream_config(data_args.dataset_name):
         raise ValueError(
-            "src/train.py is training-only; run evaluation through src.eval or "
-            "inference through src.infer instead of setting do_eval"
+            "src/train.py only supports in-training validation for native "
+            "WebDataset configs with a 'validation' section; run evaluation "
+            "through src.eval or inference through src.infer instead of setting do_eval"
         )
 
     # Setup logging
@@ -787,14 +788,9 @@ def main():
 
     # breakpoint()
     # Native WebDataset streams bypass the map-style training dataset.
-    train_dataset_builder = (
-        build_qwen2_webdataset
-        if is_webdataset_stream_config(data_args.dataset_name)
-        else Qwen2Dataset
-    )
-    train_dataset = train_dataset_builder(
-        data_args.dataset_name,  # cfg_path
-        tokenizer,               # tokenizer
+    native_webdataset = is_webdataset_stream_config(data_args.dataset_name)
+    train_dataset_builder = build_qwen2_webdataset if native_webdataset else Qwen2Dataset
+    dataset_kwargs = dict(
         max_padding_length=model_args.model_max_length,
         variable_length=data_args.variable_length,
         output_dir=training_args.output_dir,
@@ -818,6 +814,29 @@ def main():
         use_omni_token=getattr(model_args, "use_omni_token", False),
         disable_text_normalize_llm=data_args.disable_text_normalize,
     )
+    train_dataset = train_dataset_builder(
+        data_args.dataset_name,
+        tokenizer,
+        **dataset_kwargs,
+    )
+    eval_dataset = None
+    if native_webdataset:
+        eval_dataset = build_qwen2_webdataset(
+            data_args.dataset_name,
+            tokenizer,
+            split="validation",
+            **dataset_kwargs,
+        )
+    if training_args.do_eval and eval_dataset is None:
+        raise ValueError(
+            "do_eval/eval_strategy requires a 'validation' section in the "
+            f"dataset YAML: {data_args.dataset_name}"
+        )
+    if eval_dataset is not None and not training_args.do_eval:
+        logger.warning(
+            "Dataset YAML defines a validation split but eval_strategy is 'no'; "
+            "set eval_strategy=steps and eval_steps to run validation."
+        )
     if training_args.do_train:
         if data_args.max_train_samples is not None:
             max_train_samples = min(len(train_dataset), data_args.max_train_samples)
@@ -1051,6 +1070,7 @@ def main():
             model=model,
             args=training_args,
             train_dataset=train_dataset if training_args.do_train else None,
+            eval_dataset=eval_dataset if training_args.do_eval else None,
             processing_class=tokenizer,
             data_collator=InterleavedDataCollator(
                 tokenizer,

@@ -88,6 +88,8 @@ scripts/yutong
 config/yutong
 scripts/jiaqi
 config/jiaqi
+.cursorignore
+.ignore
 
 # Local path reference documentation
 /docs/

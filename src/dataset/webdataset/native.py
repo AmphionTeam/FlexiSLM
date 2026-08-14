@@ -71,6 +71,57 @@ def is_webdataset_stream_config(path: str) -> bool:
     )
 
 
+def _normalize_split(split: str) -> str:
+    if split in {"train"}:
+        return "train"
+    if split in {"validation", "eval"}:
+        return "validation"
+    raise ValueError(f"unsupported dataset split {split!r}")
+
+
+def _split_sources(cfg: Mapping[str, Any], split: str) -> Mapping[str, Any]:
+    split = _normalize_split(split)
+    if split == "train":
+        return cfg.get("dataset") or {}
+    return cfg.get("validation") or cfg.get("eval") or {}
+
+
+def _runtime_for_split(cfg: Mapping[str, Any], split: str) -> Mapping[str, Any]:
+    """Return stream runtime settings for train or a finite validation pass."""
+    runtime = cfg.get("webdataset_runtime") or {}
+    if _normalize_split(split) == "train":
+        return runtime
+
+    overrides = runtime.get("validation") or runtime.get("eval") or {}
+    train_sampling = runtime.get("sampling") or {}
+    sampling = {
+        "mode": "finite_padded",
+        "shuffle": False,
+        "seed": train_sampling.get("seed", runtime.get("seed", 42)),
+    }
+    sampling.update(overrides.get("sampling") or {})
+    if "steps_per_epoch" not in (overrides.get("sampling") or {}):
+        sampling.pop("steps_per_epoch", None)
+    shuffle = {
+        "max_samples": 1,
+        "initial_samples": 0,
+        "max_bytes": None,
+    }
+    shuffle.update(overrides.get("shuffle") or {})
+    batching = dict(runtime.get("batching") or {})
+    batching.update(overrides.get("batching") or {})
+    if "num_batches" not in (overrides.get("batching") or {}):
+        batching.pop("num_batches", None)
+    batching["drop_last"] = bool(batching.get("drop_last", False))
+    return {
+        "sampling": sampling,
+        "shuffle": shuffle,
+        "bucketing": overrides.get("bucketing", runtime.get("bucketing", {})),
+        "batching": batching,
+        "errors": overrides.get("errors", runtime.get("errors", {})),
+        "cache": overrides.get("cache", runtime.get("cache", {})),
+    }
+
 
 def build_qwen2_webdataset(
     cfg_path,
@@ -83,11 +134,15 @@ def build_qwen2_webdataset(
     use_qwen25o_feature=None,
     use_omni_token=None,
     disable_text_normalize_llm=None,
+    split: str = "train",
     **_unused,
 ):
     """Build a distributed dynamic stream from the FlexiSLM dataset YAML shape."""
     cfg = load_dataset_config(cfg_path)
-    sources = cfg.get("dataset", {})
+    split = _normalize_split(split)
+    sources = _split_sources(cfg, split)
+    if split == "validation" and not sources:
+        return None
     global_stream = cfg.get("dataset_backend") == "webdataset_stream"
     stream_sources = [
         (name, source)
@@ -98,7 +153,7 @@ def build_qwen2_webdataset(
         raise ValueError(
             "webdataset_stream cannot be mixed with non-streaming dataset sources"
         )
-    runtime = cfg.get("webdataset_runtime", {})
+    runtime = _runtime_for_split(cfg, split)
     shuffle_cfg = runtime.get("shuffle", {})
     batch_cfg = runtime.get("batching", {})
     configured_shuffle_max_bytes = shuffle_cfg.get("max_bytes", 2 * 1024**3)
@@ -178,7 +233,8 @@ def build_qwen2_webdataset(
         )
         normalized_ratio = float(ratio)
         logger.info(
-            "WebDataset source %s: ratio=%s selected %d shard slots from %d unique shards with seed=%d",
+            "WebDataset %s source %s: ratio=%s selected %d shard slots from %d unique shards with seed=%d",
+            split,
             source_name,
             normalized_ratio,
             len(selected_shards),
@@ -244,6 +300,7 @@ def build_qwen2_webdataset(
         max_consecutive_errors=int(errors_cfg.get("max_consecutive_errors", 100)),
         quarantine_path=errors_cfg.get("quarantine_path"),
         shard_cache=shard_cache,
+        for_evaluation=(split == "validation"),
     )
 
     use_omni = bool(use_omni_token if use_omni_token is not None else cfg.get("use_omni_token", False))

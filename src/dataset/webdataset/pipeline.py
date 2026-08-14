@@ -87,6 +87,7 @@ class StreamingConfig:
     quarantine_path: Optional[str] = None
     shard_cache: Optional[ShardCacheConfig] = None
     sources: Sequence[StreamingSourceConfig] = ()
+    for_evaluation: bool = False
 
     def __post_init__(self):
         if not self.shards and not self.sources:
@@ -206,7 +207,11 @@ class FlexiWebDataset(torch.utils.data.IterableDataset):
     ):
         super().__init__()
         topology = current_topology()
-        if topology.world_size > 1 and config.sampling_mode != "resampled":
+        if (
+            topology.world_size > 1
+            and config.sampling_mode != "resampled"
+            and not config.for_evaluation
+        ):
             raise ValueError(
                 "distributed native WebDataset training requires "
                 "sampling.mode=resampled with a fixed number of batches"

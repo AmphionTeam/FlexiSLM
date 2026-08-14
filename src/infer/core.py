@@ -111,6 +111,7 @@ def _infer_tts(
         output_audio_path=str(audio_path.resolve()),
         reference_text=parts.evaluation.get("reference_text"),
         prediction_text=None,
+        subset=parts.evaluation.get("subset"),
         group=parts.evaluation.get("group"),
         metadata=parts.metadata,
         checkpoint=checkpoint,

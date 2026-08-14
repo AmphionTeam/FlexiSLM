@@ -41,10 +41,13 @@ logger = logging.getLogger(__name__)
 _BATCH_COST_KEY = "_batch_cost"
 
 
-def collate_with_batch_cost(collate_fn: Callable):
-    """Preserve the WebDataset padding cost through the collator as ``batch_cost``."""
+class BatchCostCollateFn:
+    """Picklable collate wrapper that promotes stream padding cost to ``batch_cost``."""
 
-    def wrapped(batch):
+    def __init__(self, collate_fn: Callable):
+        self.collate_fn = collate_fn
+
+    def __call__(self, batch):
         cost = None
         if isinstance(batch, list):
             for sample in batch:
@@ -53,13 +56,16 @@ def collate_with_batch_cost(collate_fn: Callable):
                 if cost is None:
                     cost = sample[_BATCH_COST_KEY]
                 sample.pop(_BATCH_COST_KEY, None)
-        collated = collate_fn(batch)
+        collated = self.collate_fn(batch)
         if cost is not None and isinstance(collated, dict):
             value = torch.as_tensor(cost, dtype=torch.float32)
             collated["batch_cost"] = value.reshape(())
         return collated
 
-    return wrapped
+
+def collate_with_batch_cost(collate_fn: Callable):
+    """Preserve the WebDataset padding cost through the collator as ``batch_cost``."""
+    return BatchCostCollateFn(collate_fn)
 
 
 class AudioDecodeError(RuntimeError):

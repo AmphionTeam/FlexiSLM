@@ -1000,45 +1000,6 @@ class ATrainer(Trainer):
 
         return loss
 
-    
-    # def save_model(self, output_dir=None, _internal_call=False):
-    #     output_dir = output_dir or self.args.output_dir
-        
-    #     # In distributed training, only the main process saves the model.
-    #     if self.args.local_rank != -1 and self.args.local_rank != 0:
-    #         logger.info(f"Process {self.args.local_rank}: skipping model save (only main process saves)")
-    #         return
-        
-    #     # Check whether this is a LoRA model.
-    #     is_peft_model = False
-    #     try:
-    #         # Method 1: check PEFT model attributes.
-    #         if hasattr(self.model, 'is_peft_model'):
-    #             is_peft_model = self.model.is_peft_model
-    #         # Method 2: check model type.
-    #         elif hasattr(self.model, '__class__') and 'PeftModel' in str(self.model.__class__):
-    #             is_peft_model = True
-    #         # Method 3: check whether PEFT-related config exists.
-    #         elif hasattr(self.model, 'peft_config') and self.model.peft_config is not None:
-    #             is_peft_model = True
-    #     except Exception:
-    #         pass
-        
-    #     if is_peft_model:
-    #         # Save LoRA model.
-    #         self.model.save_pretrained(output_dir, safe_serialization=True)
-    #         logger.info(f"LoRA model saved to {output_dir}")
-            
-    #     else:
-    #         # Save full model.
-    #         self.model.save_pretrained(output_dir, safe_serialization=True)
-    #         logger.info(f"Full model saved to {output_dir}")
-        
-    #     # Save tokenizer.
-    #     if self.tokenizer is not None:
-    #         self.tokenizer.save_pretrained(output_dir)
-    #         logger.info(f"Tokenizer saved to {output_dir}")
-    
     def save_metrics(self, split, metrics, combined=True):
         """Override save_metrics to ensure only the main process saves metrics."""
         # In distributed training, only the main process saves metrics.

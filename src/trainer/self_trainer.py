@@ -365,6 +365,23 @@ class ATrainer(Trainer):
         )
         return self.optimizer
 
+    def _get_named_param_group_lr(self, group_name):
+        optimizer = getattr(self, "optimizer", None)
+        if optimizer is None:
+            return None
+        for param_group in optimizer.param_groups:
+            name = param_group.get("name")
+            if name == group_name or (
+                isinstance(name, str) and name.startswith(f"{group_name}_")
+            ):
+                lr = param_group.get("lr")
+                if lr is None:
+                    return None
+                if torch.is_tensor(lr):
+                    return float(lr.detach().item())
+                return float(lr)
+        return None
+
     def _get_train_sampler(self, train_dataset=None):
         if train_dataset is None:
             train_dataset = self.train_dataset
@@ -825,6 +842,11 @@ class ATrainer(Trainer):
                     self, "_latest_local_batch_tokens", global_batch_tokens
                 )
                 logs["global_effective_batch_tokens"] = global_batch_tokens
+
+            if not is_eval_log:
+                talker_lr = self._get_named_param_group_lr("talker")
+                if talker_lr is not None:
+                    logs["talker_learning_rate"] = talker_lr
 
         return super().log(logs, start_time=start_time)
 

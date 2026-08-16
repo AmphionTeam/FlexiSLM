@@ -940,8 +940,19 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
         logger.info(
             f"  - Created combined_embed_proj: {combined_in} -> {config.hidden_size} (talker_embed_v2={getattr(config, 'talker_embed_v2', False)}); will be initialized as identity on text_emb slice after post_init()",
         )
-        self.alignment_text_pad_token_id = 151643
+        self.extend_lm_head = bool(getattr(config, "extend_lm_head", False))
+        self.extended_text_vocab_size = 1 if self.extend_lm_head else 0
+        self.alignment_text_pad_token_id = self.text_vocab_size + 1 if self.extend_lm_head else 151643
         self.config.alignment_text_pad_token_id = self.alignment_text_pad_token_id
+        if self.extend_lm_head:
+            self.alignment_text_pad_embedding = nn.Embedding(1, config.hidden_size)
+            self.extended_text_lm_head = nn.Linear(config.hidden_size, 1, bias=False)
+            logger.info(
+                f"  - Created extended text vocab: size=1, pad_token_id={self.alignment_text_pad_token_id}",
+            )
+        else:
+            self.alignment_text_pad_embedding = None
+            self.extended_text_lm_head = None
         
         # Talker transformer for parallel speech generation (always enabled)
         logger.info(f"Initializing talker transformer for parallel speech generation")
@@ -974,6 +985,7 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
             self.framerate_embeddings = None
             logger.info(f"  - Using sinusoidal framerate embedding (use_sinusoidal=True)")
         logger.info(f"Talker transformer initialization complete")
+        self.depth_transformer = None
         # Standard (non-chained) architecture: create with 0.5B hidden size
         # When use_qwen3_feature, audio_embed_transform is created lazily with in_features=encoder_dim
         if getattr(config, "use_qwen3_feature", False):
@@ -1162,6 +1174,7 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
                         "Missing FlexiCodec paths. Set env vars or config fields: "
                         + ", ".join(missing)
                     )
+                breakpoint()
                 self._flexicodec_dict = prepare_model(
                     ckpt_path=ckpt_path,
                     sensevoice_small_path=sensevoice_small_path,
@@ -3575,7 +3588,7 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
         else:
             return torch.argmax(logits, dim=-1)
 
-    # ------------------------------------------------------------------
+# ------------------------------------------------------------------
     # Generate method
     # ------------------------------------------------------------------
     @torch.no_grad()
@@ -3690,14 +3703,18 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
         
         # Initialize generation state
         generated_text_ids = []
-        # Training prepends D audio-delay positions but D+1 length-delay
-        # positions, so a sampled length describes the previous step's audio
-        # token. Buffer one audio token and pair it with the next sampled
-        # length before handing the streams to FlexiCodec.
-        delayed_audio_lengths = DelayedAudioLengthBuffer()
-        generated_acoustic_codes = None
+        generated_audio_ids = []
+        generated_length_ids = []
+        generated_acoustic_codes = []  # Discrete acoustic codes or flow decoder latents.
         all_scores = [] if output_scores else None
         all_length_scores = [] if output_scores else None
+        
+        # Depth transformer state.
+        prev_semantic_for_depth = None  # [B] - previous semantic code (0-indexed)
+        prev_length_for_depth = None
+        prev_decoder_latents_for_depth = None
+        prev_decoder_semantics_for_depth = None
+        prev_decoder_lengths_for_depth = None
         
         # Track which sequences have finished
         finished = torch.zeros(batch_size, dtype=torch.bool, device=device)
@@ -3759,9 +3776,10 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
                 self.config.use_qwen3_feature
                 or self.config.use_whisper_fetaure
                 or self.config.use_qwen25o_feature
+                or getattr(self.config, "use_firered_aed_feature", False)
             ), (
                 "Teacher-forced TTS prompting requires use_qwen3_feature=True or use_whisper_fetaure=True "
-                "or use_qwen25o_feature=True"
+                "or use_qwen25o_feature=True or use_firered_aed_feature=True"
                 "(token ID mapping: talker 0=AUD_END, 1=AUD_START)"
             )
             force_audio_ids = force_audio_ids.to(device)
@@ -3840,8 +3858,13 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
 
             if not all_zero_state:
                 # Get text logits from main LM
-                text_logits = self._compute_text_logits(main_hidden_last).squeeze(1)  # [B, V_text]
-                if self.config.use_joint_text_audio_vocab:
+                text_logits = self._compute_text_logits(main_hidden_last).squeeze(1)  # [B, V_text or V_text_ext]
+                if not self.config.use_joint_text_audio_vocab:
+                    # Separate mode: lm_head is text-only, no need to mask
+                    if self.extend_lm_head:
+                        text_logits[:, self.text_vocab_size] = -float('inf')
+                        text_logits[:, self.alignment_text_pad_token_id] = -float('inf')
+                else:
                     text_logits[:, self.text_vocab_size:] = -float('inf')
                     text_logits[:, self.text_vocab_size-3] = -float('inf')
             else:
@@ -3885,7 +3908,7 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
             if not output_text_only:
                 # Sample next speech token (from talker vocab)
                 if self.talker_vocab_size is not None:
-                    # Separate mode: speech_logits [B, V_talker], 0=AUD_START, 1=AUD_END, 2=AUD_TAG, 3..=audio codes
+                    # Separate mode: speech_logits [B, V_talker], 0=AUD_END, 1=AUD_START, 2=AUD_TAG, 3..=audio codes
                     next_audio_token = self._sample_token(
                         speech_logits,
                         temperature=temperature,
@@ -3946,23 +3969,19 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
                     force_audio_idx += 1
                 else:
                     next_talker_id = int(next_audio_token.item())
-                    predict_second_audio = getattr(
-                        self.config, "predict_second_audio_token", False
-                    )
-                    delayed_audio_lengths.push(
-                        next_audio_token_offset,
-                        (
-                            next_length - AUDIO_TOKEN_OFFSET
-                            if predict_second_audio
-                            else next_length
-                        ),
-                        is_audio_code=next_talker_id >= AUDIO_TOKEN_OFFSET,
-                        is_valid_length=(
-                            int(next_length.item()) >= AUDIO_TOKEN_OFFSET
-                            if predict_second_audio
-                            else True
-                        ),
-                    )
+                    if next_talker_id >= AUDIO_TOKEN_OFFSET:
+                        generated_audio_ids.append(next_audio_token_offset)  # audio code for output
+                    if getattr(self.config, "predict_second_audio_token", False):
+                        # In the second-audio-token ablation, ``next_length`` is a
+                        # talker-vocab id (0=AUD_END, 1=AUD_START, 3+=audio code).
+                        # Only record real audio codes; report them in audio-vocab
+                        # space (i.e. ``length_ids`` becomes the second-audio-token
+                        # stream, aligned with ``audio_ids``).
+                        if int(next_length.item()) >= AUDIO_TOKEN_OFFSET:
+                            generated_length_ids.append(next_length - AUDIO_TOKEN_OFFSET)
+                    else:
+                        if int(next_length.item()) != 0:
+                            generated_length_ids.append(next_length)
 
 
                 # qwen3 talker vocab: 0 = AUD_END, 1 = AUD_START, 3+ = audio codes
@@ -3971,6 +3990,69 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
                     audio_delay_count += 1
                 elif next_audio_val == 0:  # AUD_END (qwen3: talker token 0)
                     audio_delay_count = 0
+
+                # Depth transformer: generate acoustic codes or decoder latent
+                if self.depth_transformer is not None and next_audio_val >= AUDIO_TOKEN_OFFSET:
+                    current_semantic = next_audio_token_offset  # [B] - semantic[t]
+                    # Check if using flow matching depth transformer
+                    if getattr(self.config, "use_flow_matching_depth", False):
+                        # Flow matching: generate decoder latent
+                        if prev_semantic_for_depth is None:
+                            prev_semantic_for_depth = torch.zeros_like(current_semantic)
+                        prev_length_for_depth = next_length
+                        if prev_decoder_latents_for_depth is None:
+                            prev_decoder_latents_for_depth = talker_hidden_last.new_zeros(
+                                batch_size,
+                                self.depth_transformer.num_prev_latents,
+                                self.config.decoder_latent_dim,
+                            )
+                        if prev_decoder_semantics_for_depth is None:
+                            prev_decoder_semantics_for_depth = torch.zeros(
+                                batch_size,
+                                self.depth_transformer.num_prev_latents,
+                                device=device,
+                                dtype=torch.long,
+                            )
+                        if prev_decoder_lengths_for_depth is None:
+                            prev_decoder_lengths_for_depth = torch.zeros(
+                                batch_size,
+                                self.depth_transformer.num_prev_latents,
+                                device=device,
+                                dtype=torch.long,
+                            )
+                        prev_decoder_latents_for_depth[:, -1, :] = next_length
+                        decoder_latent = self.depth_transformer.generate(
+                            talker_hidden_last,
+                            prev_semantic_for_depth,
+                            prev_length_for_depth,
+                            prev_decoder_latents_for_depth,
+                            prev_decoder_semantics_for_depth,
+                            prev_decoder_lengths_for_depth,
+                        )  # [B, latent_dim]
+                        generated_acoustic_codes.append(decoder_latent)
+                        if self.depth_transformer.num_prev_latents > 0:
+                            prev_decoder_semantics_for_depth = torch.cat(
+                                [prev_decoder_semantics_for_depth[:, 1:], current_semantic.unsqueeze(1)],
+                                dim=1,
+                            )
+                            prev_decoder_latents_for_depth = torch.cat(
+                                [prev_decoder_latents_for_depth[:, 1:], decoder_latent.unsqueeze(1)],
+                                dim=1,
+                            )
+                        prev_semantic_for_depth = current_semantic
+
+                    else:
+                        # Discrete depth transformer: generate acoustic codes
+                        if prev_semantic_for_depth is None:
+                            prev_semantic_for_depth = torch.zeros_like(current_semantic)
+                        current_shifted_length = next_length.long()
+                        ac_codes = self.depth_transformer.generate(
+                            talker_hidden_last, prev_semantic_for_depth, current_shifted_length
+                        )  # [B, n_acoustic]
+                        generated_acoustic_codes.append(ac_codes)
+                        # Update state for next step: this step's semantic becomes "previous".
+                        prev_semantic_for_depth = current_semantic
+                        prev_length_for_depth = current_shifted_length
             # Teacher-force text tokens (e.g. for TTS sentence prefix)
             if force_text_ids is not None and force_text_idx < len(force_text_ids):
                 next_text_token = torch.full_like(next_text_token, force_text_ids[force_text_idx].item())
@@ -4150,36 +4232,38 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
                 zero_talker_text_cond |= freeze_next
                 
         
-        # Stack generated tokens. An audio token is only returned after the
-        # following generation step supplies its delayed length. If generation
-        # exhausts max_new_tokens before AUD_END, the final token has no valid
-        # length and must not be decoded with fabricated metadata.
-        if delayed_audio_lengths.discard_pending():
-            logger.warning(
-                "Dropping final generated audio token because generation ended "
-                "before its delayed length was emitted"
-            )
-        if delayed_audio_lengths.dropped_pairs:
-            logger.warning(
-                f"Dropped {delayed_audio_lengths.dropped_pairs} generated audio "
-                "token(s) without valid delayed metadata"
-            )
+        # Stack generated tokens. Acoustic codes (if any) were already produced
+        # in-step inside the loop using talker_hidden[t] + semantic[t-1], matching
+        # training -- no trailing flush needed.
         if len(generated_text_ids) > 0:
             generated_text_ids = torch.stack(generated_text_ids, dim=1)  # [B, num_generated]
         else:
             generated_text_ids = torch.empty((batch_size, 0), device=device, dtype=torch.long)
-        if delayed_audio_lengths.audio_ids:
-            generated_audio_ids = torch.stack(delayed_audio_lengths.audio_ids, dim=1)
-            generated_length_ids = torch.stack(delayed_audio_lengths.length_ids, dim=1)
+        if len(generated_audio_ids) > 0:
+            generated_audio_ids = torch.stack(generated_audio_ids, dim=1)  # [B, num_generated]
         else:
             generated_audio_ids = torch.empty((batch_size, 0), device=device, dtype=torch.long)
+        if len(generated_length_ids) > 0:
+            generated_length_ids = torch.stack(generated_length_ids, dim=1)  # [B, num_generated]
+        else:
             generated_length_ids = torch.empty((batch_size, 0), device=device, dtype=torch.long)
+        # Stack acoustic codes from depth transformer (if generated)
+        if len(generated_acoustic_codes) > 0:
+            generated_acoustic_codes = torch.stack(generated_acoustic_codes, dim=1)
+            if not getattr(self.config, "use_flow_matching_depth", False):
+                # Discrete acoustic codes: [B, T_ac, n_acoustic] -> [B, n_acoustic, T_ac].
+                generated_acoustic_codes = generated_acoustic_codes.transpose(1, 2)
+        else:
+            generated_acoustic_codes = None
         # Concatenate with input_ids if available
         if input_ids is not None:
             sequences = torch.cat([input_ids, generated_text_ids], dim=1)
         else:
             sequences = generated_text_ids
         
+        if force_audio_ids is not None:
+            generated_length_ids = generated_length_ids[:, 1:]
+            assert generated_length_ids.shape == generated_audio_ids.shape
         # Second-audio-token ablation: at inference, combine the primary and
         # secondary streams into a single audio sequence by interleaving the
         # two tokens emitted at each step (matching the training-time format),

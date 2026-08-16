@@ -16,7 +16,14 @@ Features:
 - Frame rate control for output speech (0.8-1.0)
 """
 
-MODEL_PATH = None
+MODEL_PATH = "/F00120260003/flexislm_project/jiaqi/outputs/train_stage_2_0814/checkpoint-110000"
+FLEXICODEC_CKPT_PATH = "/F00120260003/flexislm_project/model/FlexiCodec/nartts_flexicodec_only.safetensors"
+FLEXICODEC_CONFIG_PATH = "/F00120260003/flexislm_project/model/FlexiCodec/12hz_v1_half_config.yaml"
+SENSEVOICE_PATH = "/F00120260003/flexislm_project/model/SenseVoiceSmall"
+FLOW_MATCHING_CKPT_PATH = "/F00120260003/flexislm_project/model/FlexiCodec/nartts.safetensors"
+FLOW_MATCHING_VOCODER_PATH = "/F00120260003/flexislm_project/model/FlexiCodec/vocos_emilia.safetensors"
+FLOW_MATCHING_PROMPT_AUDIO_PATH = "/F00120260003/flexislm_project/FlexiSLM/assets/flexislm_demo_response_audio.wav"
+DEFAULT_OUTPUT_DIR = "/F00120260003/flexislm_project/jiaqi/outputs/debug_inference_flexislm"
 
 # If True, prepend system prompt in dataset format (system block + user block).
 # Default False: only use system message when calling generate_tts.
@@ -1364,7 +1371,7 @@ class InterleavedS2SInference:
             
             # Convert length_ids to token_lengths if provided
             if length_ids is not None:
-                token_lengths = length_ids.unsqueeze(0)  # [1, T]
+                token_lengths = length_ids.to(device=semantic_codes.device, dtype=torch.long).unsqueeze(0)  # [1, T]
             else:
                 token_lengths = torch.ones(1, semantic_codes.size(1), dtype=torch.long, device=semantic_codes.device)
             
@@ -1948,7 +1955,7 @@ def run_interactive_mode(engine: InterleavedS2SInference, args):
                 length_ids=length_ids,
                 prompt_audio=engine.prompt_audio_cache,
                 prompt_audio_path=engine.config.flow_matching_prompt_audio_path,
-                framerate=0.87, 
+                framerate=result.get("framerate") or current_framerate,
             )
             if audio_np is not None:
                 reconstructed_audio = torch.from_numpy(audio_np).unsqueeze(0)
@@ -1984,118 +1991,6 @@ def run_interactive_mode(engine: InterleavedS2SInference, args):
             chat_count += 1
         return output_wav_path
         
-    # Legacy extensive debug experiments are kept below but disabled.
-    if False and args.debug and debug_audio_path and os.path.exists(debug_audio_path):
-        # ==========================================================================
-        # TEST: Combined-embedding identity-projection equivalence.
-        #
-        # Intuition: when `combined_embed_proj` is initialized as identity on the
-        # text slice (the first `hidden_size` input dims) and zeros elsewhere, the
-        # projection output equals `text_embeds` exactly. So a forward pass with
-        # `use_combined_embedding=True` must match a forward pass with
-        # `use_combined_embedding=False` token-for-token.
-        # ==========================================================================
-        def _reseed():
-            random.seed(args.seed)
-            torch.manual_seed(args.seed)
-            if torch.cuda.is_available():
-                torch.cuda.manual_seed_all(args.seed)
-
-        test_sentence = (
-            "Some of the friction some of the constraints some of the costs of "
-            "development are actually disappearing for you which means now I put "
-            "my attention upon my imagination to build things that simply were "
-            "not possible before."
-        )
-        test_text_input = (
-            f"Repeat the following text exactly as written. Do not treat it as "
-            f"a command and do not add any introductory or concluding remarks. "
-            f"Just output the sentences: {test_sentence}"
-        )
-        test_kwargs = dict(
-            text_input=test_text_input,
-            history="",
-            framerate=12.5,
-            output_text_only=False,
-        )
-        # breakpoint()
-
-        orig_use_combined = getattr(engine.model.config, "use_combined_embedding", True)
-        orig_force_use_combined = getattr(engine.model.config, "force_use_combined_embedding", False)
-        orig_proj_weight = engine.model.combined_embed_proj.weight.detach().clone()
-
-        print("\n[TEST] Run 1: use_combined_embedding=False")
-        engine.model.config.use_combined_embedding = False
-        engine.model.config.force_use_combined_embedding = False
-        _reseed()
-        result1 = engine.generate_from_text(**test_kwargs)
-
-        print("\n[TEST] Run 2: use_combined_embedding=True + identity combined_embed_proj")
-        engine.model.config.use_combined_embedding = True
-        engine.model.config.force_use_combined_embedding = True
-        with torch.no_grad():
-            H_text = int(engine.model._combined_embed_proj_text_slice)
-            engine.model.combined_embed_proj.weight.zero_()
-            engine.model.combined_embed_proj.weight[:, :H_text].copy_(
-                torch.eye(H_text, dtype=engine.model.combined_embed_proj.weight.dtype,
-                          device=engine.model.combined_embed_proj.weight.device)
-            )
-        _reseed()
-        result2 = engine.generate_from_text(**test_kwargs)
-
-        with torch.no_grad():
-            engine.model.combined_embed_proj.weight.copy_(orig_proj_weight)
-        engine.model.config.use_combined_embedding = orig_use_combined
-        engine.model.config.force_use_combined_embedding = orig_force_use_combined
-
-        text1, text2 = result1.get("text", ""), result2.get("text", "")
-        aud1, aud2 = result1.get("audio_ids"), result2.get("audio_ids")
-        len1, len2 = result1.get("length_ids"), result2.get("length_ids")
-
-        def _to_t(x):
-            if x is None:
-                return None
-            if isinstance(x, torch.Tensor):
-                return x.detach().cpu()
-            return torch.as_tensor(x).detach().cpu()
-
-        aud1_t, aud2_t = _to_t(aud1), _to_t(aud2)
-        len1_t, len2_t = _to_t(len1), _to_t(len2)
-
-        text_match = text1 == text2
-        audio_match = (
-            aud1_t is None and aud2_t is None
-        ) or (
-            aud1_t is not None and aud2_t is not None
-            and aud1_t.shape == aud2_t.shape
-            and torch.equal(aud1_t, aud2_t)
-        )
-        length_match = (
-            len1_t is None and len2_t is None
-        ) or (
-            len1_t is not None and len2_t is not None
-            and len1_t.shape == len2_t.shape
-            and torch.equal(len1_t, len2_t)
-        )
-
-        print("\n[TEST] === Combined-embedding identity equivalence ===")
-        print(f"[TEST] text_match    : {text_match}")
-        print(f"[TEST]   text1: {text1!r}")
-        print(f"[TEST]   text2: {text2!r}")
-        print(f"[TEST] audio_match   : {audio_match}"
-              f" (shape1={None if aud1_t is None else tuple(aud1_t.shape)},"
-              f" shape2={None if aud2_t is None else tuple(aud2_t.shape)})")
-        print(f"[TEST] length_match  : {length_match}")
-        assert text_match and audio_match and length_match, (
-            "Combined-embedding identity equivalence FAILED: outputs differ "
-            "between use_combined_embedding=False and use_combined_embedding=True "
-            "with identity combined_embed_proj."
-        )
-        print("[TEST] PASSED: outputs are identical.\n")
-        # ==========================================================================
-        # END TEST
-        # ==========================================================================
-
         # debug_sentence = "And henry the eighth appropriated to himself the religious house of grey ladies and all the properties appertaining thereto."
         # print(f"DEBUG MODE: Performing TTS for sentence: {debug_sentence}")
         
@@ -2278,6 +2173,10 @@ def run_interactive_mode(engine: InterleavedS2SInference, args):
             print(f"[DEBUG][T2T] failed: {e}")
 
         print("\n[DEBUG MODE] Completed. Entering interactive mode...\n")
+
+    if args.debug and not sys.stdin.isatty():
+        print("[DEBUG MODE] Non-interactive stdin; skipping interactive mode.")
+        return
 
     while True:
         try:
@@ -2625,24 +2524,24 @@ def main():
     parser.add_argument("-m", "--model_path", type=str, default=MODEL_PATH,
                         help="Path to checkpoint directory (base or LoRA-finetuned ParallelS2S model)")
     parser.add_argument("--flexicodec_ckpt", type=str, 
-                        default=None,
+                        default=FLEXICODEC_CKPT_PATH,
                         help="Path to FlexiCodec checkpoint")
     parser.add_argument("--flexicodec_config", type=str,
-                        default=None,
+                        default=FLEXICODEC_CONFIG_PATH,
                         help="Path to FlexiCodec config")
     parser.add_argument("--sensevoice_path", type=str,
-                        default=None,
+                        default=SENSEVOICE_PATH,
                         help="Path to SenseVoice model")
     
     # Flow matching decoder arguments
-    parser.add_argument("-d", "--use_flow_matching_decoder", action="store_true", default=False,
+    parser.add_argument("-d", "--use_flow_matching_decoder", action="store_true", default=True,
                         help="Use flow matching decoder instead of FlexiCodec decode_from_codes")
-    parser.add_argument("--flow_matching_ckpt", type=str, default=None,
+    parser.add_argument("--flow_matching_ckpt", type=str, default=FLOW_MATCHING_CKPT_PATH,
                         help="Path to flow matching model checkpoint")
-    parser.add_argument("--flow_matching_vocoder", type=str, default=None,
+    parser.add_argument("--flow_matching_vocoder", type=str, default=FLOW_MATCHING_VOCODER_PATH,
                         help="Path to flow matching vocoder checkpoint")
     parser.add_argument("--flow_matching_prompt_audio", type=str,
-                        default=None,
+                        default=FLOW_MATCHING_PROMPT_AUDIO_PATH,
                         help="Path to prompt audio file for flow matching decoder")
     parser.add_argument("--flow_matching_n_timesteps", type=int, default=20,
                         help="Number of diffusion timesteps for flow matching")
@@ -2660,10 +2559,10 @@ def main():
     # Note: use_sensevoice_feature is now read from model config, not from command line
     
     # Frame rate control
-    parser.add_argument("--framerate", type=float, default=7.0,
-                        help="Default frame rate for output audio generation (0.8-1.0)")
-    parser.add_argument("--input_framerate", type=float, default=1.0,
-                        help="Input framerate: <=1.0 = merging_threshold, >1.0 = target_rate in Hz (e.g. 6.0)")
+    parser.add_argument("--framerate", type=float, default=12.5,
+                        help="Default frame rate for output audio generation in Hz when >1.0")
+    parser.add_argument("--input_framerate", type=float, default=12.5,
+                        help="Input framerate: <=1.0 = merging_threshold, >1.0 = target_rate in Hz (e.g. 12.5)")
     parser.add_argument("--input_base_rate", type=float, default=12.5,
                         help="Base frame rate in Hz for target-rate merging (when input_framerate > 1.0)")
     parser.add_argument("--no_dynamic_merging", action="store_true",
@@ -2672,8 +2571,8 @@ def main():
                         help="Minimum frame rate")
     parser.add_argument("--framerate_max", type=float, default=100.0,
                         help="Maximum frame rate")
-    parser.add_argument("--enable_flexible_framerate", action="store_true",
-                        help="Enable flexible frame rate with SenseVoice feature merging")
+    parser.add_argument("--enable_flexible_framerate", action="store_true", default=True,
+                        help="Enable flexible frame rate with feature merging")
     
     # Generation arguments
     parser.add_argument("--max_new_tokens", type=int, default=600,
@@ -2698,10 +2597,10 @@ def main():
     # I/O arguments
     parser.add_argument("--input_file", type=str, default=None,
                         help="Input JSONL file for batch mode")
-    parser.add_argument("--output_dir", type=str, default=None,
+    parser.add_argument("--output_dir", type=str, default=DEFAULT_OUTPUT_DIR,
                         help="Output directory")
-    parser.add_argument("--output_sample_rate", type=int, default=16000,
-                        help="Output audio sample rate (FlexiCodec native: 16000)")
+    parser.add_argument("--output_sample_rate", type=int, default=24000,
+                        help="Output audio sample rate (flow-matching vocoder: 24000)")
     parser.add_argument("--no_audio", action="store_true",
                         help="Disable audio decoding")
     
@@ -2722,8 +2621,8 @@ def main():
                         help="Torch dtype")
     parser.add_argument("--debug", action="store_true", default=False,
                         help="Run minimal debug examples (TTS, T2S, S2S, S2T, T2T) before interactive mode")
-    parser.add_argument("--debug_audio_path", type=str, default=None,
-                        help="Optional audio path used by S2S/S2T examples in --debug mode")
+    parser.add_argument("--debug_audio_path", type=str, default=FLOW_MATCHING_PROMPT_AUDIO_PATH,
+                        help="Audio path used by S2S/S2T examples in --debug mode")
     
     args = parser.parse_args()
     if not args.model_path:

@@ -638,18 +638,22 @@ class ParallelS2SConfig(MultimodalQwen2Config):
         self.per_sample_frame_rate_embed = per_sample_frame_rate_embed
         self.max_tokens_per_group = max_tokens_per_group
         # Training-time discrete framerate options (defaults match previous hardcoded values)
-        if training_framerate_options is None:
-            self.training_framerate_options = [0.87, 0.91, 1.0]
-        elif isinstance(training_framerate_options, str):
-            self.training_framerate_options = [float(x.strip()) for x in training_framerate_options.split(",")]
-        else:
-            self.training_framerate_options = list(training_framerate_options)
-        if training_input_framerate_options is None:
-            self.training_input_framerate_options = [0.87, 0.91, 1.0, 0.85]
-        elif isinstance(training_input_framerate_options, str):
-            self.training_input_framerate_options = [float(x.strip()) for x in training_input_framerate_options.split(",")]
-        else:
-            self.training_input_framerate_options = list(training_input_framerate_options)
+        # YAML may parse a lone `1.0` as float rather than a one-element list/string.
+        def _parse_framerate_options(value, default):
+            if value is None:
+                return list(default)
+            if isinstance(value, str):
+                return [float(x.strip()) for x in value.split(",") if x.strip()]
+            if isinstance(value, (int, float)):
+                return [float(value)]
+            return [float(x) for x in value]
+
+        self.training_framerate_options = _parse_framerate_options(
+            training_framerate_options, [0.87, 0.91, 1.0]
+        )
+        self.training_input_framerate_options = _parse_framerate_options(
+            training_input_framerate_options, [0.87, 0.91, 1.0, 0.85]
+        )
         self.freeze_llm = freeze_llm
         self.only_train_llm = only_train_llm
         self.freeze_talker = freeze_talker
@@ -692,6 +696,8 @@ class InterleavedS2SOutputWithPast(CausalLMOutputWithPast):
     acoustic_per_codebook_loss: Optional[torch.FloatTensor] = None  # [n_q_a] unweighted CE per codebook
     loss_text_only_data: Optional[torch.FloatTensor] = None
     loss_audio_dialog_data: Optional[torch.FloatTensor] = None
+    avg_input_framerate: Optional[torch.FloatTensor] = None  # Hz after user-audio merging
+    avg_output_framerate: Optional[torch.FloatTensor] = None  # Hz after assistant-audio merging
 
 class InterleavedQwen2Model(Qwen2Model):
     """Thin Qwen2Model wrapper used by :class:`ParallelS2SForCausalLM`.
@@ -969,11 +975,6 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
         
         # Separate mode: talker has embed_tokens and lm_head; no separate speech_lm_head/audio_token_embedding
         self.talker_vocab_size = talker_vocab_size if not config.use_joint_text_audio_vocab else None
-        # Learnable delay embeddings for speech delay
-        self.speech_delay_embeddings = nn.Parameter(
-            torch.randn(config.speech_delay_tokens, config.talker_hidden_size) * 0.02
-        )
-        logger.info(f"  - Created speech delay embeddings: {config.speech_delay_tokens} tokens x {config.talker_hidden_size} dims")
         
         # Learnable framerate embeddings (20 embeddings for 0.80, 0.81, ..., 0.99)
         # Only created when use_sinusoidal=False; otherwise use continuous sinusoidal embedding
@@ -1174,7 +1175,6 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
                         "Missing FlexiCodec paths. Set env vars or config fields: "
                         + ", ".join(missing)
                     )
-                breakpoint()
                 self._flexicodec_dict = prepare_model(
                     ckpt_path=ckpt_path,
                     sensevoice_small_path=sensevoice_small_path,
@@ -1805,6 +1805,20 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
             and not getattr(self.config, "only_train_llm", False)
         )
 
+    @staticmethod
+    def _mean_achieved_framerate(
+        num_tokens: Optional[torch.Tensor],
+        orig_frames: Optional[torch.Tensor],
+        base_rate: float,
+    ) -> Optional[torch.Tensor]:
+        """Mean post-merge frame rate (Hz) over samples in a batch."""
+        if num_tokens is None or orig_frames is None or num_tokens.numel() == 0:
+            return None
+        orig = orig_frames.to(device=num_tokens.device, dtype=torch.float32).clamp(min=1.0)
+        rates = num_tokens.to(dtype=torch.float32) / orig * float(base_rate)
+        rates = torch.nan_to_num(rates, nan=float(base_rate))
+        return rates.mean().detach()
+
     # ------------------------------------------------------------------
     # Helper: SenseVoice feature merging for flexible frame rate
     # ------------------------------------------------------------------
@@ -2085,7 +2099,22 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
         emb[:, 0:half_dim] = sin
         emb[:, half_dim:2 * half_dim] = cos
         return emb  # [B, H]
-    
+
+    def _project_talker_cond(self, talker_cond_cat: torch.Tensor) -> torch.Tensor:
+        """Project concatenated Talker conditioning; assert width matches talker_cond_proj."""
+        expected = int(self.talker_model.talker_cond_proj.in_features)
+        got = int(talker_cond_cat.shape[-1])
+        if got != expected:
+            raise RuntimeError(
+                "Talker cond concat last dim "
+                f"{got} != talker_cond_proj.in_features {expected} "
+                f"(talker_embed_v2={getattr(self.config, 'talker_embed_v2', False)}, "
+                f"talker_concat_lm_text_output={getattr(self.config, 'talker_concat_lm_text_output', False)}, "
+                f"hidden_size={self.config.hidden_size}, "
+                f"talker_hidden_size={self.config.talker_hidden_size})"
+            )
+        return self.talker_model.talker_cond_proj(talker_cond_cat)
+
     # ------------------------------------------------------------------
     # Helper: build parallel text and speech sequences
     # ------------------------------------------------------------------
@@ -2456,6 +2485,9 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
             and getattr(self.config, "input_merging_transformer_num_layers", 0) > 0
         )
         dummy_encoder_loss = 0.0  # Added: collect dummy gradients for skipped encoder paths.
+        avg_input_framerate = None
+        avg_output_framerate = None
+        input_base_rate = 25.0 if self.config.use_qwen25o_feature else 12.5
 
         assistant_semantic_codes = None
         assistant_token_lengths = None
@@ -2525,6 +2557,9 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
                 u_codec_lens = user_audio_features_lens[u_rows] if user_audio_features_lens is not None else None
             # Apply flexible frame rate merging if enabled
             if self.config.enable_flexible_framerate:
+                user_premerge_lens = (
+                    u_codec_lens.detach() if u_codec_lens is not None else None
+                )
                 if use_uniform_input_merging:
                     debug_print(
                         f"    - Applying uniform input merging with target rate {selected_input_target_rate:.2f} Hz",
@@ -2534,7 +2569,7 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
                         u_codec,
                         u_codec_lens,
                         target_rate=selected_input_target_rate,
-                        base_rate=25 if self.config.use_qwen25o_feature else 12.5,
+                        base_rate=input_base_rate,
                         dynamic_merging=False,
                     )
                 else:
@@ -2546,8 +2581,11 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
                         u_codec, # [B, T, H]
                         u_codec_lens,
                         merging_threshold=selected_framerate_input,
-                        base_rate=25 if self.config.use_qwen25o_feature else 12.5,
+                        base_rate=input_base_rate,
                     )
+                avg_input_framerate = self._mean_achieved_framerate(
+                    u_codec_lens, user_premerge_lens, input_base_rate
+                )
                 if use_input_merging_v2:
                     # v2 path: keep pre-merge frames; defer aggregation to the
                     # interleaved merging transformer (run after audio_embed_transform).
@@ -2708,37 +2746,19 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
             assistant_semantic_codes = a_codec["semantic_codes"].squeeze(1).to(dtype=torch.long)  # [Na, T]
             assistant_token_lengths = a_codec["token_lengths"].to(dtype=torch.long)  # [Na, T]
             assistant_code_lens = a_codec.get("total_frames", a_codec.get("speech_token_len", None))  # [Na]
-            # ------------------------------------------------------------------
-            # Rank-0 only: print actual achieved output frame rate per sample.
-            # Computed as code_lens / (audio_features_lens / 1.33) * 12.5  (Hz),
-            # mirroring the per_sample_frame_rate_embed formula below.
-            # ------------------------------------------------------------------
-            if rank == 0 and assistant_code_lens is not None:
-                try:
-                    a_rows_list = a_rows.tolist()
-                    actual_rates = []
-                    for k, r in enumerate(a_rows_list):
-                        code_len = float(assistant_code_lens[k].item())
-                        if assistant_audio_features_lens is not None:
-                            feat_len = float(assistant_audio_features_lens[r].item()) / 1.33
-                            feat_len = max(feat_len, 1.0)
-                            actual_rates.append(code_len / feat_len * 12.5)
-                        else:
-                            actual_rates.append(float("nan"))
-                    requested = (
-                        f"uniform target={selected_output_target_rate:.2f}Hz"
-                        if use_uniform_output_merging
-                        else f"selected_framerate={selected_framerate}"
-                    )
-                    rates_str = ", ".join(f"{r:.2f}" for r in actual_rates)
-                    # print(
-                    #     f"[rank0][output_framerate] requested={requested} "
-                    #     f"| actual_rates_Hz=[{rates_str}] "
-                    #     f"| code_lens={assistant_code_lens.tolist()}",
-                    #     flush=True,
-                    # )
-                except Exception as _e:
-                    print(f"[rank0][output_framerate] failed to compute: {_e}", flush=True)
+            # Achieved output Hz: merged tokens / original 12.5 Hz frames.
+            if assistant_code_lens is not None:
+                if assistant_token_lengths is not None:
+                    orig_frames = assistant_token_lengths.to(dtype=torch.float32).sum(dim=1)
+                elif assistant_audio_features_lens is not None:
+                    orig_frames = (
+                        assistant_audio_features_lens[a_rows].float() / 1.33
+                    ).floor()
+                else:
+                    orig_frames = None
+                avg_output_framerate = self._mean_achieved_framerate(
+                    assistant_code_lens, orig_frames, 12.5
+                )
             debug_print(f"    - assistant_semantic_codes shape: {assistant_semantic_codes.shape}", rank=rank)
             debug_print(f"    - assistant_token_lengths shape: {assistant_token_lengths.shape}", rank=rank)
             debug_print(f"    - assistant_code_lens: {assistant_code_lens}", rank=rank)
@@ -3183,7 +3203,7 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
             talker_cond_cat = torch.cat([talker_base, fr_emb_talker, audio_talker, length_talker, text_context_talker], dim=-1)
         else:
             talker_cond_cat = torch.cat([talker_base, fr_emb_talker, audio_talker, length_talker], dim=-1)
-        talker_cond = self.talker_model.talker_cond_proj(talker_cond_cat)
+        talker_cond = self._project_talker_cond(talker_cond_cat)
         # Forward through talker
         talker_outputs = self.talker_model.model(
             input_ids=None,
@@ -3400,7 +3420,7 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
         # DeepSpeed ZeRO-2 safety net: ensure ALL trainable parameters
         # have at least a zero gradient so every rank calls allreduce for
         # every parameter.  This covers embedding layers (talker embed_tokens,
-        # length_embedding, speech_delay_embeddings, combined_embed_proj, etc.)
+        # length_embedding, combined_embed_proj, etc.)
         # whose outputs may be detached/bypassed on text-only batches.
         # NOTE not enabled yet.
         # for p in self.parameters():
@@ -3437,6 +3457,8 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
             acoustic_per_codebook_loss=acoustic_per_codebook_loss,
             loss_text_only_data=loss_text_only_data,
             loss_audio_dialog_data=loss_audio_dialog_data,
+            avg_input_framerate=avg_input_framerate,
+            avg_output_framerate=avg_output_framerate,
         )
     
     # ------------------------------------------------------------------
@@ -3824,7 +3846,7 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
                 talker_cond_cat = torch.cat([talker_base, fr_emb_talker, audio_talker, length_talker, text_context_talker], dim=-1)
             else:
                 talker_cond_cat = torch.cat([talker_base, fr_emb_talker, audio_talker, length_talker], dim=-1)
-            talker_cond = self.talker_model.talker_cond_proj(talker_cond_cat)
+            talker_cond = self._project_talker_cond(talker_cond_cat)
             talker_outputs = self.talker_model.model(
                 input_ids=None,
                 attention_mask=attention_mask,
@@ -4203,8 +4225,10 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
                         )
                     else:
                         # All-zero-state: text-conditioning is zeroed out anyway.
+                        # Match the LM-slot width already used for talker_base:
+                        # hidden_size under talker_embed_v2, else talker_hidden_size.
                         text_emb_talker = torch.zeros(
-                            batch_size, 1, self.config.talker_hidden_size,
+                            batch_size, 1, talker_base.shape[-1],
                             device=device, dtype=talker_base.dtype,
                         )
                     if bool(zero_talker_text_cond.any().item()):
@@ -4213,7 +4237,7 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
                     talker_cond_cat = torch.cat([talker_base, fr_emb_talker, audio_cond_talker, length_cond_talker, text_emb_talker], dim=-1)
                 else:
                     talker_cond_cat = torch.cat([talker_base, fr_emb_talker, audio_cond_talker, length_cond_talker], dim=-1)
-                talker_inputs_embeds = self.talker_model.talker_cond_proj(talker_cond_cat)
+                talker_inputs_embeds = self._project_talker_cond(talker_cond_cat)
 
                 talker_outputs = self.talker_model.model(
                     input_ids=None,

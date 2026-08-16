@@ -405,6 +405,7 @@ class InterleavedS2SInference:
             input_mode = "Semantic codes"
         logger.info(f"Using audio input mode: {input_mode}")
         logger.info(f"Flexible framerate enabled: {getattr(self.model.config, 'enable_flexible_framerate', False)}")
+        logger.info(f"talker_embed_v2: {getattr(self.model.config, 'talker_embed_v2', False)}")
         logger.info(f"Input framerate: {self.config.input_framerate}, Output framerate: {self.config.default_framerate}")
     
     def _load_model(self) -> Tuple[ParallelS2SForCausalLM, AutoTokenizer]:
@@ -1553,6 +1554,18 @@ class InterleavedS2SInference:
                 inputs_embeds1 = inputs_embeds1.clone()
                 inputs_embeds1[0, 0] = self.model.audio_end_embedding.to(inputs_embeds1.dtype)
 
+            if audio_embeds.shape[-1] != inputs_embeds.shape[-1]:
+                raise RuntimeError(
+                    "User-audio embeddings last dim "
+                    f"{audio_embeds.shape[-1]} does not match Thinker hidden size "
+                    f"{inputs_embeds.shape[-1]}. talker_embed_v2="
+                    f"{getattr(self.model.config, 'talker_embed_v2', False)} keeps "
+                    "audio_embed_tokens at talker_hidden_size, which cannot be inserted "
+                    "into the Thinker prompt. Use an encoder-feature input path "
+                    "(Qwen2.5-Omni / Qwen3 / Whisper / SenseVoice) instead of FlexiCodec "
+                    "semantic codes."
+                )
+
             inputs_embeds = torch.cat([inputs_embeds, audio_embeds.unsqueeze(0), inputs_embeds1], dim=1)
         else:
             # Even for text-only user input, we still need to append the assistant prefix (prompt1)
@@ -2534,7 +2547,7 @@ def main():
                         help="Path to SenseVoice model")
     
     # Flow matching decoder arguments
-    parser.add_argument("-d", "--use_flow_matching_decoder", action="store_true", default=True,
+    parser.add_argument("-d", "--use_flow_matching_decoder", action="store_true", default=False,
                         help="Use flow matching decoder instead of FlexiCodec decode_from_codes")
     parser.add_argument("--flow_matching_ckpt", type=str, default=FLOW_MATCHING_CKPT_PATH,
                         help="Path to flow matching model checkpoint")
@@ -2599,8 +2612,8 @@ def main():
                         help="Input JSONL file for batch mode")
     parser.add_argument("--output_dir", type=str, default=DEFAULT_OUTPUT_DIR,
                         help="Output directory")
-    parser.add_argument("--output_sample_rate", type=int, default=24000,
-                        help="Output audio sample rate (flow-matching vocoder: 24000)")
+    parser.add_argument("--output_sample_rate", type=int, default=16000,
+                        help="Output audio sample rate (FlexiCodec native: 16000)")
     parser.add_argument("--no_audio", action="store_true",
                         help="Disable audio decoding")
     

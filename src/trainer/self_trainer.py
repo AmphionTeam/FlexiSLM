@@ -957,6 +957,11 @@ class ATrainer(Trainer):
             if hasattr(outputs, "loss_audio_dialog_data") and outputs.loss_audio_dialog_data is not None:
                 metrics_to_log[f"loss_audio_dialog_data"] = outputs.loss_audio_dialog_data.item()
 
+            for metric_name in ("avg_input_framerate", "avg_output_framerate"):
+                value = self._output_value(outputs, metric_name)
+                if value is not None and torch.is_tensor(value):
+                    metrics_to_log[metric_name] = float(value.detach().float().item())
+
             if local_batch_size is not None:
                 metrics_to_log["effective_batch_size"] = local_batch_size
                 metrics_to_log["global_effective_batch_size"] = global_batch_size

@@ -128,13 +128,37 @@ def _keys_with_prefixes(keys, prefixes):
     return {key for key in keys if any(key.startswith(prefix) for prefix in prefixes)}
 
 
+def _drop_incompatible_state_dict_tensors(model, state_dict: dict) -> list:
+    """Drop checkpoint tensors whose shapes do not match the current model.
+
+    ``load_state_dict(..., strict=False)`` still raises on size mismatches. Architecture
+    flags such as ``talker_embed_v2`` change ``combined_embed_proj``. Keep the freshly
+    initialized tensors when the checkpoint layout cannot transfer.
+    """
+    current = model.state_dict()
+    dropped = []
+    for key, tensor in list(state_dict.items()):
+        if key not in current:
+            continue
+        current_shape = tuple(current[key].shape)
+        incoming_shape = tuple(tensor.shape)
+        if current_shape != incoming_shape:
+            dropped.append((key, incoming_shape, current_shape))
+            del state_dict[key]
+    return dropped
+
+
 def _validate_weights_only_transfer_components(
     model,
     state_dict: dict,
     *,
     reinitialize_input_merging_transformer: bool = False,
 ) -> dict:
-    """Require complete Stage 1 components while allowing a separately initialized backbone."""
+    """Require complete Stage 1 components while allowing a separately initialized backbone.
+
+    A no-Talker checkpoint is allowed: if the file contains no ``talker_model`` tensors,
+    keep the constructed Talker instead of requiring a full Talker transfer.
+    """
     target_keys = set(model.state_dict())
     source_keys = set(state_dict)
     counts = {}
@@ -144,6 +168,11 @@ def _validate_weights_only_transfer_components(
             continue
         expected = _keys_with_prefixes(target_keys, prefixes)
         provided = _keys_with_prefixes(source_keys, prefixes)
+        if component == "talker_model" and not provided:
+            logger.info(
+                "Checkpoint has no talker_model tensors; keeping the constructed Talker"
+            )
+            continue
         missing = sorted(expected - provided)
         unexpected = sorted(provided - expected)
         if not expected or missing or unexpected:
@@ -470,7 +499,7 @@ def main():
             param.requires_grad = True
 
     # -----------------------------------------------------------------------------
-    # freeze_talker: freeze talker modules (talker_model, speech_delay_embeddings)
+    # freeze_talker: freeze talker modules (talker_model)
     # -----------------------------------------------------------------------------
     def freeze_the_talker(model):
         """Freeze talker-related parameters. Keeps LLM (and LoRA if present) trainable."""
@@ -484,8 +513,6 @@ def main():
             #     p.requires_grad = True
             # for p in model.talker_model.length_embedding.parameters():
             #     p.requires_grad = True
-        if hasattr(model, "speech_delay_embeddings") and model.speech_delay_embeddings is not None:
-            model.speech_delay_embeddings.requires_grad = False
 
     # -----------------------------------------------------------------------------
     # only_train_llm: freeze everything except main LLM and audio input adapters.
@@ -623,6 +650,16 @@ def main():
         except Exception:
             pass
         logger.info("per_sample_frame_rate_embed=True: using per-sample frame rate (code_lens/feature_lens*15, range 0-15 Hz) instead of unified merge threshold embed.")
+
+    if getattr(model_args, "talker_embed_v2", False):
+        try:
+            model.config.talker_embed_v2 = True
+        except Exception:
+            pass
+        logger.info(
+            "talker_embed_v2=True: audio/length/framerate cond stay at talker_hidden_size; "
+            "Thinker hidden states stay at hidden_size until talker_cond_proj."
+        )
 
     if hasattr(model_args, "text_loss_weight"):
         try:
@@ -954,6 +991,17 @@ def main():
                     raise FileNotFoundError(f"Checkpoint file {checkpoint} does not have a supported extension.")
             else:
                 raise FileNotFoundError(f"Checkpoint path {checkpoint} does not exist.")
+            incompatible_tensors = _drop_incompatible_state_dict_tensors(model, state_dict)
+            if incompatible_tensors:
+                logger.warning(
+                    "Dropped {} checkpoint tensors with incompatible shapes (keeping freshly "
+                    "initialized values): {}",
+                    len(incompatible_tensors),
+                    ", ".join(
+                        f"{key} {src}->{dst}"
+                        for key, src, dst in incompatible_tensors[:20]
+                    ),
+                )
             transfer_counts = _validate_weights_only_transfer_components(
                 model,
                 state_dict,
@@ -985,13 +1033,19 @@ def main():
                 unexpected_keys,
             )
 
+            expected_missing_prefixes = [
+                "model.base_model.model.",
+                # no_talker checkpoints omit these; keep the constructed Talker.
+                "talker_model.",
+            ]
             expected_missing = _keys_with_prefixes(
                 missing_keys,
-                ("model.base_model.model.",),
+                expected_missing_prefixes,
             )
+            expected_missing |= {key for key, _, _ in incompatible_tensors}
             expected_unexpected = _keys_with_prefixes(
                 unexpected_keys,
-                ("model.", "_qwen25o_encoder."),
+                ("model.", "_qwen25o_encoder.", "speech_delay_embeddings"),
             )
             remaining_missing = sorted(missing_keys - expected_missing)
             remaining_unexpected = sorted(unexpected_keys - expected_unexpected)

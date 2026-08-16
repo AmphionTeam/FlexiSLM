@@ -450,8 +450,9 @@ class PreparedSample:
 class WorkerContext:
     """Worker-local audio services used during late materialization.
 
-    ``audio_decoder`` returns ``(waveform, sample_rate)``. Extractors expose the
-    existing ``extract_features(waveform, fs=16000)`` interface.
+    ``audio_decoder`` returns ``(waveform, sample_rate)``. Non-16 kHz clips are
+    resampled to ``target_sample_rate``. Extractors expose the existing
+    ``extract_features(waveform, fs=16000)`` interface.
     """
 
     audio_decoder: Callable[[Any], Any]

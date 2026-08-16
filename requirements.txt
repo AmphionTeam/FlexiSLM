@@ -14,7 +14,7 @@
 accelerate>=0.30.0
 datasets>=2.18.0
 deepspeed>=0.14.0
-flexicodec @ git+https://github.com/jiaqili3/FlexiCodec.git@70c09f4c5b1e3eb95155427e4411efe333a8dad0
+flexicodec @ git+https://github.com/jiaqili3/FlexiCodec.git
 huggingface_hub>=0.23.0
 inflect>=7.0.0
 librosa>=0.10.0
@@ -29,10 +29,11 @@ requests>=2.31.0
 safetensors>=0.4.0
 sentencepiece>=0.1.99
 soundfile>=0.12.1
-swanlab[dashboard]==0.9.4
+swanlab[dashboard]>=0.9.4
 torch>=2.1.0
 torchaudio>=2.1.0
 torchvision>=0.16.0
 tqdm>=4.66.0
 transformers>=4.41.0
 webdataset==1.0.2
+protobuf>=6.33

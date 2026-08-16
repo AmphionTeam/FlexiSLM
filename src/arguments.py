@@ -219,7 +219,7 @@ class ModelArguments:
         metadata={"help": "Number of null tokens to delay speech generation"}
     )
     talker_concat_lm_text_output: bool = field(
-        default=False,
+        default=True,
         metadata={
             "help": (
                 "When enabled, concatenate the LM's embedding output (hidden_states[0]) into the talker conditioning "

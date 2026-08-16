@@ -154,8 +154,14 @@ class StreamingConfig:
         return self.batch_limits or BatchLimits(max_samples=self.batch_size)
 
 
+REQUIRED_SAMPLE_RATE = 16000
+
+
 def decode_audio_asset(asset):
-    """Decode an ``AudioAsset`` from compressed in-tar bytes with SoundFile."""
+    """Decode an ``AudioAsset`` from compressed in-tar bytes with SoundFile.
+
+    Non-16 kHz clips are resampled to 16 kHz.
+    """
     import io
     import soundfile as sf
 
@@ -165,7 +171,13 @@ def decode_audio_asset(asset):
         )
     except Exception as exc:
         raise AudioDecodeError(asset.member_key, asset.codec, str(exc)) from exc
-    return torch.from_numpy(waveform.T.copy()), sample_rate
+    waveform = torch.from_numpy(waveform.T.copy())
+    if sample_rate != REQUIRED_SAMPLE_RATE:
+        import torchaudio.functional as AF
+
+        waveform = AF.resample(waveform, sample_rate, REQUIRED_SAMPLE_RATE)
+        sample_rate = REQUIRED_SAMPLE_RATE
+    return waveform, sample_rate
 
 
 def _warn_and_continue(error: Exception) -> bool:

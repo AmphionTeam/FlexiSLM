@@ -38,6 +38,8 @@ class WorkerContextFactory:
     def __call__(self) -> WorkerContext:
         # Keep heavyweight feature extractor imports and construction inside the
         # DataLoader worker while leaving the factory itself spawn-pickleable.
+        from src.models._local_flexicodec import ensure_local_flexicodec
+        ensure_local_flexicodec()
         from flexicodec.feature_extractors import FBankGen
         from src.dataset.interleaved import Qwen3FbankExtractor
 
@@ -297,12 +299,28 @@ def build_qwen2_webdataset(
             copy_chunk_bytes=int(cache_cfg.get("copy_chunk_bytes", 8 * 1024**2)),
         )
 
+    shuffle_max_samples = int(shuffle_cfg.get("max_samples", 4096))
+    shuffle_initial_samples = int(shuffle_cfg.get("initial_samples", 1024))
+    if shuffle_initial_samples <= 0:
+        # ``initial_samples: 0`` means fill the configured sample window, not
+        # "skip sample-level shuffling".
+        shuffle_initial_samples = shuffle_max_samples
+    logger.info(
+        "WebDataset %s sample-level shuffle: max_samples=%d initial_samples=%d "
+        "max_bytes=%s shard_shuffle=%s",
+        split,
+        shuffle_max_samples,
+        shuffle_initial_samples,
+        shuffle_max_bytes,
+        bool(sampling_cfg.get("shuffle", True)),
+    )
+
     stream_config = StreamingConfig(
         sources=tuple(source_configs),
         source_name=(source_configs[0].name if len(source_configs) == 1 else "mixed"),
         batch_size=batch_size,
-        shuffle_max_samples=int(shuffle_cfg.get("max_samples", 4096)),
-        shuffle_initial_samples=int(shuffle_cfg.get("initial_samples", 1024)),
+        shuffle_max_samples=shuffle_max_samples,
+        shuffle_initial_samples=shuffle_initial_samples,
         shuffle_max_bytes=shuffle_max_bytes,
         seed=sampling_seed,
         drop_last=bool(batch_cfg.get("drop_last", False)),

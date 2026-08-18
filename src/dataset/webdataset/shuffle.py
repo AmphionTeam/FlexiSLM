@@ -26,11 +26,14 @@ def byte_bounded_shuffle(
 ) -> Iterator[Any]:
     """Shuffle a stream while bounding retained sample count and optional bytes.
 
-    Once either bound is reached, a random buffered item is emitted before the
-    next input item is retained. The final buffer is drained in random order.
-    ``initial_samples`` controls startup latency and must not exceed the sample
-    bound; byte pressure may start output earlier. ``max_bytes=None`` disables
-    the storage cap so only ``max_samples`` limits the window.
+    The steady-state window is always ``max_samples`` (or fewer under byte
+    pressure). Once that bound is reached, a random buffered item is emitted
+    before the next input item is retained. The final buffer is drained in
+    random order.
+
+    ``initial_samples`` is the number of items to buffer before the first
+    yield. ``0`` means fill the entire ``max_samples`` window so startup
+    output is already mixed. ``max_bytes=None`` disables the storage cap.
     """
     if max_samples <= 0:
         raise ValueError("shuffle max_samples must be positive")
@@ -43,6 +46,9 @@ def byte_bounded_shuffle(
     buffer = []
     sizes = []
     buffered_bytes = 0
+    # ``0`` used to skip the per-insert emit path entirely. Treat it as a
+    # request for a full-window reservoir so sample-level shuffling still runs.
+    startup_fill = initial_samples if initial_samples > 0 else max_samples
 
     def observe_buffer() -> None:
         if on_buffer_change is not None:
@@ -57,6 +63,7 @@ def byte_bounded_shuffle(
         sizes[index] = sizes[-1]
         buffer.pop()
         sizes.pop()
+        observe_buffer()
         return item
 
     for item in source:
@@ -75,7 +82,11 @@ def byte_bounded_shuffle(
         sizes.append(size)
         buffered_bytes += size
         observe_buffer()
-        if initial_samples and len(buffer) >= initial_samples:
+        # Do not emit merely because ``startup_fill`` was reached: that froze
+        # the window at ``initial_samples`` and never used ``max_samples``.
+        # After the startup fill, keep accumulating until the configured
+        # reservoir is full, then replace a random occupant.
+        if len(buffer) >= startup_fill and len(buffer) >= max_samples:
             yield pop_random()
 
     while buffer:

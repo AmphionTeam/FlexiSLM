@@ -68,9 +68,14 @@ def pool_sort_samples(
     pool_bytes: int,
     chunk_size: int,
     rng: random.Random,
+    reverse: bool = False,
     on_pool_drain: Optional[Callable[[float], None]] = None,
 ) -> Iterator[Any]:
-    """Continuously refill a bounded pool and emit similar-length chunks."""
+    """Continuously refill a bounded pool and emit similar-length chunks.
+
+    ``reverse`` sorts longest-first so odd ranks can walk the length axis
+    opposite even ranks and stagger peak batch cost.
+    """
     source = iter(source)
     pool = []
     ready = []
@@ -130,7 +135,7 @@ def pool_sort_samples(
                 if not pool:
                     break
             observe_pool()
-            pool.sort(key=lambda item: item.lengths.total)
+            pool.sort(key=lambda item: item.lengths.total, reverse=reverse)
             chunk_count = (len(pool) + chunk_size - 1) // chunk_size
             chunk_index = rng.randrange(chunk_count)
             start = chunk_index * chunk_size

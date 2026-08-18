@@ -317,7 +317,7 @@ class FlexiWebDataset(torch.utils.data.IterableDataset):
             # Bump when deterministic stream ordering changes. Rolling bucketing
             # is intentionally incompatible with cursors from the drain/refill
             # implementation.
-            "pipeline_version": 2,
+            "pipeline_version": 3,
             "shards": list(self.config.shards),
             "sources": [asdict(source) for source in self.config.sources],
             "layout": self.config.layout,
@@ -469,6 +469,17 @@ class FlexiWebDataset(torch.utils.data.IterableDataset):
     def _prepared_samples(self):
         topology = current_topology()
         stream_seed = self.config.seed + 1_000_003 * self.epoch + 97 * topology.consumer_id
+        if topology.worker_id == 0:
+            logger.info(
+                "WebDataset sample-level shuffle running: window=%d initial=%d "
+                "max_bytes=%s epoch=%d rank=%d consumers=%d",
+                self.config.shuffle_max_samples,
+                self.config.shuffle_initial_samples,
+                self.config.shuffle_max_bytes,
+                self.epoch,
+                topology.rank,
+                topology.num_consumers,
+            )
         logical = byte_bounded_shuffle(
             self._logical_samples(),
             max_samples=self.config.shuffle_max_samples,
@@ -496,6 +507,7 @@ class FlexiWebDataset(torch.utils.data.IterableDataset):
             pool_bytes=limits.pool_bytes,
             chunk_size=limits.chunk_size,
             rng=rng,
+            reverse=topology.rank % 2 == 1,
             on_pool_drain=self.metrics.record_bucket_pool,
         )
 

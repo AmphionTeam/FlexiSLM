@@ -15,7 +15,6 @@ import traceback
 from collections import defaultdict
 from typing import Dict, List, Optional, Sequence
 import re
-import librosa
 import numpy as np
 import torch
 import torchaudio

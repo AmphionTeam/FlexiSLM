@@ -676,6 +676,46 @@ class ParallelS2SConfig(MultimodalQwen2Config):
         self.predict_second_audio_token = bool(predict_second_audio_token)
 
 
+def _task_ids_from_audio_masks(
+    user_has_audio: torch.Tensor, assistant_has_audio: torch.Tensor
+) -> torch.Tensor:
+    """Map modality masks to ASR=0, TTS=1, S2S=2 (or -1 for text-only)."""
+    user_mask = user_has_audio.to(dtype=torch.bool).view(-1)
+    assistant_mask = assistant_has_audio.to(
+        device=user_mask.device, dtype=torch.bool
+    ).view(-1)
+    task_ids = torch.full_like(user_mask, -1, dtype=torch.long)
+    task_ids[user_mask & ~assistant_mask] = 0
+    task_ids[~user_mask & assistant_mask] = 1
+    task_ids[user_mask & assistant_mask] = 2
+    return task_ids
+
+
+def _task_component_stats(
+    token_losses: torch.Tensor,
+    token_weights: torch.Tensor,
+    task_ids: torch.Tensor,
+    sample_lengths: Optional[List[int]] = None,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Partition shifted causal-token sums/counts into ASR, TTS, and S2S."""
+    task_ids = task_ids.to(device=token_losses.device, dtype=torch.long).view(-1)
+    if sample_lengths is None:
+        owners = task_ids[:, None].expand_as(token_losses)
+    else:
+        owners = torch.repeat_interleave(
+            task_ids,
+            torch.as_tensor(sample_lengths, device=task_ids.device),
+        )[1:].view_as(token_losses)
+
+    sums = token_losses.new_zeros(3)
+    counts = token_weights.new_zeros(3)
+    for task_id in range(3):
+        mask = owners.eq(task_id)
+        sums[task_id] = (token_losses * token_weights * mask).sum()
+        counts[task_id] = (token_weights * mask).sum()
+    return sums, counts
+
+
 @dataclass
 class InterleavedS2SOutputWithPast(CausalLMOutputWithPast):
     length_logits: Optional[torch.FloatTensor] = None
@@ -691,6 +731,10 @@ class InterleavedS2SOutputWithPast(CausalLMOutputWithPast):
     length_loss_sum: Optional[torch.FloatTensor] = None
     length_token_count: Optional[torch.FloatTensor] = None
     auxiliary_loss: Optional[torch.FloatTensor] = None
+    # Rows are ASR/TTS/S2S; columns are text/audio/length.
+    task_component_loss_sums: Optional[torch.FloatTensor] = None
+    task_component_token_counts: Optional[torch.FloatTensor] = None
+    task_sample_counts: Optional[torch.FloatTensor] = None
     acoustic_loss: Optional[torch.FloatTensor] = None
     acoustic_ce_loss: Optional[torch.FloatTensor] = None  # unweighted mean acoustic CE
     acoustic_per_codebook_loss: Optional[torch.FloatTensor] = None  # [n_q_a] unweighted CE per codebook
@@ -3265,100 +3309,139 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
         acoustic_per_codebook_loss = None
         loss_text_only_data = None
         loss_audio_dialog_data = None
+        task_component_loss_sums = None
+        task_component_token_counts = None
+        task_sample_counts = None
 
         if labels is not None:
             debug_print(f"  - Computing losses", rank=rank)
             debug_print(f"    - logits shape: {logits.shape}, labels shape: {labels.shape}", rank=rank)
             
-            # Text loss (unweighted CE for logging; weighted tensor drives gradients / total loss)
+            task_ids = _task_ids_from_audio_masks(
+                user_has_audio.to(device=logits.device),
+                assistant_has_audio.to(device=logits.device),
+            )
+            task_component_loss_sums = logits.new_zeros((3, 3), dtype=torch.float32)
+            task_component_token_counts = logits.new_zeros((3, 3), dtype=torch.float32)
+            task_sample_counts = torch.stack(
+                [task_ids.eq(task_id).sum() for task_id in range(3)]
+            ).to(dtype=torch.float32)
+
+            # Compute text CE once, then partition the same token losses by task.
             w = float(getattr(self.config, "text_loss_weight", 1.0) or 1.0)
             pad_w = _resolve_text_alignment_pad_loss_weight(self.config)
-            use_weighted_text_loss = (
-                pad_w > 0.0
-                and alignment_pad_mask is not None
-                and bool(alignment_pad_mask.any().item())
+            shift_text_labels = labels[..., 1:].contiguous().to(logits.device)
+            text_token_ce = F.cross_entropy(
+                logits[..., :-1, :].contiguous().float().view(-1, logits.size(-1)),
+                shift_text_labels.view(-1),
+                reduction="none",
+                ignore_index=IGNORE_TOKEN_ID,
+            ).view_as(shift_text_labels)
+            text_weights = shift_text_labels.ne(IGNORE_TOKEN_ID).to(
+                dtype=text_token_ce.dtype
             )
-            if use_weighted_text_loss:
-                text_ce = self._weighted_text_causal_lm_loss(
-                    logits,
-                    labels,
-                    alignment_pad_mask,
-                    pad_w,
-                    IGNORE_TOKEN_ID,
-                    logits.size(-1),
-                )
-            else:
-                text_ce = self.loss_function(
-                    logits=logits,
-                    labels=labels,
-                    ignore_index=IGNORE_TOKEN_ID,
-                    vocab_size=logits.size(-1),
-                )
-            text_valid = labels[..., 1:].ne(IGNORE_TOKEN_ID)
-            if use_weighted_text_loss:
+            if pad_w > 0.0 and alignment_pad_mask is not None:
                 shifted_pad = alignment_pad_mask[..., 1:].to(
                     device=logits.device, dtype=torch.bool
                 )
-                text_weights = torch.where(
+                text_weights = text_weights * torch.where(
                     shifted_pad,
-                    logits.new_tensor(pad_w, dtype=torch.float32),
-                    logits.new_tensor(1.0, dtype=torch.float32),
+                    text_weights.new_tensor(pad_w),
+                    text_weights.new_tensor(1.0),
                 )
-                text_token_count = (text_weights * text_valid.float()).sum()
-            else:
-                text_token_count = text_valid.sum(dtype=torch.float32)
+            text_token_count = text_weights.sum()
+            text_ce_sum = (text_token_ce * text_weights).sum()
+            text_ce = text_ce_sum / text_token_count.clamp_min(1e-8)
+            text_loss_sum = text_ce_sum * w + dummy_encoder_loss
             text_loss = text_ce * w + dummy_encoder_loss
-            text_loss_sum = text_ce * w * text_token_count + dummy_encoder_loss
             text_ce_loss = text_ce.detach()
+            task_text_sums, task_text_counts = _task_component_stats(
+                text_token_ce * w,
+                text_weights,
+                task_ids,
+                main_sample_lengths if use_packing else None,
+            )
+            task_component_loss_sums[:, 0] = task_text_sums.detach()
+            task_component_token_counts[:, 0] = task_text_counts.detach()
             debug_print(f"    - text_loss: {text_loss.item() if text_loss is not None else None:.4f}", rank=rank)
-            
-            # Speech and length losses (parallel mode)
+
+            # Speech and length losses use the same per-token CE for training
+            # sums and per-task metrics.
             if has_speech_tokens:
                 if self.talker_vocab_size is not None:
-                    # Separate mode: speech_logits are [B,L,V_talker]; labels: talker_id = (token_id - text_vocab_size) + 3
-                    speech_labels_for_loss = speech_labels - self.text_vocab_size + AUDIO_TOKEN_OFFSET
-                    speech_loss = self.loss_function(
-                        logits=speech_logits.float(),
-                        labels=speech_labels_for_loss,
-                        ignore_index=IGNORE_TOKEN_ID - self.text_vocab_size + AUDIO_TOKEN_OFFSET,
-                        vocab_size=speech_logits.size(-1),
+                    speech_labels_for_loss = (
+                        speech_labels - self.text_vocab_size + AUDIO_TOKEN_OFFSET
                     )
-                else:
-                    speech_loss = self.loss_function(
-                        logits=speech_logits.float(),
-                        labels=speech_labels,
-                        ignore_index=IGNORE_TOKEN_ID,
-                        vocab_size=speech_logits.size(-1),
-                    )
-                debug_print(f"    - speech_loss: {speech_loss.item():.4f}", rank=rank)
-                
-                speech_len_loss = self.loss_function(
-                    logits=speech_length_logits.float(),
-                    labels=length_labels,
-                    ignore_index=IGNORE_TOKEN_ID,
-                    vocab_size=speech_length_logits.size(-1),
-                )
-                debug_print(f"    - speech_len_loss: {speech_len_loss.item():.4f}", rank=rank)
-                
-                audio_token_loss = speech_loss.detach()  # For logging
-                if self.talker_vocab_size is not None:
-                    speech_targets = speech_labels_for_loss
                     speech_ignore_index = (
                         IGNORE_TOKEN_ID - self.text_vocab_size + AUDIO_TOKEN_OFFSET
                     )
                 else:
-                    speech_targets = speech_labels
+                    speech_labels_for_loss = speech_labels
                     speech_ignore_index = IGNORE_TOKEN_ID
-                audio_token_count = speech_targets[..., 1:].ne(
-                    speech_ignore_index
-                ).sum(dtype=torch.float32)
-                length_token_count = length_labels[..., 1:].ne(
-                    IGNORE_TOKEN_ID
-                ).sum(dtype=torch.float32)
-                audio_loss_sum = speech_loss * audio_token_count
+                shift_speech_labels = speech_labels_for_loss[..., 1:].contiguous()
+                audio_token_ce = F.cross_entropy(
+                    speech_logits[..., :-1, :].contiguous().float().view(
+                        -1, speech_logits.size(-1)
+                    ),
+                    shift_speech_labels.view(-1),
+                    reduction="none",
+                    ignore_index=speech_ignore_index,
+                ).view_as(shift_speech_labels)
+                audio_weights = shift_speech_labels.ne(speech_ignore_index).to(
+                    dtype=audio_token_ce.dtype
+                )
+                audio_token_count = audio_weights.sum()
+                audio_loss_sum = (audio_token_ce * audio_weights).sum()
+                speech_loss = audio_loss_sum / audio_token_count.clamp_min(1e-8)
+                task_audio_sums, task_audio_counts = _task_component_stats(
+                    audio_token_ce,
+                    audio_weights,
+                    task_ids,
+                    talker_sample_lengths if use_packing else None,
+                )
+                task_component_loss_sums[:, 1] = task_audio_sums.detach()
+                task_component_token_counts[:, 1] = task_audio_counts.detach()
+                debug_print(f"    - speech_loss: {speech_loss.item():.4f}", rank=rank)
+
+                length_labels_for_loss = (
+                    length_labels + AUDIO_TOKEN_OFFSET
+                    if self.config.predict_second_audio_token
+                    else length_labels
+                )
+                length_ignore_index = (
+                    IGNORE_TOKEN_ID + AUDIO_TOKEN_OFFSET
+                    if self.config.predict_second_audio_token
+                    else IGNORE_TOKEN_ID
+                )
+                shift_length_labels = length_labels_for_loss[..., 1:].contiguous()
+                length_token_ce = F.cross_entropy(
+                    speech_length_logits[..., :-1, :].contiguous().float().view(
+                        -1, speech_length_logits.size(-1)
+                    ),
+                    shift_length_labels.view(-1),
+                    reduction="none",
+                    ignore_index=length_ignore_index,
+                ).view_as(shift_length_labels)
+                length_weights = shift_length_labels.ne(length_ignore_index).to(
+                    dtype=length_token_ce.dtype
+                )
+                length_token_count = length_weights.sum()
+                length_ce_sum = (length_token_ce * length_weights).sum()
+                speech_len_loss = length_ce_sum / length_token_count.clamp_min(1e-8)
+                debug_print(f"    - speech_len_loss: {speech_len_loss.item():.4f}", rank=rank)
+
+                audio_token_loss = speech_loss.detach()
                 length_loss_weight = getattr(self.config, "length_loss_weight", 1.0)
                 len_loss = speech_len_loss * length_loss_weight
-                length_loss_sum = speech_len_loss * length_loss_weight * length_token_count
+                length_loss_sum = length_ce_sum * length_loss_weight
+                task_length_sums, task_length_counts = _task_component_stats(
+                    length_token_ce * length_loss_weight,
+                    length_weights,
+                    task_ids,
+                    talker_sample_lengths if use_packing else None,
+                )
+                task_component_loss_sums[:, 2] = task_length_sums.detach()
+                task_component_token_counts[:, 2] = task_length_counts.detach()
 
             else:
                 # DeepSpeed ZeRO-2 fix: use zero-valued contributions from model
@@ -3452,6 +3535,9 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
             length_loss_sum=length_loss_sum,
             length_token_count=length_token_count,
             auxiliary_loss=auxiliary_loss,
+            task_component_loss_sums=task_component_loss_sums,
+            task_component_token_counts=task_component_token_counts,
+            task_sample_counts=task_sample_counts,
             acoustic_loss=acoustic_loss,
             acoustic_ce_loss=acoustic_ce_loss,
             acoustic_per_codebook_loss=acoustic_per_codebook_loss,

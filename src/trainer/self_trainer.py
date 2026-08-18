@@ -229,6 +229,9 @@ class ATrainer(Trainer):
         self.model_accepts_loss_kwargs = False
         self._native_resume_checkpoint = None
         self._native_train_loader = None
+        self._task_metric_sums = None
+        self._task_metric_counts = None
+        self._task_sample_counts = None
         # Run after DefaultFlowCallback so its forced final checkpoint is disabled.
         self.add_callback(SkipFinalCheckpointCallback)
         self.add_callback(TrainingProfilerCallback)
@@ -757,6 +760,67 @@ class ATrainer(Trainer):
             loss = loss + auxiliary_loss
         return loss
 
+    def _accumulate_task_metrics(self, outputs):
+        sums = self._output_value(outputs, "task_component_loss_sums")
+        counts = self._output_value(outputs, "task_component_token_counts")
+        sample_counts = self._output_value(outputs, "task_sample_counts")
+        if sums is None or counts is None or sample_counts is None:
+            return
+
+        shape = sums.shape
+        packed = torch.cat(
+            [
+                sums.detach().float().reshape(-1),
+                counts.detach().float().reshape(-1),
+                sample_counts.detach().float().reshape(-1),
+            ]
+        )
+        packed = self._distributed_sum(packed)
+        if self.args.process_index != 0:
+            return
+
+        split = shape.numel()
+        global_sums = packed[:split].view(shape).cpu().double()
+        global_counts = packed[split:2 * split].view(shape).cpu().double()
+        global_samples = packed[2 * split:].cpu().double()
+        if self._task_metric_sums is None:
+            self._task_metric_sums = torch.zeros_like(global_sums)
+            self._task_metric_counts = torch.zeros_like(global_counts)
+            self._task_sample_counts = torch.zeros_like(global_samples)
+        self._task_metric_sums += global_sums
+        self._task_metric_counts += global_counts
+        self._task_sample_counts += global_samples
+
+    def _pop_task_metrics(self):
+        if self._task_metric_sums is None:
+            return {}
+
+        sums = self._task_metric_sums
+        counts = self._task_metric_counts
+        sample_counts = self._task_sample_counts
+        self._task_metric_sums = None
+        self._task_metric_counts = None
+        self._task_sample_counts = None
+
+        metrics = {}
+        task_names = ("asr", "tts", "s2s")
+        component_names = ("text_loss", "audio_loss", "length_loss")
+        for task_id, task_name in enumerate(task_names):
+            component_total = 0.0
+            has_tokens = False
+            for component_id, component_name in enumerate(component_names):
+                count = float(counts[task_id, component_id].item())
+                if count <= 0:
+                    continue
+                value = float((sums[task_id, component_id] / count).item())
+                metrics[f"task/{task_name}/{component_name}"] = value
+                component_total += value
+                has_tokens = True
+            if has_tokens:
+                metrics[f"task/{task_name}/loss"] = component_total
+                metrics[f"task/{task_name}/samples"] = int(sample_counts[task_id].item())
+        return metrics
+
     def _get_local_batch_tokens(self, inputs):
         cost = inputs.get("batch_cost") if isinstance(inputs, dict) else None
         if cost is not None:
@@ -828,6 +892,9 @@ class ATrainer(Trainer):
                     logs[f"webdataset/{name}"] = value
 
         if self.args.process_index == 0:
+            if not is_eval_log and "loss" in logs:
+                logs.update(self._pop_task_metrics())
+
             total_samples_seen = getattr(self, "_total_samples_seen", None)
             if total_samples_seen is not None:
                 logs["total_samples_seen"] = total_samples_seen
@@ -915,6 +982,8 @@ class ATrainer(Trainer):
                         int(skip_flags[1].item()),
                     )
                 loss = self._zero_loss_from_model(model, loss)
+            else:
+                self._accumulate_task_metrics(outputs)
 
         # Log metrics to swanlab if available (only on main process)
         if is_training_step and SWANLAB_AVAILABLE and self.args.process_index == 0:

@@ -41,11 +41,16 @@ import os
 from src.models.configuration_flexislm import MultimodalQwen2Config
 from src.models.generation_alignment import DelayedAudioLengthBuffer
 from accelerate import init_empty_weights
-from flexicodec.infer import prepare_model, encode_flexicodec
-import flexicodec.model_blocks.mimi.transformer as Stransformer
-import flexicodec.model_blocks.mimi.transformer_windowed as Stransformer_windowed
+from src.models._local_flexicodec import ensure_local_flexicodec
 import loguru
 logger = loguru.logger
+
+ensure_local_flexicodec()
+from flexicodec.infer import prepare_model, encode_flexicodec
+import flexicodec
+import flexicodec.model_blocks.mimi.transformer as Stransformer
+import flexicodec.model_blocks.mimi.transformer_windowed as Stransformer_windowed
+logger.info(f"Using FlexiCodec sources from {getattr(flexicodec, '__file__', None)}")
 IGNORE_TOKEN_ID = -100
 # Talker vocab: first 3 tokens are special (AUD_START, AUD_END, AUD_TAG), then audio codes
 
@@ -725,6 +730,7 @@ class InterleavedS2SOutputWithPast(CausalLMOutputWithPast):
     text_token_loss: Optional[torch.FloatTensor] = None
     text_loss_sum: Optional[torch.FloatTensor] = None
     text_token_count: Optional[torch.FloatTensor] = None
+    audio_loss: Optional[torch.FloatTensor] = None
     audio_token_loss: Optional[torch.FloatTensor] = None
     audio_loss_sum: Optional[torch.FloatTensor] = None
     audio_token_count: Optional[torch.FloatTensor] = None
@@ -1166,12 +1172,37 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
         logger.info(f"ParallelS2SForCausalLM initialization complete")
 
     def _embed_text_tokens(self, token_ids: torch.LongTensor) -> torch.Tensor:
-        """Embed text token ids."""
-        return self.model.embed_tokens(token_ids)
+        """Embed text ids, including the external alignment-pad token."""
+        if bool(getattr(self.config, "no_pad", False)) or not self.extend_lm_head:
+            return self.model.embed_tokens(token_ids)
+
+        pad_mask = token_ids.eq(self.alignment_text_pad_token_id)
+        safe_token_ids = token_ids.masked_fill(pad_mask, 0)
+        embeds = self.model.embed_tokens(safe_token_ids)
+        if not bool(pad_mask.any().item()):
+            return embeds
+
+        pad_embed = self.alignment_text_pad_embedding.weight[0].to(
+            device=embeds.device, dtype=embeds.dtype
+        )
+        view_shape = [1] * pad_mask.dim() + [pad_embed.shape[0]]
+        pad_embed = pad_embed.view(*view_shape)
+        return torch.where(pad_mask.unsqueeze(-1), pad_embed, embeds)
 
     def _compute_text_logits(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        """Project hidden states to text logits."""
-        return self.lm_head(hidden_states)
+        """Project hidden states to text logits, including the external pad token."""
+        base_logits = self.lm_head(hidden_states)
+        if bool(getattr(self.config, "no_pad", False)) or not self.extend_lm_head:
+            return base_logits
+
+        gap_logits = torch.zeros(
+            *base_logits.shape[:-1],
+            1,
+            device=base_logits.device,
+            dtype=base_logits.dtype,
+        )
+        extra_pad_logits = self.extended_text_lm_head(hidden_states)
+        return torch.cat([base_logits, gap_logits, extra_pad_logits], dim=-1)
 
     
     # ------------------------------------------------------------------
@@ -3298,6 +3329,7 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
         text_token_loss = None
         text_loss_sum = None
         text_token_count = None
+        audio_loss = None
         audio_token_loss = None
         audio_loss_sum = None
         audio_token_count = None
@@ -3430,6 +3462,7 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
                 speech_len_loss = length_ce_sum / length_token_count.clamp_min(1e-8)
                 debug_print(f"    - speech_len_loss: {speech_len_loss.item():.4f}", rank=rank)
 
+                audio_loss = speech_loss
                 audio_token_loss = speech_loss.detach()
                 length_loss_weight = getattr(self.config, "length_loss_weight", 1.0)
                 len_loss = speech_len_loss * length_loss_weight
@@ -3449,6 +3482,7 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
                 # participate in gradient allreduce on every rank.
                 speech_loss = (speech_logits.mean() * 0.0 if speech_logits.numel() > 0 else speech_logits.sum() * 0.0) + dummy_assistant_audio
                 len_loss = speech_length_logits.mean() * 0.0 if speech_length_logits.numel() > 0 else speech_length_logits.sum() * 0.0
+                audio_loss = speech_loss
                 audio_token_loss = torch.tensor(0.0, device=text_loss.device, dtype=text_loss.dtype) + dummy_assistant_audio
                 audio_token_count = speech_logits.new_zeros((), dtype=torch.float32)
                 length_token_count = speech_length_logits.new_zeros((), dtype=torch.float32)
@@ -3529,6 +3563,7 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
             text_token_loss=text_token_loss,
             text_loss_sum=text_loss_sum,
             text_token_count=text_token_count,
+            audio_loss=audio_loss,
             audio_token_loss=audio_token_loss,
             audio_loss_sum=audio_loss_sum,
             audio_token_count=audio_token_count,

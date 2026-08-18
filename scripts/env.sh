@@ -10,8 +10,14 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-# Set Python path
-export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
+# Set Python path. src/models is included so `import flexicodec` uses
+# the in-repo package at src/models/flexicodec (not a pip install).
+export PYTHONPATH="${REPO_ROOT}:${REPO_ROOT}/src/models:${PYTHONPATH:-}"
+
+# Prefer conda's libstdc++ over the system one before training starts.
+# Required for torchcodec + conda-forge FFmpeg/OpenVINO (CXXABI_1.3.15).
+# shellcheck source=scripts/prepend_conda_lib.sh
+source "${SCRIPT_DIR}/prepend_conda_lib.sh"
 export SWANLAB_API_KEY="${SWANLAB_API_KEY:-}"  # Set your key in environment; do not hard-code secrets.
 
 # Create SwanLab global state directory before distributed workers start.

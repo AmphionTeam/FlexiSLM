@@ -18,16 +18,15 @@ from .asr import _load_trace_records
 
 
 def _load_audio(path: Path, sample_rate: int = 16_000) -> np.ndarray:
-    import soundfile as sf
-    from scipy.signal import resample_poly
+    import torchaudio
+    import torchaudio.transforms as T
 
-    audio, source_rate = sf.read(path, dtype="float32", always_2d=False)
-    if audio.ndim > 1:
-        audio = audio.mean(axis=1)
+    audio, source_rate = torchaudio.load(str(path))
+    if audio.shape[0] > 1:
+        audio = audio.mean(dim=0, keepdim=True)
     if source_rate != sample_rate:
-        divisor = np.gcd(source_rate, sample_rate)
-        audio = resample_poly(audio, sample_rate // divisor, source_rate // divisor)
-    return np.asarray(audio, dtype=np.float32)
+        audio = T.Resample(source_rate, sample_rate)(audio)
+    return audio.squeeze(0).cpu().numpy().astype(np.float32)
 
 
 def _batches(values: list[Any], batch_size: int) -> Iterable[list[Any]]:

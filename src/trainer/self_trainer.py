@@ -711,23 +711,55 @@ class ATrainer(Trainer):
             zero_loss = reference.new_zeros((), requires_grad=True)
         return zero_loss
 
+    @staticmethod
+    def _connected_loss_sum(loss_sum, loss_mean, token_count):
+        if torch.is_tensor(loss_sum) and bool(loss_sum.requires_grad):
+            return loss_sum
+        if (
+            torch.is_tensor(loss_mean)
+            and bool(loss_mean.requires_grad)
+            and token_count is not None
+        ):
+            return loss_mean.reshape(()) * token_count.reshape(())
+        return loss_sum
+
+    @staticmethod
+    def _loss_with_live_graph(live_loss, scaled_loss):
+        live = live_loss.reshape(())
+        scaled = scaled_loss.reshape(())
+        live_value = live.detach()
+        if bool(torch.isfinite(live_value).all().item()) and bool(
+            live_value.abs().gt(0).all().item()
+        ):
+            return live * (scaled.detach() / live_value)
+        return live
+
     def _normalize_model_loss(
         self, model, outputs, fallback_loss, *, reduce_across_processes=True
     ):
         component_names = (
-            ("text_loss_sum", "text_token_count"),
-            ("audio_loss_sum", "audio_token_count"),
-            ("length_loss_sum", "length_token_count"),
+            ("text_loss_sum", "text_token_count", "text_loss"),
+            ("audio_loss_sum", "audio_token_count", "audio_loss"),
+            ("length_loss_sum", "length_token_count", "length_loss"),
         )
         local_sums = []
         local_counts = []
-        for loss_name, count_name in component_names:
+        for loss_name, count_name, mean_name in component_names:
             local_sum = self._output_value(outputs, loss_name)
             local_count = self._output_value(outputs, count_name)
             if local_sum is None or local_count is None:
                 return fallback_loss
-            local_sums.append(local_sum)
-            local_counts.append(local_count.float().reshape(()))
+            local_count = local_count.float().reshape(())
+            local_mean = self._output_value(outputs, mean_name)
+            if mean_name == "audio_loss" and (
+                local_mean is None
+                or not (torch.is_tensor(local_mean) and bool(local_mean.requires_grad))
+            ):
+                local_mean = self._output_value(outputs, "audio_token_loss")
+            local_sums.append(
+                self._connected_loss_sum(local_sum, local_mean, local_count)
+            )
+            local_counts.append(local_count)
 
         if reduce_across_processes:
             global_counts = self._distributed_sum(torch.stack(local_counts))
@@ -749,15 +781,36 @@ class ATrainer(Trainer):
         text_loss, audio_loss, length_loss = components
         config = getattr(self._unwrap_model(model), "config", None)
         if getattr(config, "freeze_talker", False):
+            used = (text_loss,)
             loss = text_loss
         elif getattr(config, "only_train_talker", False):
+            used = (audio_loss, length_loss)
             loss = audio_loss + length_loss
         else:
+            used = (text_loss, audio_loss, length_loss)
             loss = text_loss + audio_loss + length_loss
 
         auxiliary_loss = self._output_value(outputs, "auxiliary_loss")
         if auxiliary_loss is not None:
             loss = loss + auxiliary_loss
+        detached = [
+            tensor
+            for tensor in used
+            if torch.is_tensor(tensor) and not bool(tensor.requires_grad)
+        ]
+        if (
+            reduce_across_processes
+            and detached
+            and torch.is_tensor(fallback_loss)
+            and bool(fallback_loss.requires_grad)
+        ):
+            if not getattr(self, "_warned_detached_loss_sums", False):
+                logger.warning(
+                    "Training loss sums were detached; backpropagating the "
+                    "model's live loss with the distributed token-count scale."
+                )
+                self._warned_detached_loss_sums = True
+            loss = self._loss_with_live_graph(fallback_loss, loss)
         return loss
 
     def _accumulate_task_metrics(self, outputs):

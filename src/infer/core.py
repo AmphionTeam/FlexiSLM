@@ -295,7 +295,6 @@ def _transcribe_audio(audio_path: str, *, model_path: str, device: str) -> str:
     """Transcribe one WAV with Whisper-Large-V3 (transformers), cached per worker."""
     key = (model_path, device)
     if key not in _TRANSCRIBER_CACHE:
-        import numpy as np
         import torch
         from transformers import (
             WhisperForConditionalGeneration,
@@ -314,17 +313,15 @@ def _transcribe_audio(audio_path: str, *, model_path: str, device: str) -> str:
 
         @torch.inference_mode()
         def _transcribe_one(path: str) -> str:
-            import soundfile as sf
-            from scipy.signal import resample_poly
+            import torchaudio
+            import torchaudio.transforms as T
 
-            audio, source_rate = sf.read(path, dtype="float32", always_2d=False)
-            if audio.ndim > 1:
-                audio = audio.mean(axis=1)
+            audio, source_rate = torchaudio.load(path)
+            if audio.shape[0] > 1:
+                audio = audio.mean(dim=0, keepdim=True)
             if source_rate != 16_000:
-                divisor = np.gcd(source_rate, 16_000)
-                audio = resample_poly(
-                    audio, 16_000 // divisor, source_rate // divisor
-                )
+                audio = T.Resample(source_rate, 16_000)(audio)
+            audio = audio.squeeze(0).cpu().numpy()
             inputs = processor(
                 audio,
                 sampling_rate=16_000,
@@ -464,17 +461,15 @@ def _wav_name(index: int, sample_id: Any) -> str:
 def _save_wav(path: Path, audio: Any, sample_rate: int) -> float:
     if sample_rate <= 0:
         raise ValueError("output_sample_rate must be positive")
-    import soundfile as sf
     import torch
+    import torchaudio
 
     waveform = torch.as_tensor(audio).detach().float().cpu().squeeze()
     if waveform.ndim == 1:
         waveform = waveform.unsqueeze(0)
     if waveform.ndim != 2:
         raise ValueError(f"Unexpected generated audio shape: {tuple(waveform.shape)}")
-    # SoundFile avoids torchaudio's TorchCodec backend, whose shared-library
-    # requirements vary across PyTorch/FFmpeg builds.
-    sf.write(str(path), waveform.transpose(0, 1).numpy(), sample_rate)
+    torchaudio.save(str(path), waveform, sample_rate)
     return waveform.shape[-1] / sample_rate
 
 
@@ -515,9 +510,9 @@ def _decode_tts_audio(engine: Any, result: Mapping[str, Any]) -> Any:
 
 def _audio_duration(path: Path) -> float | None:
     try:
-        import soundfile
+        import torchaudio
 
-        info = soundfile.info(str(path))
-        return float(info.frames / info.samplerate)
+        info = torchaudio.info(str(path))
+        return float(info.num_frames / info.sample_rate)
     except (ImportError, OSError, RuntimeError, ValueError, ZeroDivisionError):
         return None

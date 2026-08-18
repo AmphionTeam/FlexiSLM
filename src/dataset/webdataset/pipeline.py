@@ -75,7 +75,7 @@ class AudioDecodeError(RuntimeError):
         self.member_key = member_key
         self.codec = codec
         super().__init__(
-            f"failed to decode {member_key} as {codec} with SoundFile: {detail}"
+            f"failed to decode {member_key} as {codec} with torchaudio: {detail}"
         )
 
 
@@ -158,20 +158,23 @@ REQUIRED_SAMPLE_RATE = 16000
 
 
 def decode_audio_asset(asset):
-    """Decode an ``AudioAsset`` from compressed in-tar bytes with SoundFile.
+    """Decode an ``AudioAsset`` from compressed in-tar bytes with torchaudio.
 
     Non-16 kHz clips are resampled to 16 kHz.
     """
     import io
-    import soundfile as sf
+    import torchaudio
 
+    buffer = io.BytesIO(asset.data)
+    if asset.codec:
+        buffer.name = f"audio.{asset.codec}"
     try:
-        waveform, sample_rate = sf.read(
-            io.BytesIO(asset.data), dtype="float32", always_2d=True
+        waveform, sample_rate = torchaudio.load(
+            buffer,
+            format=asset.codec or None,
         )
     except Exception as exc:
         raise AudioDecodeError(asset.member_key, asset.codec, str(exc)) from exc
-    waveform = torch.from_numpy(waveform.T.copy())
     if sample_rate != REQUIRED_SAMPLE_RATE:
         import torchaudio.functional as AF
 

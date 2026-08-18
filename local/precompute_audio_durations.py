@@ -64,11 +64,7 @@ def get_duration(path: str) -> Optional[float]:
         info = torchaudio.info(path)
         return info.num_frames / info.sample_rate
     except Exception:
-        import soundfile as sf
-
-        info = sf.info(path)
-        if info.samplerate and info.samplerate > 0:
-            return float(info.frames) / float(info.samplerate)
+        return None
 
 
 def resolve_path(audio_path: str, audio_root: Optional[str]) -> str:

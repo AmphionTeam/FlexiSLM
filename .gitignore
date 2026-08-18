@@ -94,3 +94,5 @@ config/jiaqi
 
 # Local path reference documentation
 /docs/
+
+src/models/flexicodec

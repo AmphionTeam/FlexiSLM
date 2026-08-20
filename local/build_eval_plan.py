@@ -344,7 +344,8 @@ def build_eval_config(
             config["jobs"].append(
                 {
                     **common_job,
-                    "benchmark": "asr",
+                    "benchmark": "librispeech",
+                    "task": "asr",
                 }
             )
         else:

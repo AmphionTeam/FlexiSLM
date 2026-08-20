@@ -29,7 +29,15 @@ from .voicebench import write_voicebench_summary
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
-_SUPPORTED_BENCHMARKS = {"voicebench", "openaudiobench", "asr", "tts"}
+_SUPPORTED_BENCHMARKS = {
+    "voicebench",
+    "openaudiobench",
+    "librispeech",
+    "librispeech_pc",
+    "seedtts_eval",
+}
+_WER_BENCHMARKS = {"librispeech", "librispeech_pc", "seedtts_eval"}
+_SUPPORTED_WER_TASKS = {"asr", "tts"}
 
 
 def resolve_path(value: object) -> Path:
@@ -170,6 +178,8 @@ def _run_evalkit_job(
         "eval_file": str(eval_file),
         "archived_files": [str(path) for path in all_archived],
     }
+    if "task" in job:
+        result["task"] = str(job["task"])
     if auxiliary_metrics is not None:
         result["auxiliary_metrics"] = auxiliary_metrics
     _write_result(result, result_path)
@@ -178,6 +188,7 @@ def _run_evalkit_job(
 
 def _run_asr_job(
     *,
+    benchmark: str,
     job: dict[str, Any],
     config: dict[str, Any],
     evalkit_path: Path,
@@ -187,7 +198,7 @@ def _run_asr_job(
     evalkit_commit: str | None,
 ) -> dict[str, Any]:
     return _run_evalkit_job(
-        benchmark="asr",
+        benchmark=benchmark,
         job=job,
         config=config,
         evalkit_path=evalkit_path,
@@ -200,6 +211,7 @@ def _run_asr_job(
 
 def _run_tts_job(
     *,
+    benchmark: str,
     job: dict[str, Any],
     config: dict[str, Any],
     evalkit_path: Path,
@@ -231,7 +243,7 @@ def _run_tts_job(
         language=str(job.get("language", "en")),
     )
     result = _run_evalkit_job(
-        benchmark="tts",
+        benchmark=benchmark,
         job=job,
         config=config,
         evalkit_path=evalkit_path,
@@ -293,18 +305,27 @@ def run(config_path: Path, selected_jobs: set[str] | None = None) -> list[Path]:
                 f"expected one of {sorted(_SUPPORTED_BENCHMARKS)}"
             )
 
-        print(f"Evaluating job '{job.get('name')}' (benchmark={benchmark})", flush=True)
-        if benchmark == "tts":
-            result = _run_tts_job(
-                job=job, config=config, evalkit_path=evalkit_path,
-                data_root=data_root, model_name=model_name,
-                judge_model=judge_model, evalkit_commit=evalkit_commit,
+        task = str(job.get("task", ""))
+        if benchmark in _WER_BENCHMARKS and task not in _SUPPORTED_WER_TASKS:
+            raise ValueError(
+                f"jobs[{index}] benchmark {benchmark!r} requires task to be "
+                f"one of {sorted(_SUPPORTED_WER_TASKS)}"
             )
-        elif benchmark == "asr":
+
+        print(f"Evaluating job '{job.get('name')}' (benchmark={benchmark})", flush=True)
+        if benchmark in _WER_BENCHMARKS and task == "tts":
+            result = _run_tts_job(
+                benchmark=benchmark, job=job, config=config,
+                evalkit_path=evalkit_path, data_root=data_root,
+                model_name=model_name, judge_model=judge_model,
+                evalkit_commit=evalkit_commit,
+            )
+        elif benchmark in _WER_BENCHMARKS and task == "asr":
             result = _run_asr_job(
-                job=job, config=config, evalkit_path=evalkit_path,
-                data_root=data_root, model_name=model_name,
-                judge_model=judge_model, evalkit_commit=evalkit_commit,
+                benchmark=benchmark, job=job, config=config,
+                evalkit_path=evalkit_path, data_root=data_root,
+                model_name=model_name, judge_model=judge_model,
+                evalkit_commit=evalkit_commit,
             )
         else:
             dataset_name = str(job.get("dataset"))

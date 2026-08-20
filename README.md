@@ -341,7 +341,7 @@ Training does not construct an evaluation dataset. Run inference with `src.infer
 
 ## Evaluation
 
-FlexiSLM uses [Kimi-Audio-Evalkit](https://github.com/MoonshotAI/Kimi-Audio-Evalkit) for VoiceBench, OpenAudioBench, ASR, and TTS metrics. Inference and scoring are separate so GPU generation does not wait for LLM judges.
+FlexiSLM uses [Kimi-Audio-Evalkit](https://github.com/MoonshotAI/Kimi-Audio-Evalkit) to evaluate VoiceBench, OpenAudioBench, LibriSpeech, LibriSpeech-PC, and SeedTTS-Eval. Inference and scoring are separate.
 
 ### 1. Setup
 
@@ -401,7 +401,7 @@ Rule-based subsets do not require an API key. LLM-judged subsets such as `alpaca
 export OPENAI_API_KEY=your_api_key
 ```
 
-Add one job per trace file. Supported `benchmark` values are `voicebench`, `openaudiobench`, `asr`, and `tts`; use `python -m src.eval --help` for job selection options.
+Add one job per trace file. Supported `benchmark` values are `voicebench`, `openaudiobench`, `librispeech`, `librispeech_pc`, and `seedtts_eval`. For LibriSpeech, LibriSpeech-PC, and SeedTTS-Eval jobs, set `task` to `asr` or `tts`. Use `python -m src.eval --help` for job selection options.
 
 ## Citation
 

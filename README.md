@@ -13,6 +13,7 @@
 - [Evaluation](#evaluation)
 - [Citation](#citation)
 - [Acknowledgements](#acknowledgements)
+- [Appendix: Project Structure](#appendix-project-structure)
 
 ## Overview
 
@@ -59,7 +60,6 @@ config = FlexiSLMInferenceConfig(
     use_flow_matching_decoder=False,
     enable_flexible_framerate=True,
     input_framerate=8.0,
-    input_base_rate=12.5,
     default_framerate=8.0,
     decode_audio=True,
     torch_dtype="bfloat16",
@@ -151,7 +151,6 @@ config = FlexiSLMInferenceConfig(
     use_flow_matching_decoder=False,
     enable_flexible_framerate=True,
     input_framerate=8.0,
-    input_base_rate=12.5,
     default_framerate=8.0,
     decode_audio=True,
     torch_dtype="bfloat16",
@@ -231,7 +230,6 @@ engine:
     use_flow_matching_decoder: false
     enable_flexible_framerate: true
     input_framerate: 8.0
-    input_base_rate: 12.5
     default_framerate: 8.0
     decode_audio: true
     torch_dtype: bfloat16
@@ -275,32 +273,6 @@ We open-source the data produced by the following pipeline:
 For more details, please refer to the dataset READMEs on huggingface.
 
 ## Training Guide
-
-### Understanding Project Structure
-
-```text
-FlexiSLM/
-├── assets/                 # Documentation and demo assets
-├── config/                 # Training and dataset YAML configurations
-│   └── datasets/           # Dataset recipes used by training
-├── data/                   # Downloaded data
-│   ├── benchmarks/         # VoiceBench, OpenAudioBench, and LibriSpeech
-│   └── training/           # Released FlexiSLM training datasets
-├── examples/               # Inference notebook and small examples
-├── local/                  # Data conversion and benchmark request tools
-├── Kimi-Audio-Evalkit/     # Evaluation toolkit
-├── models/                 # Downloaded models
-├── scripts/                # Training launchers and runtime setup
-├── src/                    # Model, training, inference, and evaluation code
-│   ├── dataset/            # Dataset loading and collation
-│   ├── eval/               # Kimi-Audio-Evalkit adapters
-│   ├── infer/              # YAML-driven inference runner
-│   ├── models/             # FlexiSLM and vendored FlexiCodec implementation
-│   └── trainer/            # Trainer implementation
-├── README.md
-├── LICENSE
-└── requirements.txt
-```
 
 FlexiSLM training has three stages:
 
@@ -474,3 +446,27 @@ If you find our work useful, please consider citing:
 ## License
 
 This project is licensed under the MIT License.
+
+## Appendix: Project Structure
+If you want to understand the project structure, you can refer to the following:
+```text
+FlexiSLM/
+├── assets/                 # Documentation and demo assets
+├── config/                 # Training and dataset YAML configurations
+│   └── datasets/           # Dataset recipes used by training
+├── data/                   # Downloaded data
+│   ├── benchmarks/         # VoiceBench, OpenAudioBench, and LibriSpeech
+│   └── training/           # Released FlexiSLM training datasets
+├── examples/               # Inference notebook and small examples
+├── local/                  # Data conversion and benchmark request tools
+├── Kimi-Audio-Evalkit/     # Evaluation toolkit
+├── models/                 # Downloaded models
+├── scripts/                # Training launchers and runtime setup
+├── src/                    # Model, training, inference, and evaluation code
+│   ├── dataset/            # Dataset loading and collation
+│   ├── eval/               # Kimi-Audio-Evalkit adapters
+│   ├── infer/              # YAML-driven inference runner
+│   ├── models/             # FlexiSLM and vendored FlexiCodec implementation
+    └── trainer/            # Trainer implementation
+```
+

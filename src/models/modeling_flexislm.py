@@ -575,9 +575,6 @@ class InterleavedS2SOutputWithPast(CausalLMOutputWithPast):
     task_component_loss_sums: Optional[torch.FloatTensor] = None
     task_component_token_counts: Optional[torch.FloatTensor] = None
     task_sample_counts: Optional[torch.FloatTensor] = None
-    acoustic_loss: Optional[torch.FloatTensor] = None
-    acoustic_ce_loss: Optional[torch.FloatTensor] = None  # unweighted mean acoustic CE
-    acoustic_per_codebook_loss: Optional[torch.FloatTensor] = None  # [n_q_a] unweighted CE per codebook
     loss_text_only_data: Optional[torch.FloatTensor] = None
     loss_audio_dialog_data: Optional[torch.FloatTensor] = None
     avg_input_framerate: Optional[torch.FloatTensor] = None  # Hz after user-audio merging
@@ -870,7 +867,6 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
             self.framerate_embeddings = None
             logger.info(f"  - Using sinusoidal framerate embedding (use_sinusoidal=True)")
         logger.info(f"Talker transformer initialization complete")
-        self.depth_transformer = None
         # Standard (non-chained) architecture: create with 0.5B hidden size
         # When use_qwen3_feature, audio_embed_transform is created lazily with in_features=encoder_dim
         if getattr(config, "use_qwen3_feature", False):
@@ -3121,9 +3117,6 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
         length_loss_sum = None
         length_token_count = None
         auxiliary_loss = None
-        acoustic_loss = None
-        acoustic_ce_loss = None
-        acoustic_per_codebook_loss = None
         loss_text_only_data = None
         loss_audio_dialog_data = None
         task_component_loss_sums = None
@@ -3358,9 +3351,6 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
             task_component_loss_sums=task_component_loss_sums,
             task_component_token_counts=task_component_token_counts,
             task_sample_counts=task_sample_counts,
-            acoustic_loss=acoustic_loss,
-            acoustic_ce_loss=acoustic_ce_loss,
-            acoustic_per_codebook_loss=acoustic_per_codebook_loss,
             loss_text_only_data=loss_text_only_data,
             loss_audio_dialog_data=loss_audio_dialog_data,
             avg_input_framerate=avg_input_framerate,
@@ -3633,16 +3623,8 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
         generated_text_ids = []
         generated_audio_ids = []
         generated_length_ids = []
-        generated_acoustic_codes = []  # Discrete acoustic codes or flow decoder latents.
         all_scores = [] if output_scores else None
         all_length_scores = [] if output_scores else None
-        
-        # Depth transformer state.
-        prev_semantic_for_depth = None  # [B] - previous semantic code (0-indexed)
-        prev_length_for_depth = None
-        prev_decoder_latents_for_depth = None
-        prev_decoder_semantics_for_depth = None
-        prev_decoder_lengths_for_depth = None
         
         # Track which sequences have finished
         finished = torch.zeros(batch_size, dtype=torch.bool, device=device)
@@ -3918,69 +3900,6 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
                     audio_delay_count += 1
                 elif next_audio_val == 0:  # AUD_END (qwen3: talker token 0)
                     audio_delay_count = 0
-
-                # Depth transformer: generate acoustic codes or decoder latent
-                if self.depth_transformer is not None and next_audio_val >= AUDIO_TOKEN_OFFSET:
-                    current_semantic = next_audio_token_offset  # [B] - semantic[t]
-                    # Check if using flow matching depth transformer
-                    if getattr(self.config, "use_flow_matching_depth", False):
-                        # Flow matching: generate decoder latent
-                        if prev_semantic_for_depth is None:
-                            prev_semantic_for_depth = torch.zeros_like(current_semantic)
-                        prev_length_for_depth = next_length
-                        if prev_decoder_latents_for_depth is None:
-                            prev_decoder_latents_for_depth = talker_hidden_last.new_zeros(
-                                batch_size,
-                                self.depth_transformer.num_prev_latents,
-                                self.config.decoder_latent_dim,
-                            )
-                        if prev_decoder_semantics_for_depth is None:
-                            prev_decoder_semantics_for_depth = torch.zeros(
-                                batch_size,
-                                self.depth_transformer.num_prev_latents,
-                                device=device,
-                                dtype=torch.long,
-                            )
-                        if prev_decoder_lengths_for_depth is None:
-                            prev_decoder_lengths_for_depth = torch.zeros(
-                                batch_size,
-                                self.depth_transformer.num_prev_latents,
-                                device=device,
-                                dtype=torch.long,
-                            )
-                        prev_decoder_latents_for_depth[:, -1, :] = next_length
-                        decoder_latent = self.depth_transformer.generate(
-                            talker_hidden_last,
-                            prev_semantic_for_depth,
-                            prev_length_for_depth,
-                            prev_decoder_latents_for_depth,
-                            prev_decoder_semantics_for_depth,
-                            prev_decoder_lengths_for_depth,
-                        )  # [B, latent_dim]
-                        generated_acoustic_codes.append(decoder_latent)
-                        if self.depth_transformer.num_prev_latents > 0:
-                            prev_decoder_semantics_for_depth = torch.cat(
-                                [prev_decoder_semantics_for_depth[:, 1:], current_semantic.unsqueeze(1)],
-                                dim=1,
-                            )
-                            prev_decoder_latents_for_depth = torch.cat(
-                                [prev_decoder_latents_for_depth[:, 1:], decoder_latent.unsqueeze(1)],
-                                dim=1,
-                            )
-                        prev_semantic_for_depth = current_semantic
-
-                    else:
-                        # Discrete depth transformer: generate acoustic codes
-                        if prev_semantic_for_depth is None:
-                            prev_semantic_for_depth = torch.zeros_like(current_semantic)
-                        current_shifted_length = next_length.long()
-                        ac_codes = self.depth_transformer.generate(
-                            talker_hidden_last, prev_semantic_for_depth, current_shifted_length
-                        )  # [B, n_acoustic]
-                        generated_acoustic_codes.append(ac_codes)
-                        # Update state for next step: this step's semantic becomes "previous".
-                        prev_semantic_for_depth = current_semantic
-                        prev_length_for_depth = current_shifted_length
             # Teacher-force text tokens (e.g. for TTS sentence prefix)
             if force_text_ids is not None and force_text_idx < len(force_text_ids):
                 next_text_token = torch.full_like(next_text_token, force_text_ids[force_text_idx].item())
@@ -4162,9 +4081,7 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
                 zero_talker_text_cond |= freeze_next
                 
         
-        # Stack generated tokens. Acoustic codes (if any) were already produced
-        # in-step inside the loop using talker_hidden[t] + semantic[t-1], matching
-        # training -- no trailing flush needed.
+        # Stack generated tokens.
         if len(generated_text_ids) > 0:
             generated_text_ids = torch.stack(generated_text_ids, dim=1)  # [B, num_generated]
         else:
@@ -4177,14 +4094,6 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
             generated_length_ids = torch.stack(generated_length_ids, dim=1)  # [B, num_generated]
         else:
             generated_length_ids = torch.empty((batch_size, 0), device=device, dtype=torch.long)
-        # Stack acoustic codes from depth transformer (if generated)
-        if len(generated_acoustic_codes) > 0:
-            generated_acoustic_codes = torch.stack(generated_acoustic_codes, dim=1)
-            if not getattr(self.config, "use_flow_matching_depth", False):
-                # Discrete acoustic codes: [B, T_ac, n_acoustic] -> [B, n_acoustic, T_ac].
-                generated_acoustic_codes = generated_acoustic_codes.transpose(1, 2)
-        else:
-            generated_acoustic_codes = None
         # Concatenate with input_ids if available
         if input_ids is not None:
             sequences = torch.cat([input_ids, generated_text_ids], dim=1)
@@ -4215,7 +4124,6 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
                 "generated_ids": generated_text_ids,
                 "audio_ids": generated_audio_ids.squeeze(0) if batch_size == 1 else generated_audio_ids,
                 "length_ids": generated_length_ids.squeeze(0) if batch_size == 1 else generated_length_ids,
-                "acoustic_codes": generated_acoustic_codes.squeeze(0) if (generated_acoustic_codes is not None and batch_size == 1) else generated_acoustic_codes,
             }
             if output_scores:
                 result["scores"] = all_scores

@@ -1061,17 +1061,6 @@ class ATrainer(Trainer):
             
             if hasattr(outputs, "audio_token_loss") and outputs.audio_token_loss is not None:
                 metrics_to_log[f"audio_token_loss"] = outputs.audio_token_loss.item()
-
-            # Depth transformer (acoustic) losses
-            if hasattr(outputs, "acoustic_loss") and outputs.acoustic_loss is not None:
-                metrics_to_log[f"acoustic_loss"] = outputs.acoustic_loss.item()
-            if hasattr(outputs, "acoustic_ce_loss") and outputs.acoustic_ce_loss is not None:
-                metrics_to_log[f"acoustic_ce_loss"] = outputs.acoustic_ce_loss.item()
-            if hasattr(outputs, "acoustic_per_codebook_loss") and outputs.acoustic_per_codebook_loss is not None:
-                per_q = outputs.acoustic_per_codebook_loss
-                if torch.is_tensor(per_q):
-                    for q_idx, val in enumerate(per_q.tolist()):
-                        metrics_to_log[f"acoustic_loss_q{q_idx}"] = val
             
             if hasattr(outputs, "loss_text_only_data") and outputs.loss_text_only_data is not None:
                 metrics_to_log[f"loss_text_only_data"] = outputs.loss_text_only_data.item()

@@ -1636,23 +1636,16 @@ class InterleavedS2SInference:
         # Decode audio if requested
         audio_output = None
         if self.config.decode_audio:
-            if result.get('acoustic_codes') is not None:
-                with torch.no_grad():
-                    audio_output = self.model.flexicodec_dict['model'].decode_from_latent(
-                        result['acoustic_codes'].unsqueeze(0).transpose(1,2).float(),
-                        result['length_ids'].unsqueeze(0),
-                    )
-            else:
-                # When using forced speech prompt, use that prompt for flow matching; otherwise use config default
-                fm_prompt_path = flow_matching_prompt_audio_path or self.config.flow_matching_prompt_audio_path
-                fm_prompt_audio = self.prompt_audio_cache if fm_prompt_path == self.config.flow_matching_prompt_audio_path else None
-                audio_output = self._decode_audio_tokens(
-                    audio_chunks, 
-                    length_ids, 
-                    prompt_audio=fm_prompt_audio,
-                    prompt_audio_path=fm_prompt_path,
-                    framerate=framerate
-                )
+            # When using forced speech prompt, use that prompt for flow matching; otherwise use config default
+            fm_prompt_path = flow_matching_prompt_audio_path or self.config.flow_matching_prompt_audio_path
+            fm_prompt_audio = self.prompt_audio_cache if fm_prompt_path == self.config.flow_matching_prompt_audio_path else None
+            audio_output = self._decode_audio_tokens(
+                audio_chunks, 
+                length_ids, 
+                prompt_audio=fm_prompt_audio,
+                prompt_audio_path=fm_prompt_path,
+                framerate=framerate
+            )
         
         return {
             "text": text_output,

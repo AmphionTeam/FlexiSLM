@@ -37,33 +37,20 @@ cd FlexiSLM
 pip install -r requirements.txt
 ```
 
-### Download Models and Datasets
+## Inference
 
-Download all models, training data, and evaluation benchmarks used by the repository:
+### Download Models
+
+Download the models used by the repository:
 
 ```bash
 MODEL_ROOT="$PWD/models"
-TRAIN_DATA_ROOT="$PWD/data/training"
-BENCHMARK_DATA_ROOT="$PWD/data/benchmarks"
 
 hf download FlexiSLM/FlexiSLM-7B-Stage2 --local-dir "$MODEL_ROOT/FlexiSLM-7B-Stage2"
-hf download Qwen/Qwen2.5-7B-Instruct --local-dir "$MODEL_ROOT/Qwen2.5-7B-Instruct"
-hf download Qwen/Qwen2.5-0.5B-Instruct --local-dir "$MODEL_ROOT/Qwen2.5-0.5B-Instruct"
 hf download FlexiSLM/Qwen2_5-Omni-Audio_Encoder --local-dir "$MODEL_ROOT/Qwen2_5-Omni-Audio_Encoder"
 hf download FunAudioLLM/SenseVoiceSmall --local-dir "$MODEL_ROOT/SenseVoiceSmall"
-hf download openai/whisper-large-v3 --local-dir "$MODEL_ROOT/whisper-large-v3"
 hf download jiaqili3/flexicodec 12hz_v1_half_config.yaml nartts_flexicodec_only.safetensors --local-dir "$MODEL_ROOT/FlexiCodec"
-
-hf download FlexiSLM/FlexiSLM-Data-2M-s2s-compact \
-  --repo-type dataset \
-  --local-dir "$TRAIN_DATA_ROOT/FlexiSLM-Data-2M-s2s-compact"
-
-python Kimi-Audio-Evalkit/data/download_benchmark.py \
-  --datasets VoiceBench,OpenAudioBench,LibriSpeech \
-  --output-dir "$BENCHMARK_DATA_ROOT"
 ```
-
-## Inference
 
 ### 1. Python API
 
@@ -265,9 +252,25 @@ FlexiSLM training has three stages:
 2. **Multi-task LoRA fine-tuning.** Train the Talker and input modules while adapting the Thinker with LoRA.
 3. **Full fine-tuning.** Merge the Stage 2 LoRA weights into the Thinker, enable the Talker-to-Thinker connection, and train all model components.
 
+### Download additional checkpoints and dataset
+```bash
+MODEL_ROOT="$PWD/models"
+TRAIN_DATA_ROOT="$PWD/data/training"
+BENCHMARK_DATA_ROOT="$PWD/data/benchmarks"
+
+hf download Qwen/Qwen2.5-7B-Instruct --local-dir "$MODEL_ROOT/Qwen2.5-7B-Instruct"
+hf download Qwen/Qwen2.5-0.5B-Instruct --local-dir "$MODEL_ROOT/Qwen2.5-0.5B-Instruct"
+hf download openai/whisper-large-v3 --local-dir "$MODEL_ROOT/whisper-large-v3"
+
+hf download FlexiSLM/FlexiSLM-Data-2M-s2s-compact \
+  --repo-type dataset \
+  --local-dir "$TRAIN_DATA_ROOT/FlexiSLM-Data-2M-s2s-compact"
+
+```
+
 ### 1. Data Configuration
 
-The committed recipes use the compact dataset downloaded in [Download Models and Datasets](#download-models-and-datasets):
+The committed recipes use the compact dataset downloaded in [Download additional checkpoints and dataset](#download-additional-checkpoints-and-dataset):
 
 - `config/datasets/train_stage1.yaml` for Stage 1
 - `config/datasets/train_stage2_3.yaml` for Stages 2 and 3
@@ -335,10 +338,15 @@ The shared launcher uses Accelerate by default. Stage 3 selects DeepSpeed with `
 
 FlexiSLM uses the bundled [Kimi-Audio-Evalkit](https://github.com/petrichor20211/Kimi-Audio-Evalkit) submodule to evaluate VoiceBench, OpenAudioBench, and LibriSpeech. Inference and scoring are separate. Run all commands below from the FlexiSLM repository root.
 
-A fresh `--recurse-submodules` clone already contains the Evalkit. For an existing clone, initialize it with `git submodule update --init --recursive`. Then install the Evalkit requirements (not needed for training or inference) and download the benchmark data as described in [Download Models and Datasets](#download-models-and-datasets):
+A fresh `--recurse-submodules` clone already contains the Evalkit. For an existing clone, initialize it with `git submodule update --init --recursive`. Then install the Evalkit requirements (not needed for training or inference) and download the benchmark data:
 
 ```bash
 pip install -r Kimi-Audio-Evalkit/requirements.txt
+
+BENCHMARK_DATA_ROOT="$PWD/data/benchmarks"
+python Kimi-Audio-Evalkit/data/download_benchmark.py \
+  --datasets VoiceBench,OpenAudioBench,LibriSpeech \
+  --output-dir "$BENCHMARK_DATA_ROOT"
 ```
 
 ### 1. Build Requests and Run Inference

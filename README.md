@@ -1,13 +1,22 @@
-# FlexiSLM: A Spoken Language Model with Dynamic and Controllable Frame Rate
+# FlexiSLM: A Spoken Language Model with Dynamic and Controllable Frame Rates
 
 [![arXiv Paper](https://img.shields.io/badge/arXiv_Paper-2606.31247-b31b1b)](https://arxiv.org/abs/2606.31247)
 [![demo page](https://img.shields.io/badge/Demo_Page-Github.io-blue)](https://flexislm.github.io)
 [![dataset](https://img.shields.io/badge/Data-2M_speech2speech-yellow?logo=huggingface&logoColor=white)](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-2M-s2s-compact)
 [![dataset](https://img.shields.io/badge/Data-4M_speech2speech-yellow?logo=huggingface&logoColor=white)](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-4M-s2s)
 
+## Table of Contents
+
+- [Inference](#inference)
+- [Data Details](#data)
+- [Training Guide](#training-guide)
+- [Evaluation](#evaluation)
+- [Citation](#citation)
+- [Acknowledgements](#acknowledgements)
+
 ## Overview
 
-This repository contains the code for our paper, "FlexiSLM: A Spoken Language Model with Dynamic and Controllable Frame Rate."
+This repository contains the code for our paper, "FlexiSLM: A Spoken Language Model with Dynamic and Controllable Frame Rates."
 
 FlexiSLM is the first spoken language model that supports *dynamic* and *controllable* frame rates on both speech input and output. A single trained model can be steered between 12.5 Hz and 4.0 Hz without retraining, while its dynamic frame-rate mechanism adapts to the varying complexity of speech. FlexiSLM uses a Thinker-Talker architecture with dynamic frame-rate compression on speech input and controllable frame-rate generation on speech output.
 
@@ -15,35 +24,10 @@ FlexiSLM is the first spoken language model that supports *dynamic* and *control
 
 ## News
 
-- **August 20, 2026: Checkpoint release.** We released the reproduced [FlexiSLM-7B Stage 2 checkpoint](https://huggingface.co/FlexiSLM/FlexiSLM-7B-Stage2-v1).
+- **August 20, 2026: Checkpoint release.** We released the reproduced [FlexiSLM-7B Stage 2 checkpoint](https://huggingface.co/FlexiSLM/FlexiSLM-7B-Stage2).
 - **August 6, 2026: Data release.** We released [FlexiSLM-Data-4M-s2s](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-4M-s2s), [FlexiSLM-Data-2M-s2s-compact](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-2M-s2s-compact), and [FlexiSLM-Data-5M-t2t](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-5M-t2t).
 - **August 2, 2026: Code release.** We released the FlexiSLM-7B training and inference code.
 
-## Project Structure
-
-```text
-FlexiSLM/
-├── assets/                 # Documentation and demo assets
-├── config/                 # Training and dataset YAML configurations
-│   └── datasets/           # Dataset recipes used by training
-├── data/                   # Downloaded data
-│   ├── benchmarks/         # VoiceBench, OpenAudioBench, and LibriSpeech
-│   └── training/           # Released FlexiSLM training datasets
-├── examples/               # Inference notebook and small examples
-├── local/                  # Data conversion and benchmark request tools
-├── Kimi-Audio-Evalkit/     # Evaluation toolkit
-├── models/                 # Downloaded models
-├── scripts/                # Training launchers and runtime setup
-├── src/                    # Model, training, inference, and evaluation code
-│   ├── dataset/            # Dataset loading and collation
-│   ├── eval/               # Kimi-Audio-Evalkit adapters
-│   ├── infer/              # YAML-driven inference runner
-│   ├── models/             # FlexiSLM and vendored FlexiCodec implementation
-│   └── trainer/            # Trainer implementation
-├── README.md
-├── LICENSE
-└── requirements.txt
-```
 
 ## Installation
 
@@ -51,10 +35,9 @@ FlexiSLM/
 git clone --recurse-submodules https://github.com/AmphionTeam/FlexiSLM.git
 cd FlexiSLM
 pip install -r requirements.txt
-pip install -r Kimi-Audio-Evalkit/requirements.txt
 ```
 
-## Download Models and Datasets
+### Download Models and Datasets
 
 Download all models, training data, and evaluation benchmarks used by the repository:
 
@@ -254,8 +237,33 @@ Training shards follow this pattern:
 data/training/FlexiSLM-Data-2M-s2s-compact/data/train-{00000..00242}-of-00243.tar
 ```
 
-## Training
+## Training Guide
 
+### Project Structure
+
+```text
+FlexiSLM/
+├── assets/                 # Documentation and demo assets
+├── config/                 # Training and dataset YAML configurations
+│   └── datasets/           # Dataset recipes used by training
+├── data/                   # Downloaded data
+│   ├── benchmarks/         # VoiceBench, OpenAudioBench, and LibriSpeech
+│   └── training/           # Released FlexiSLM training datasets
+├── examples/               # Inference notebook and small examples
+├── local/                  # Data conversion and benchmark request tools
+├── Kimi-Audio-Evalkit/     # Evaluation toolkit
+├── models/                 # Downloaded models
+├── scripts/                # Training launchers and runtime setup
+├── src/                    # Model, training, inference, and evaluation code
+│   ├── dataset/            # Dataset loading and collation
+│   ├── eval/               # Kimi-Audio-Evalkit adapters
+│   ├── infer/              # YAML-driven inference runner
+│   ├── models/             # FlexiSLM and vendored FlexiCodec implementation
+│   └── trainer/            # Trainer implementation
+├── README.md
+├── LICENSE
+└── requirements.txt
+```
 FlexiSLM training has three stages:
 
 1. **Talker and input-module pre-training.** Freeze the Qwen backbone and train the Talker, audio embeddings, and input frame-merging module.
@@ -325,7 +333,11 @@ The shared launcher uses Accelerate by default. Stage 3 selects DeepSpeed with `
 
 FlexiSLM uses the bundled [Kimi-Audio-Evalkit](https://github.com/petrichor20211/Kimi-Audio-Evalkit) submodule to evaluate VoiceBench, OpenAudioBench, and LibriSpeech. Inference and scoring are separate. Run all commands below from the FlexiSLM repository root.
 
-A fresh `--recurse-submodules` clone already contains the Evalkit. For an existing clone, initialize it with `git submodule update --init --recursive`. Install its requirements and download the benchmark data as described above.
+A fresh `--recurse-submodules` clone already contains the Evalkit. For an existing clone, initialize it with `git submodule update --init --recursive`. Then install the Evalkit requirements (not needed for training or inference) and download the benchmark data as described in [Download Models and Datasets](#download-models-and-datasets):
+
+```bash
+pip install -r Kimi-Audio-Evalkit/requirements.txt
+```
 
 ### 1. Build Requests and Run Inference
 

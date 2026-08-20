@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
+# Stage 1: train the Talker, audio embeddings, and input merging transformer
+# while keeping the Qwen2.5-7B backbone frozen.
 
 set -euo pipefail
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-exec "$SCRIPT_DIR/train.sh" "config/train_stage1.yaml" "$@"
+exec "$SCRIPT_DIR/train.sh" "$SCRIPT_DIR/../config/train_stage1.yaml" "$@"

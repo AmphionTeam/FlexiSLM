@@ -256,6 +256,8 @@ class InterleavedInferenceConfig:
     """Configuration for Interleaved S2S inference."""
     # Model paths
     model_path: Optional[str] = None
+    qwen25o_encoder_path: Optional[str] = None
+    qwen25o_encoder_config_path: Optional[str] = None
     flexicodec_ckpt_path: Optional[str] = None
     flexicodec_config_path: Optional[str] = None
     sensevoice_path: Optional[str] = None
@@ -436,8 +438,22 @@ class InterleavedS2SInference:
         # ------------------------------------------------------------------
         from src.models.modeling_flexislm import ParallelS2SConfig
         saved_config = ParallelS2SConfig.from_pretrained(model_path)
-        # override
         saved_config.max_tokens_per_group = 16
+
+        # Checkpoints may contain paths from the training machine. Keep the
+        # checkpoint immutable and apply user-provided auxiliary-model paths
+        # only to the in-memory configuration used for this inference run.
+        path_overrides = {
+            "qwen25o_encoder_path": self.config.qwen25o_encoder_path,
+            "qwen25o_encoder_config_path": self.config.qwen25o_encoder_config_path,
+            "flexicodec_ckpt_path": self.config.flexicodec_ckpt_path,
+            "flexicodec_config_path": self.config.flexicodec_config_path,
+            "sensevoice_small_path": self.config.sensevoice_path,
+        }
+        for name, value in path_overrides.items():
+            if value is not None:
+                setattr(saved_config, name, value)
+
         use_lora = getattr(saved_config, 'use_lora', False)
         torch_dtype = (
             getattr(torch, self.config.torch_dtype)
@@ -598,6 +614,7 @@ class InterleavedS2SInference:
             # Non-LoRA checkpoint: standard HF load + move to dtype
             model = ParallelS2SForCausalLM.from_pretrained(
                 model_path,
+                config=saved_config,
                 device_map="cuda",
                 attn_implementation=self.config.attn_implementation,
                 dtype=torch_dtype,

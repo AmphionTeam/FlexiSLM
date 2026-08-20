@@ -1,19 +1,25 @@
-# Stage 3: full fine-tuning with the v2 input merging transformer.
-# Keys map directly to the dataclass arguments in src/arguments.py.
+# Stage 3: initialize from a merged Stage 2 checkpoint and fully fine-tune the
+# Thinker, Talker, input modules, and Talker-to-Thinker connection.
+# Replace all /path/to values before launching.
 
 # Model
-model_name_or_path: Qwen/Qwen2.5-7B-Instruct
-config_name: Qwen/Qwen2.5-7B-Instruct
-tokenizer_name: Qwen/Qwen2.5-7B-Instruct
+model_name_or_path: /path/to/models/Qwen2.5-7B-Instruct
+config_name: /path/to/models/Qwen2.5-7B-Instruct
+tokenizer_name: /path/to/models/Qwen2.5-7B-Instruct
 use_joint_text_audio_vocab: false
 freeze_llm: false
+freeze_talker: false
 only_train_talker: false
+only_train_llm: false
 
-# Audio encoder and frame-rate control
+# Audio encoder and codec
 use_sensevoice_feature: false
 use_qwen25omni_feature: true
-qwen25omni_encoder_path: path/to/Qwen2.5-Omni-7B
-qwen25omni_encoder_config_path: path/to/Qwen2.5-Omni-7B/config.json
+qwen25omni_encoder_path: /path/to/models/Qwen2.5-Omni-7B
+qwen25omni_encoder_config_path: /path/to/models/Qwen2.5-Omni-7B/config.json
+flexicodec_config_path: /path/to/models/FlexiCodec/12hz_v1_half_config.yaml
+flexicodec_ckpt_path: /path/to/models/FlexiCodec/nartts_flexicodec_only.safetensors
+sensevoice_small_path: /path/to/models/SenseVoiceSmall
 finetune_speech_encoder: false
 enable_flexible_framerate: true
 training_framerate_options: "0.86,0.87,0.88,0.90,0.91,1.0,1.0"
@@ -23,29 +29,36 @@ framerate_max: 1.0
 use_sinusoidal: true
 per_sample_frame_rate_embed: true
 
-# Talker and embeddings
+# Talker and Talker-to-Thinker connection
 early_diverge_talker: false
 talker_concat_lm_text_output: true
-talker_hidden_size: 1024
+talker_hidden_size: 1280
 talker_num_layers: 20
+talker_num_attention_heads: 8
+talker_intermediate_size: 5120
+talker_checkpoint_path: ""
 text_loss_weight: 2.0
+use_mlp_for_audio_embed: true
 use_omni_token: true
 no_pad: false
+use_combined_embedding: true
 force_use_combined_embedding: true
 use_input_merging_transformer: true
 use_input_merging_transformer_v2: true
+reinitialize_input_merging_transformer: false
 input_merging_transformer_d_model: 768
 use_learnable_audio_boundary: true
 
 # Full fine-tuning and component-specific learning rates
 use_lora: false
-lora_rank: 32
-lora_alpha: 64
+learning_rate: 1.0e-6
 talker_learning_rate: 2.0e-4
 combine_proj_learning_rate: 2.0e-5
 
-# Data
+# Data and merged Stage 2 initialization
 dataset_name: config/datasets/train_stage2_3.yaml
+checkpoint_load_mode: weights_only
+resume_from_checkpoint: /path/to/checkpoints/stage2-merged
 
 # Training
 do_train: true
@@ -54,24 +67,24 @@ run_name: train_stage3
 num_train_epochs: 1
 per_device_train_batch_size: 2
 max_tokens_per_batch: 2200
-gradient_accumulation_steps: 1
+gradient_accumulation_steps: 2
 auto_find_batch_size: false
 save_strategy: steps
 save_steps: 5000
 save_total_limit: 10
 max_grad_norm: 1.0
-learning_rate: 1.0e-6
 weight_decay: 0.01
 adam_beta1: 0.9
 adam_beta2: 0.95
 adam_epsilon: 1.0e-8
-warmup_ratio: 0.05
+warmup_ratio: 0.02
 lr_scheduler_type: cosine_with_min_lr
-lr_scheduler_kwargs: '{"min_lr": 1e-7}'
-logging_steps: 100
+lr_scheduler_kwargs: {min_lr: 1.0e-7}
+logging_steps: 10
 log_level: info
 model_max_length: 1024
 gradient_checkpointing: false
+deepspeed: config/ds_config_zero2.json
 ddp_timeout: 7200
 dataloader_num_workers: 4
 dataloader_pin_memory: true

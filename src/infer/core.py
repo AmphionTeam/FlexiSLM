@@ -24,6 +24,7 @@ def infer(
     output_dir: str | os.PathLike[str] = "outputs/infer",
     checkpoint: str | None = None,
     target_framerate_hz: float | None = None,
+    transcribe_model_path: str | None = None,
     output_sample_rate: int = DEFAULT_OUTPUT_SAMPLE_RATE,
 ) -> dict[str, Any]:
     """Infer one request and return a record in the unified trace schema."""
@@ -61,6 +62,7 @@ def infer(
             output_dir=Path(output_dir),
             checkpoint=checkpoint,
             target_framerate_hz=target_framerate_hz,
+            transcribe_model_path=transcribe_model_path,
             output_sample_rate=output_sample_rate,
         )
     raise ValueError(
@@ -222,9 +224,10 @@ def _infer_s2s(
     output_dir: Path,
     checkpoint: str | None,
     target_framerate_hz: float | None,
+    transcribe_model_path: str | None,
     output_sample_rate: int,
 ) -> dict[str, Any]:
-    """Speech-to-speech: audio + text query -> audio output, transcribed for eval."""
+    """Speech-to-speech: audio + text query -> audio, optionally transcribed."""
     parts = _request_parts(request)
     audio_path = _required_string(parts.input, "audio_path", task="s2s")
     framerate = _target_framerate(engine, parts.metadata, target_framerate_hz)
@@ -251,22 +254,13 @@ def _infer_s2s(
     audio_path_out = output_dir / _wav_name(parts.index, parts.metadata.get("sample_id"))
     duration = _save_wav(audio_path_out, audio, output_sample_rate)
 
-    transcribe_model_path = parts.input.get("transcribe_model_path") or parts.metadata.get(
-        "transcribe_model_path"
-    )
-    if not transcribe_model_path:
-        raise ValueError(
-            "s2s request requires input.transcribe_model_path or "
-            "metadata.transcribe_model_path (e.g. whisper-large-v3)"
+    transcription = None
+    if transcribe_model_path:
+        transcription = _transcribe_audio(
+            str(audio_path_out.resolve()),
+            model_path=transcribe_model_path,
+            device=str(getattr(engine, "device", "cuda:0")),
         )
-    transcribe_device = parts.metadata.get("transcribe_device") or getattr(
-        engine, "device", "cuda:0"
-    )
-    transcription = _transcribe_audio(
-        str(audio_path_out.resolve()),
-        model_path=str(transcribe_model_path),
-        device=str(transcribe_device),
-    )
 
     return _trace(
         index=parts.index,

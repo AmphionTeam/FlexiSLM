@@ -29,6 +29,7 @@ class CliConfig:
     audio_dir: Path
     checkpoint: Optional[str]
     target_framerate_hz: Optional[float]
+    transcribe_model_path: Optional[str]
     output_sample_rate: int
     fail_fast: bool
     error_path: Path
@@ -103,6 +104,9 @@ def load_config(config_path: Path) -> CliConfig:
     checkpoint = inference_config.get("checkpoint")
     if checkpoint is not None:
         checkpoint = str(checkpoint)
+    transcribe_model_path = inference_config.get("transcribe_model_path")
+    if transcribe_model_path is not None:
+        transcribe_model_path = str(transcribe_model_path)
     fail_fast = runtime.get("fail_fast", True)
     if not isinstance(fail_fast, bool):
         raise ValueError("runtime.fail_fast must be a boolean")
@@ -122,6 +126,7 @@ def load_config(config_path: Path) -> CliConfig:
         audio_dir=audio_dir,
         checkpoint=checkpoint,
         target_framerate_hz=target_framerate,
+        transcribe_model_path=transcribe_model_path,
         output_sample_rate=sample_rate,
         fail_fast=fail_fast,
         error_path=error_path,
@@ -143,6 +148,7 @@ def run(config_path: Path) -> tuple[int, int]:
         "output_dir": str(config.audio_dir),
         "checkpoint": config.checkpoint,
         "target_framerate_hz": config.target_framerate_hz,
+        "transcribe_model_path": config.transcribe_model_path,
         "output_sample_rate": config.output_sample_rate,
     }
     requests = _load_requests(config.input_path)

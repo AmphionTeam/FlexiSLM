@@ -141,7 +141,8 @@ import loguru
 
 logger = loguru.logger
 
-DEFAULT_INFERENCE_DOWNLOAD_DIR = "models"
+# Same directory as the README manual `hf download --local-dir "$PWD/models/..."` flow.
+DEFAULT_INFERENCE_DOWNLOAD_DIR = os.path.join(_REPO_ROOT, "models")
 DEFAULT_INFERENCE_REPOS = {
     "model": {
         "repo_id": "FlexiSLM/FlexiSLM-7B-Stage2",
@@ -203,6 +204,14 @@ def _snapshot_download(
     )
 
 
+def _resolve_inference_download_dir(download_dir: Union[str, os.PathLike]) -> Path:
+    """Resolve download_dir to the repo ``models/`` folder when a relative path is given."""
+    path = Path(download_dir)
+    if not path.is_absolute():
+        path = Path(_REPO_ROOT) / path
+    return path
+
+
 def download_inference_checkpoints(
     download_dir: Union[str, os.PathLike] = DEFAULT_INFERENCE_DOWNLOAD_DIR,
     *,
@@ -215,10 +224,12 @@ def download_inference_checkpoints(
 ) -> Dict[str, str]:
     """Download default Python-API inference checkpoints with ``snapshot_download``.
 
-    Existing complete local directories are reused. Returns local paths suitable
-    for :class:`FlexiSLMInferenceConfig`.
+    Files are written under the repo ``models/`` directory by default, matching
+    the manual ``hf download --local-dir`` layout. Existing complete local
+    directories are reused. Returns local paths suitable for
+    :class:`FlexiSLMInferenceConfig`.
     """
-    root = Path(download_dir)
+    root = _resolve_inference_download_dir(download_dir)
     paths: Dict[str, str] = {}
 
     if download_model:
@@ -467,6 +478,7 @@ class FlexiSLMInferenceConfig:
 
     def __post_init__(self):
         if self.auto_download:
+            self.download_dir = str(_resolve_inference_download_dir(self.download_dir))
             downloaded = download_inference_checkpoints(
                 self.download_dir,
                 token=self.token,

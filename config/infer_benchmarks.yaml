@@ -12,7 +12,6 @@ x-engine: &engine
       use_flow_matching_decoder: false
       enable_flexible_framerate: true
       input_framerate: 8.0
-      input_base_rate: 12.5
       default_framerate: 8.0
       framerate_min: 1.0
       framerate_max: 100.0

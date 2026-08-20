@@ -428,7 +428,8 @@ class FlexiSLMInferenceConfig:
     framerate_max: float = 1.0
     default_framerate: float = 1.0  # Default framerate for output generation
     input_framerate: float = 1.0  # Framerate for encoding: <=1.0 = merging_threshold, >1.0 = target_rate (Hz)
-    input_base_rate: float = 12.5  # Base frame rate in Hz (used when input_framerate > 1.0 as target_rate)
+    # Native encoder rate for target-rate merging. None = 25.0 Hz for Qwen2.5-Omni, 12.5 Hz otherwise.
+    input_base_rate: Optional[float] = None
     dynamic_merging: bool = True  # If True and target_rate set: search threshold to hit target; else uniform merge
     enable_flexible_framerate: bool = False  # Enable flexible frame rate with feature merging
     
@@ -1012,6 +1013,17 @@ class FlexiSLMInference:
             wav = T.Resample(sr, 16000)(wav)
         return wav
 
+    def _resolve_input_base_rate(self, use_qwen25o: bool) -> float:
+        """Encoder-native Hz for target-rate merging (25.0 for Qwen2.5-Omni, else 12.5)."""
+        encoder_rate = 25.0 if use_qwen25o else 12.5
+        configured = getattr(self.config, "input_base_rate", None)
+        if configured is None:
+            return encoder_rate
+        if use_qwen25o and configured == 12.5:
+            logger.warning("[Qwen2.5-Omni] Found base_rate == 12.5, rewrite with 25.0")
+            return 25.0
+        return float(configured)
+
     def _encode_audio(self, audio_tensor: torch.Tensor, framerate: float = 1.0) -> Union[Dict, torch.Tensor]:
         """Encode audio for user input, matching the model's training-time implementation.
 
@@ -1130,12 +1142,7 @@ class FlexiSLMInference:
 
                 # Optional flexible frame rate merging (same logic as training)
                 if getattr(self.model.config, "enable_flexible_framerate", False):
-                    default_base_rate = 25.0 if use_qwen25o else 12.5
-                    base_rate = getattr(self.config, "input_base_rate", default_base_rate)
-                    # Force override if it defaults to 12.5 but we are using a 25 Hz encoder
-                    if use_qwen25o and base_rate == 12.5:
-                        logger.warning(f"[{encoder_name}] Found base_rate == 12.5, rewrite with 25.0")
-                        base_rate = 25.0
+                    base_rate = self._resolve_input_base_rate(use_qwen25o)
                     if framerate > 1.0:
                         dynamic = getattr(self.config, "dynamic_merging", True)
                         mode = "dynamic" if dynamic else "uniform"
@@ -1228,7 +1235,7 @@ class FlexiSLMInference:
                 # Apply flexible frame rate merging if enabled (matches training in modeling_flexislm)
                 if getattr(self.model.config, 'enable_flexible_framerate', False):
                     semantic_features = semantic_features.unsqueeze(0)  # [1, T, H]
-                    base_rate = getattr(self.config, "input_base_rate", 12.5)
+                    base_rate = self._resolve_input_base_rate(use_qwen25o=False)
                     if framerate > 1.0:
                         dynamic = getattr(self.config, "dynamic_merging", True)
                         mode = "dynamic" if dynamic else "uniform"
@@ -2762,8 +2769,9 @@ def main():
                         help="Default frame rate for output audio generation in Hz when >1.0")
     parser.add_argument("--input_framerate", type=float, default=12.5,
                         help="Input framerate: <=1.0 = merging_threshold, >1.0 = target_rate in Hz (e.g. 12.5)")
-    parser.add_argument("--input_base_rate", type=float, default=12.5,
-                        help="Base frame rate in Hz for target-rate merging (when input_framerate > 1.0)")
+    parser.add_argument("--input_base_rate", type=float, default=None,
+                        help="Base frame rate in Hz for target-rate merging (when input_framerate > 1.0). "
+                             "Default: 25.0 for Qwen2.5-Omni, 12.5 otherwise")
     parser.add_argument("--no_dynamic_merging", action="store_true",
                         help="Use uniform merging instead of dynamic threshold search when target_rate is set")
     parser.add_argument("--framerate_min", type=float, default=1.0,

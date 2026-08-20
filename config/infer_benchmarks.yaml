@@ -1,0 +1,138 @@
+# VoiceBench/OpenAudioBench audio-QA and LibriSpeech ASR inference manifest.
+# Run with: bash scripts/infer_benchmarks.sh
+x-engine: &engine
+  engine:
+    config:
+      model_path: ${MODEL_ROOT}/FlexiSLM-7B-Stage2-v1
+      qwen25o_encoder_path: ${MODEL_ROOT}/Qwen2_5-Omni-Audio_Encoder
+      qwen25o_encoder_config_path: ${MODEL_ROOT}/Qwen2_5-Omni-Audio_Encoder/config.json
+      flexicodec_ckpt_path: ${MODEL_ROOT}/FlexiCodec/nartts_flexicodec_only.safetensors
+      flexicodec_config_path: ${MODEL_ROOT}/FlexiCodec/12hz_v1_half_config.yaml
+      sensevoice_path: ${MODEL_ROOT}/SenseVoiceSmall
+      use_flow_matching_decoder: false
+      enable_flexible_framerate: true
+      input_framerate: 8.0
+      input_base_rate: 12.5
+      default_framerate: 8.0
+      framerate_min: 1.0
+      framerate_max: 100.0
+      decode_audio: false
+      torch_dtype: bfloat16
+      attn_implementation: flash_attention_2
+  inference: &inference
+    checkpoint: ${MODEL_ROOT}/FlexiSLM-7B-Stage2-v1
+    target_framerate_hz: 8.0
+  runtime: &runtime
+    devices: [cuda:0]
+    fail_fast: false
+
+jobs:
+  - name: mmsu
+    config:
+      <<: *engine
+      input:
+        path: ${REPO_ROOT}/outputs/evaluation/requests/voicebench/mmsu_requests.jsonl
+      output:
+        trace_path: ${REPO_ROOT}/outputs/evaluation/traces/mmsu/traces.jsonl
+        error_path: ${LOG_ROOT}/mmsu/errors.jsonl
+      inference: *inference
+      runtime: *runtime
+
+  - name: openbookqa
+    config:
+      <<: *engine
+      input:
+        path: ${REPO_ROOT}/outputs/evaluation/requests/voicebench/openbookqa_requests.jsonl
+      output:
+        trace_path: ${REPO_ROOT}/outputs/evaluation/traces/openbookqa/traces.jsonl
+        error_path: ${LOG_ROOT}/openbookqa/errors.jsonl
+      inference: *inference
+      runtime: *runtime
+
+  - name: sd-qa
+    config:
+      <<: *engine
+      input:
+        path: ${REPO_ROOT}/outputs/evaluation/requests/voicebench/sd-qa_requests.jsonl
+      output:
+        trace_path: ${REPO_ROOT}/outputs/evaluation/traces/sd-qa/traces.jsonl
+        error_path: ${LOG_ROOT}/sd-qa/errors.jsonl
+      inference: *inference
+      runtime: *runtime
+
+  - name: advbench
+    config:
+      <<: *engine
+      input:
+        path: ${REPO_ROOT}/outputs/evaluation/requests/voicebench/advbench_requests.jsonl
+      output:
+        trace_path: ${REPO_ROOT}/outputs/evaluation/traces/advbench/traces.jsonl
+        error_path: ${LOG_ROOT}/advbench/errors.jsonl
+      inference: *inference
+      runtime: *runtime
+
+  - name: ifeval
+    config:
+      <<: *engine
+      input:
+        path: ${REPO_ROOT}/outputs/evaluation/requests/voicebench/ifeval_requests.jsonl
+      output:
+        trace_path: ${REPO_ROOT}/outputs/evaluation/traces/ifeval/traces.jsonl
+        error_path: ${LOG_ROOT}/ifeval/errors.jsonl
+      inference: *inference
+      runtime: *runtime
+
+  - name: alpacaeval_full
+    config:
+      <<: *engine
+      input:
+        path: ${REPO_ROOT}/outputs/evaluation/requests/voicebench/alpacaeval_full_requests.jsonl
+      output:
+        trace_path: ${REPO_ROOT}/outputs/evaluation/traces/alpacaeval_full/traces.jsonl
+        error_path: ${LOG_ROOT}/alpacaeval_full/errors.jsonl
+      inference: *inference
+      runtime: *runtime
+
+  - name: commoneval
+    config:
+      <<: *engine
+      input:
+        path: ${REPO_ROOT}/outputs/evaluation/requests/voicebench/commoneval_requests.jsonl
+      output:
+        trace_path: ${REPO_ROOT}/outputs/evaluation/traces/commoneval/traces.jsonl
+        error_path: ${LOG_ROOT}/commoneval/errors.jsonl
+      inference: *inference
+      runtime: *runtime
+
+  - name: OpenAudioBench
+    config:
+      <<: *engine
+      input:
+        path: ${REPO_ROOT}/outputs/evaluation/requests/openaudiobench/OpenAudioBench_requests.jsonl
+      output:
+        trace_path: ${REPO_ROOT}/outputs/evaluation/traces/OpenAudioBench/traces.jsonl
+        error_path: ${LOG_ROOT}/OpenAudioBench/errors.jsonl
+      inference: *inference
+      runtime: *runtime
+
+  - name: librispeech_test-clean
+    config:
+      <<: *engine
+      input:
+        path: ${REPO_ROOT}/outputs/evaluation/requests/librispeech/test-clean_requests.jsonl
+      output:
+        trace_path: ${REPO_ROOT}/outputs/evaluation/traces/librispeech/test-clean/traces.jsonl
+        error_path: ${LOG_ROOT}/librispeech/test-clean/errors.jsonl
+      inference: *inference
+      runtime: *runtime
+
+  - name: librispeech_test-other
+    config:
+      <<: *engine
+      input:
+        path: ${REPO_ROOT}/outputs/evaluation/requests/librispeech/test-other_requests.jsonl
+      output:
+        trace_path: ${REPO_ROOT}/outputs/evaluation/traces/librispeech/test-other/traces.jsonl
+        error_path: ${LOG_ROOT}/librispeech/test-other/errors.jsonl
+      inference: *inference
+      runtime: *runtime

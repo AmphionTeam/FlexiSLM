@@ -16,6 +16,9 @@ output_checkpoints
 *.o
 *.png
 /outputs/
+/models/
+/data/benchmarks/
+/data/training/
 *.log
 *.wav
 *.zip
@@ -46,6 +49,7 @@ __pycache__/
 /lib/
 /lib64/
 /output/
+/logs/
 /parts/
 /sdist/
 /var/

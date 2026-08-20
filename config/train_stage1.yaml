@@ -1,10 +1,10 @@
 # Stage 1: freeze the Qwen backbone and pre-train the Talker and input modules.
-# Replace all /path/to values before launching.
+# Paths are relative to the repository root.
 
 # Model
-model_name_or_path: /path/to/models/Qwen2.5-7B-Instruct
-config_name: /path/to/models/Qwen2.5-7B-Instruct
-tokenizer_name: /path/to/models/Qwen2.5-7B-Instruct
+model_name_or_path: models/Qwen2.5-7B-Instruct
+config_name: models/Qwen2.5-7B-Instruct
+tokenizer_name: models/Qwen2.5-7B-Instruct
 use_joint_text_audio_vocab: false
 freeze_llm: true
 freeze_talker: false
@@ -14,11 +14,11 @@ only_train_modules: "talker_model,audio_embed_transform,input_merging_transforme
 # Audio encoder and codec
 use_sensevoice_feature: false
 use_qwen25omni_feature: true
-qwen25omni_encoder_path: path/to/models/Qwen2.5-Omni-Audio-Encoder
-qwen25omni_encoder_config_path: path/to/models/Qwen2.5-Omni-Audio-Encoder/config.json
-flexicodec_config_path: /path/to/models/FlexiCodec/12hz_v1_half_config.yaml
-flexicodec_ckpt_path: /path/to/models/FlexiCodec/nartts_flexicodec_only.safetensors
-sensevoice_small_path: /path/to/models/SenseVoiceSmall
+qwen25omni_encoder_path: models/Qwen2_5-Omni-Audio_Encoder
+qwen25omni_encoder_config_path: models/Qwen2_5-Omni-Audio_Encoder/config.json
+flexicodec_config_path: models/FlexiCodec/12hz_v1_half_config.yaml
+flexicodec_ckpt_path: models/FlexiCodec/nartts_flexicodec_only.safetensors
+sensevoice_small_path: models/SenseVoiceSmall
 finetune_speech_encoder: false
 enable_flexible_framerate: true
 training_framerate_options: "0.86,0.87,0.88,0.90,0.91,1.0,1.0"

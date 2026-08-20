@@ -18,6 +18,10 @@ import re
 from pathlib import Path
 
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_DATA_ROOT = PROJECT_ROOT / "data/benchmarks"
+
+
 VOICEBENCH_DATASETS = {
     "mmsu",
     "openbookqa",
@@ -107,8 +111,11 @@ def main() -> None:
     parser.add_argument(
         "--data-root",
         type=Path,
-        default="/F00120260003/flexislm_project/data/eval",
-        help="Directory containing the benchmark jsonl files.",
+        default=DEFAULT_DATA_ROOT,
+        help=(
+            "Directory containing benchmark JSONL files "
+            "(default: data/benchmarks in the repository)."
+        ),
     )
     parser.add_argument(
         "--out-dir",

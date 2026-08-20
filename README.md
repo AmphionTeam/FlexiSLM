@@ -26,8 +26,13 @@ FlexiSLM/
 ├── assets/                 # Documentation and demo assets
 ├── config/                 # Training and dataset YAML configurations
 │   └── datasets/           # Dataset recipes used by training
+├── data/                   # Downloaded data
+│   ├── benchmarks/         # VoiceBench, OpenAudioBench, and LibriSpeech
+│   └── training/           # Released FlexiSLM training datasets
 ├── examples/               # Inference notebook and small examples
 ├── local/                  # Data conversion and benchmark request tools
+├── Kimi-Audio-Evalkit/     # Evaluation toolkit
+├── models/                 # Downloaded models
 ├── scripts/                # Training launchers and runtime setup
 ├── src/                    # Model, training, inference, and evaluation code
 │   ├── dataset/            # Dataset loading and collation
@@ -43,23 +48,27 @@ FlexiSLM/
 ## Installation
 
 ```bash
-git clone https://github.com/AmphionTeam/FlexiSLM.git
+git clone --recurse-submodules https://github.com/AmphionTeam/FlexiSLM.git
 cd FlexiSLM
 pip install -r requirements.txt
+pip install -r Kimi-Audio-Evalkit/requirements.txt
 ```
 
-## Inference
+## Download Models and Datasets
 
-### 1. Model Download
+Download all models, training data, and evaluation benchmarks used by the repository:
 
 ```bash
-MODEL_ROOT=/path/to/models
-mkdir -p "$MODEL_ROOT/FlexiCodec"
+MODEL_ROOT="$PWD/models"
+TRAIN_DATA_ROOT="$PWD/data/training"
+BENCHMARK_DATA_ROOT="$PWD/data/benchmarks"
 
 hf download FlexiSLM/FlexiSLM-7B-Stage2-v1 \
   --local-dir "$MODEL_ROOT/FlexiSLM-7B-Stage2-v1"
-hf download Qwen/Qwen2.5-Omni-7B \
-  --local-dir "$MODEL_ROOT/Qwen2.5-Omni-7B"
+hf download Qwen/Qwen2.5-7B-Instruct \
+  --local-dir "$MODEL_ROOT/Qwen2.5-7B-Instruct"
+hf download FlexiSLM/Qwen2_5-Omni-Audio_Encoder \
+  --local-dir "$MODEL_ROOT/Qwen2_5-Omni-Audio_Encoder"
 hf download iic/SenseVoiceSmall \
   --local-dir "$MODEL_ROOT/SenseVoiceSmall"
 hf download openai/whisper-large-v3 \
@@ -67,9 +76,19 @@ hf download openai/whisper-large-v3 \
 hf download jiaqili3/flexicodec \
   12hz_v1_half_config.yaml nartts_flexicodec_only.safetensors \
   --local-dir "$MODEL_ROOT/FlexiCodec"
+
+hf download FlexiSLM/FlexiSLM-Data-2M-s2s-compact \
+  --repo-type dataset \
+  --local-dir "$TRAIN_DATA_ROOT/FlexiSLM-Data-2M-s2s-compact"
+
+python Kimi-Audio-Evalkit/data/download_benchmark.py \
+  --datasets VoiceBench,OpenAudioBench,LibriSpeech \
+  --output-dir "$BENCHMARK_DATA_ROOT"
 ```
 
-### 2. Python API
+## Inference
+
+### 1. Python API
 
 For a single request or interactive use, call the inference engine directly without creating a JSONL file:
 
@@ -84,13 +103,18 @@ from src.inference_flexislm import (
     InterleavedS2SInference,
 )
 
+model_root = Path.cwd() / "models"
 config = InterleavedInferenceConfig(
-    model_path="/path/to/models/FlexiSLM-7B-Stage2-v1",
-    qwen25o_encoder_path="/path/to/models/Qwen2.5-Omni-7B",
-    qwen25o_encoder_config_path="/path/to/models/Qwen2.5-Omni-7B/config.json",
-    flexicodec_ckpt_path="/path/to/models/FlexiCodec/nartts_flexicodec_only.safetensors",
-    flexicodec_config_path="/path/to/models/FlexiCodec/12hz_v1_half_config.yaml",
-    sensevoice_path="/path/to/models/SenseVoiceSmall",
+    model_path=str(model_root / "FlexiSLM-7B-Stage2-v1"),
+    qwen25o_encoder_path=str(model_root / "Qwen2_5-Omni-Audio_Encoder"),
+    qwen25o_encoder_config_path=str(
+        model_root / "Qwen2_5-Omni-Audio_Encoder/config.json"
+    ),
+    flexicodec_ckpt_path=str(
+        model_root / "FlexiCodec/nartts_flexicodec_only.safetensors"
+    ),
+    flexicodec_config_path=str(model_root / "FlexiCodec/12hz_v1_half_config.yaml"),
+    sensevoice_path=str(model_root / "SenseVoiceSmall"),
     use_flow_matching_decoder=False,
     enable_flexible_framerate=True,
     input_framerate=8.0,
@@ -121,7 +145,7 @@ save_audio(result, "tts.wav")
 
 # Automatic speech recognition
 result = engine.generate_from_audio(
-    audio_path="/path/to/input.wav",
+    audio_path="examples/input.wav",
     text_query="Please transcribe the audio.",
     framerate=8.0,
     output_text_only=True,
@@ -130,7 +154,7 @@ print(result["text"])
 
 # Audio question answering
 result = engine.generate_from_audio(
-    audio_path="/path/to/question.wav",
+    audio_path="examples/question.wav",
     text_query="",
     framerate=8.0,
     output_text_only=True,
@@ -139,7 +163,7 @@ print(result["text"])
 
 # Speech-to-speech generation
 result = engine.generate_from_audio(
-    audio_path="/path/to/input.wav",
+    audio_path="examples/input.wav",
     text_query="",
     framerate=8.0,
     output_text_only=False,
@@ -149,28 +173,28 @@ save_audio(result, "s2s.wav")
 
 A minimal notebook is available at `examples/inference.ipynb`.
 
-### 3. Batch Inference
+### 2. Batch Inference
 
-Batch inference reads requests from JSONL and uses a YAML file for model, input, output, and multi-GPU runtime settings. Create `/path/to/requests.jsonl`:
+Batch inference reads requests from JSONL and uses a YAML file for model, input, output, and multi-GPU runtime settings. Create `examples/requests.jsonl`:
 
 ```jsonl
 {"index": 0, "task": "tts", "input": {"text": "FlexiSLM supports controllable speech generation."}, "metadata": {"sample_id": "tts-demo"}}
-{"index": 1, "task": "asr", "input": {"audio_path": "/path/to/input.wav"}, "metadata": {"sample_id": "asr-demo"}}
-{"index": 2, "task": "audio_qa", "input": {"audio_path": "/path/to/question.wav", "model_prompt": ""}, "metadata": {"sample_id": "qa-demo"}}
-{"index": 3, "task": "s2s", "input": {"audio_path": "/path/to/input.wav"}, "metadata": {"sample_id": "s2s-demo"}}
+{"index": 1, "task": "asr", "input": {"audio_path": "examples/input.wav"}, "metadata": {"sample_id": "asr-demo"}}
+{"index": 2, "task": "audio_qa", "input": {"audio_path": "examples/question.wav", "model_prompt": ""}, "metadata": {"sample_id": "qa-demo"}}
+{"index": 3, "task": "s2s", "input": {"audio_path": "examples/input.wav"}, "metadata": {"sample_id": "s2s-demo"}}
 ```
 
-Create `/path/to/infer_7b.yaml` and replace the paths:
+Create `examples/infer_7b.yaml`:
 
 ```yaml
 engine:
   config:
-    model_path: /path/to/models/FlexiSLM-7B-Stage2-v1
-    qwen25o_encoder_path: /path/to/models/Qwen2.5-Omni-7B
-    qwen25o_encoder_config_path: /path/to/models/Qwen2.5-Omni-7B/config.json
-    flexicodec_ckpt_path: /path/to/models/FlexiCodec/nartts_flexicodec_only.safetensors
-    flexicodec_config_path: /path/to/models/FlexiCodec/12hz_v1_half_config.yaml
-    sensevoice_path: /path/to/models/SenseVoiceSmall
+    model_path: models/FlexiSLM-7B-Stage2-v1
+    qwen25o_encoder_path: models/Qwen2_5-Omni-Audio_Encoder
+    qwen25o_encoder_config_path: models/Qwen2_5-Omni-Audio_Encoder/config.json
+    flexicodec_ckpt_path: models/FlexiCodec/nartts_flexicodec_only.safetensors
+    flexicodec_config_path: models/FlexiCodec/12hz_v1_half_config.yaml
+    sensevoice_path: models/SenseVoiceSmall
     use_flow_matching_decoder: false
     enable_flexible_framerate: true
     input_framerate: 8.0
@@ -181,17 +205,17 @@ engine:
     attn_implementation: flash_attention_2
 
 input:
-  path: /path/to/requests.jsonl
+  path: examples/requests.jsonl
 
 output:
-  trace_path: /path/to/inference/traces.jsonl
-  audio_dir: /path/to/inference/audio
-  error_path: /path/to/inference/errors.jsonl
+  trace_path: outputs/inference/traces.jsonl
+  audio_dir: outputs/inference/audio
+  error_path: outputs/inference/errors.jsonl
 
 inference:
-  checkpoint: /path/to/models/FlexiSLM-7B-Stage2-v1
+  checkpoint: models/FlexiSLM-7B-Stage2-v1
   target_framerate_hz: 8.0
-  transcribe_model_path: /path/to/models/whisper-large-v3
+  transcribe_model_path: models/whisper-large-v3
   output_sample_rate: 16000
 
 runtime:
@@ -203,7 +227,7 @@ runtime:
 Run the batch inference entrypoint:
 
 ```bash
-python -m src.infer /path/to/infer_7b.yaml
+python -m src.infer examples/infer_7b.yaml
 ```
 
 The runner writes one unified JSONL trace and stores generated speech under `output.audio_dir`.
@@ -216,16 +240,7 @@ We open-source the data produced by the following pipeline:
 2. **Speech synthesis.** Responses are synthesized with Qwen3-TTS, while prompts are synthesized with Fish-Audio using randomly sampled speaker prompts. The resulting 4.2M samples and approximately 26K hours of audio are released as [FlexiSLM-Data-4M-s2s](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-4M-s2s).
 3. **Quality filtering and compression.** Stricter filtering is applied and all audio is converted to MP3. The compact release contains 2.43M samples and approximately 14.8K hours of audio in about 385 GB: [FlexiSLM-Data-2M-s2s-compact](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-2M-s2s-compact).
 
-Download the compact training set with:
-
-```bash
-DATA_ROOT=/path/to/data
-hf download FlexiSLM/FlexiSLM-Data-2M-s2s-compact \
-  --repo-type dataset \
-  --local-dir "$DATA_ROOT/FlexiSLM-Data-2M-s2s-compact"
-```
-
-The compact release uses native WebDataset shards. Each sample contains a question, a response, and JSON metadata:
+The compact training set downloaded above uses native WebDataset shards. Each sample contains a question, a response, and JSON metadata:
 
 ```text
 00000001.question.mp3
@@ -236,7 +251,7 @@ The compact release uses native WebDataset shards. Each sample contains a questi
 Training shards follow this pattern:
 
 ```text
-/path/to/data/FlexiSLM-Data-2M-s2s-compact/data/train-{00000..00242}-of-00243.tar
+data/training/FlexiSLM-Data-2M-s2s-compact/data/train-{00000..00242}-of-00243.tar
 ```
 
 ## Training
@@ -247,39 +262,14 @@ FlexiSLM training has three stages:
 2. **Multi-task LoRA fine-tuning.** Train the Talker and input modules while adapting the Thinker with LoRA.
 3. **Full fine-tuning.** Merge the Stage 2 LoRA weights into the Thinker, enable the Talker-to-Thinker connection, and train all model components.
 
-### 1. Model Download
+### 1. Data Configuration
 
-```bash
-MODEL_ROOT=/path/to/models
-mkdir -p "$MODEL_ROOT/FlexiCodec"
-hf download Qwen/Qwen2.5-7B-Instruct \
-  --local-dir "$MODEL_ROOT/Qwen2.5-7B-Instruct"
-hf download Qwen/Qwen2.5-Omni-7B \
-  --local-dir "$MODEL_ROOT/Qwen2.5-Omni-7B"
-hf download iic/SenseVoiceSmall \
-  --local-dir "$MODEL_ROOT/SenseVoiceSmall"
-hf download jiaqili3/flexicodec \
-  12hz_v1_half_config.yaml nartts_flexicodec_only.safetensors \
-  --local-dir "$MODEL_ROOT/FlexiCodec"
-```
-
-In each of `config/train_stage1.yaml`, `config/train_stage2.yaml`, and `config/train_stage3.yaml`, replace the `/path/to/models/...` values for:
-
-- `model_name_or_path`, `config_name`, and `tokenizer_name`
-- `qwen25omni_encoder_path` and `qwen25omni_encoder_config_path`
-- `flexicodec_config_path` and `flexicodec_ckpt_path`
-- `sensevoice_small_path`
-
-Stage 2 additionally requires `resume_from_checkpoint` to point to the exported Stage 1 model. Stage 3 requires `resume_from_checkpoint` to point to a Stage 2 checkpoint whose LoRA weights have already been merged.
-
-### 2. Data Configuration
-
-Download a released dataset as described in [Data](#data), then edit:
+The committed recipes use the compact dataset downloaded in [Download Models and Datasets](#download-models-and-datasets):
 
 - `config/datasets/train_stage1.yaml` for Stage 1
 - `config/datasets/train_stage2_3.yaml` for Stages 2 and 3
 
-Replace the shard path under `dataset.speech2speech.data_paths`:
+Both point to:
 
 ```yaml
 dataset_backend: webdataset_stream
@@ -289,14 +279,14 @@ dataset:
     ratio: 1.0
     data_format: webdataset_stream
     data_paths:
-      - /path/to/data/FlexiSLM-Data-2M-s2s-compact/data/train-{00000..00242}-of-00243.tar
+      - data/training/FlexiSLM-Data-2M-s2s-compact/data/train-{00000..00242}-of-00243.tar
     webdataset:
       layout: s2s_pair
 ```
 
 The provided recipe uses 60,645 batches per epoch, corresponding to 2,425,778 training samples with 8 GPUs and 5 samples per GPU. Adjust `webdataset_runtime.sampling.steps_per_epoch` when changing the GPU count or per-device batch size.
 
-### 3. Launch Training
+### 2. Launch Training
 
 Training arguments are stored in YAML files under `config/`; launchers live under `scripts/`:
 
@@ -318,81 +308,67 @@ YAML values can be overridden on the command line:
 
 ```bash
 bash scripts/train_stage2.sh \
-  --resume_from_checkpoint /path/to/stage1_checkpoint \
-  --output_dir /path/to/outputs/stage2 \
+  --resume_from_checkpoint outputs/train_stage1/exported_model \
+  --output_dir outputs/train_stage2 \
   --learning_rate 2e-5
 ```
 
 Use the shared launcher for a custom configuration:
 
 ```bash
-bash scripts/train.sh /path/to/train.yaml
+bash scripts/train.sh config/train_stage2.yaml
 ```
 
 The shared launcher uses Accelerate by default. Stage 3 selects DeepSpeed with `config/ds_config_zero2.json`; set `FLEXISLM_LAUNCHER` and `DEEPSPEED_CONFIG` to override the launcher or ZeRO configuration. GPU and distributed settings are detected by `scripts/env.sh`.
 
 ## Evaluation
 
-FlexiSLM uses [Kimi-Audio-Evalkit](https://github.com/MoonshotAI/Kimi-Audio-Evalkit) to evaluate VoiceBench, OpenAudioBench, LibriSpeech, LibriSpeech-PC, and SeedTTS-Eval. Inference and scoring are separate.
+FlexiSLM uses the bundled [Kimi-Audio-Evalkit](https://github.com/petrichor20211/Kimi-Audio-Evalkit) submodule to evaluate VoiceBench, OpenAudioBench, and LibriSpeech. Inference and scoring are separate. Run all commands below from the FlexiSLM repository root.
 
-### 1. Setup
+A fresh `--recurse-submodules` clone already contains the Evalkit. For an existing clone, initialize it with `git submodule update --init --recursive`. Install its requirements and download the benchmark data as described above.
 
-```bash
-git clone https://github.com/MoonshotAI/Kimi-Audio-Evalkit.git
-cd Kimi-Audio-Evalkit
-pip install -r requirements.txt
-```
-
-Follow `Kimi-Audio-Evalkit/data/README.md` to download the desired benchmarks and set `DATASETS.dataset_root` in its `config.yaml`.
-
-### 2. Inference
-
-For VoiceBench or OpenAudioBench, build FlexiSLM requests from the Evalkit data root:
+### 1. Build Requests and Run Inference
 
 ```bash
-cd /path/to/FlexiSLM
 python local/build_vb_oab_requests.py \
   --benchmark voicebench \
-  --data-root /path/to/evalkit/data \
-  --out-dir /path/to/requests/voicebench \
+  --data-root data/benchmarks \
+  --out-dir outputs/evaluation/requests/voicebench \
   --task audio_qa
+python local/build_vb_oab_requests.py \
+  --benchmark openaudiobench \
+  --data-root data/benchmarks \
+  --out-dir outputs/evaluation/requests/openaudiobench \
+  --task audio_qa
+python local/build_librispeech_requests.py \
+  --data-root data/benchmarks \
+  --out-dir outputs/evaluation/requests/librispeech
 ```
 
-Run each generated request file through `python -m src.infer` using an inference YAML like the one in [Inference](#inference). Keep one `traces.jsonl` per benchmark subset.
-
-### 3. Scoring
-
-Create an evaluation YAML like `/path/to/eval_voicebench.yaml`:
-
-```yaml
-evalkit_path: /path/to/Kimi-Audio-Evalkit
-data_root: /path/to/evalkit/data
-model_name: FlexiSLM-7B-Stage2-v1
-judge_model: gpt-4o-mini
-
-jobs:
-  - name: voicebench_openbookqa
-    benchmark: voicebench
-    dataset: openbookqa
-    method: vb-mcq
-    trace_file: /path/to/inference/openbookqa/traces.jsonl
-    result_path: /path/to/evaluation/openbookqa_performance.json
-```
-
-Then run:
+Run all ten inference jobs with the committed configuration. The launcher detects the available GPUs and writes every trace to the path expected by `config/eval_benchmarks.yaml`:
 
 ```bash
-cd /path/to/FlexiSLM
-python -m src.eval /path/to/eval_voicebench.yaml
+bash scripts/infer_benchmarks.sh
 ```
 
-Rule-based subsets do not require an API key. LLM-judged subsets such as `alpacaeval_full`, `commoneval`, and OpenAudioBench require an OpenAI-compatible judge credential:
+### 2. Scoring
+
+Export the DeepSeek API key and run the committed evaluation configuration directly:
 
 ```bash
-export OPENAI_API_KEY=your_api_key
+export DEEPSEEK_API_KEY="your_deepseek_api_key"
+python -m src.eval config/eval_benchmarks.yaml
 ```
 
-Add one job per trace file. Supported `benchmark` values are `voicebench`, `openaudiobench`, `librispeech`, `librispeech_pc`, and `seedtts_eval`. For LibriSpeech, LibriSpeech-PC, and SeedTTS-Eval jobs, set `task` to `asr` or `tts`. Use `python -m src.eval --help` for job selection options.
+Results are written to `outputs/evaluation/results/`. To run selected jobs only, repeat `--job`, for example:
+
+```bash
+python -m src.eval config/eval_benchmarks.yaml \
+  --job voicebench_openbookqa \
+  --job librispeech_test-clean
+```
+
+The committed configuration covers VoiceBench, OpenAudioBench, and LibriSpeech `test-clean`/`test-other` ASR WER. Use `python -m src.eval --help` for all job selection options.
 
 ## Citation
 

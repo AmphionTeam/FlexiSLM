@@ -1,4 +1,4 @@
-# Replace /path/to/data with the directory used by `hf download` in README.md.
+# Paths are relative to the repository root and match README.md.
 dataset_backend: webdataset_stream
 num_mel_bins: 128
 
@@ -7,7 +7,7 @@ dataset:
     ratio: 1.0
     data_format: webdataset_stream
     data_paths:
-      - /path/to/data/FlexiSLM-Data-2M-s2s-compact/data/train-{00000..00242}-of-00243.tar
+      - data/training/FlexiSLM-Data-2M-s2s-compact/data/train-{00000..00242}-of-00243.tar
     webdataset:
       layout: s2s_pair
       audio_extensions: [wav, flac, mp3, m4a, ogg]

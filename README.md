@@ -1,321 +1,429 @@
-# FlexiSLM: A Spoken Language Model with Dynamic and Controllable Frame Rate
+# FlexiSLM: A Spoken Language Model with Dynamic and Controllable Frame Rates
 
 [![arXiv Paper](https://img.shields.io/badge/arXiv_Paper-2606.31247-b31b1b)](https://arxiv.org/abs/2606.31247)
 [![demo page](https://img.shields.io/badge/Demo_Page-Github.io-blue)](https://flexislm.github.io)
-[![dataset](https://img.shields.io/badge/FlexiSLM_Data-2M_speech2speech-yellow?logo=huggingface&logoColor=white)](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-2M-s2s-compact)
-[![dataset](https://img.shields.io/badge/FlexiSLM_Data-4M_speech2speech-yellow?logo=huggingface&logoColor=white)](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-4M-s2s)
+[![dataset](https://img.shields.io/badge/Data-2M_speech2speech-yellow?logo=huggingface&logoColor=white)](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-2M-s2s-compact)
+[![dataset](https://img.shields.io/badge/Data-4M_speech2speech-yellow?logo=huggingface&logoColor=white)](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-4M-s2s)
 
+## Table of Contents
 
+- [Inference Guide](#inference)
+- [Data Details](#data)
+- [Training Guide](#training-guide)
+- [Evaluation](#evaluation)
+- [Citation](#citation)
+- [Acknowledgements](#acknowledgements)
+- [Appendix: Project Structure](#appendix-project-structure)
 
+## Overview
 
-## About
-This repository contains the code for our paper "FlexiSLM: A Spoken Language Model with Dynamic and Controllable Frame Rate". Reproduced data and checkpoints, along with complete guide to train with the data, will be released soon this month.
+This repository contains the code for our paper, "FlexiSLM: A Spoken Language Model with Dynamic and Controllable Frame Rates."
 
-
-About our paper: FlexiSLM is the first SLM that supports *dynamic* and *controllable* frame rates on both speech input and output. A single trained model can be steered between 12.5 Hz down to 4.0 Hz without retraining, and its dynamic frame rate mechanism adapts to the varying complexity of speech. Our paper's key contributions include dynamic frame rate SLM framework and validation, accurate and practical frame rate control, and strong quality-efficiency trade-off.
+FlexiSLM is the first spoken language model that supports *dynamic* and *controllable* frame rates on both speech input and output. A single trained model can be steered between 12.5 Hz and 4.0 Hz without retraining, while its dynamic frame-rate mechanism adapts to the varying complexity of speech. FlexiSLM uses a Thinker-Talker architecture with dynamic frame-rate compression on speech input and controllable frame-rate generation on speech output.
 
 <!-- ![FlexiSLM architecture](assets/flexislm_architecture.png) -->
 
-Overall FlexiSLM architecture is a Thinker-Talker model with dynamic frame-rate compression on speech input and controllable frame-rate generation on speech output.
-
-<!-- The architecture of FlexiSLM is shown in the figure above.  -->
-
 ## News
-- **August 6, 2026: Data release**. We have released training data resources on HuggingFace, including [FlexiSLM/FlexiSLM-Data-4M-s2s](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-4M-s2s), [FlexiSLM/FlexiSLM-Data-2M-s2s-compact](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-2M-s2s-compact), [FlexiSLM/FlexiSLM-Data-5M-t2t](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-5M-t2t). These data are reproduced based on the paper's data pipeline.
-- **August 2, 2026: Code release**. We have released the training and inference code of FlexiSLM-7B.
-- Before September 1, 2026: Planned Reproduced checkpoint release: We plan to release a reproduced version of FlexiSLM-7B and 0.5B. We plan to release them before September 2026. 
 
-## FlexiSLM-Data
-We open-source FlexiSLM-Data constructed using the following pipeline:
+- **August 20, 2026: Checkpoint release.** We released the reproduced [FlexiSLM-7B Stage 2 checkpoint](https://huggingface.co/FlexiSLM/FlexiSLM-7B-Stage2).
+- **August 6, 2026: Data release.** We released [FlexiSLM-Data-4M-s2s](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-4M-s2s), [FlexiSLM-Data-2M-s2s-compact](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-2M-s2s-compact), and [FlexiSLM-Data-5M-t2t](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-5M-t2t).
+- **August 2, 2026: Code release.** We released the FlexiSLM-7B training and inference code.
 
-1. **Prompt collection and response generation.** 
-Text prompts are collected from public QA,
-   instruction-following, and dialogue datasets (see the table below). 
-Then, all text responses are generated with Qwen3-Omni-30B-A3B. The 5M samples data collected after this stage is released in [🤗FlexiSLM/FlexiSLM-Data-5M-t2t](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-5M-t2t)
-2. **Speech synthesis.** Responses are synthesized with **Qwen3-TTS**. Prompts are synthesized with
-   Fish-Audio TTS](https://huggingface.co/fishaudio/s1-mini), with random speaker prompts. 
-   After this stage, there are 4.2M samples and 26k hours of audio shipped here in [🤗FlexiSLM/FlexiSLM-Data-4M-s2s](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-4M-s2s).
-3. **Quality filtering and mp3-format compression**. Apply more strict filtering and converts all audios to mp3 format. This results in 2M samples and 15k hours of audio, released in [🤗FlexiSLM/FlexiSLM-Data-2M-s2s-compact](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-2M-s2s-compact)). The size of this dataset is less than 500G.
 
+## Installation
+
+```bash
+git clone --recurse-submodules https://github.com/AmphionTeam/FlexiSLM.git
+cd FlexiSLM
+pip install -r requirements.txt
+```
+
+## Inference
+
+### 1. Python API (with Automatic downloading)
+
+Set `auto_download=True` to download the default FlexiSLM-7B Stage 2 checkpoint, Qwen2.5-Omni audio encoder, SenseVoice, and FlexiCodec files into `models/` on first run. Later runs reuse the local copies.
+
+```python
+from pathlib import Path
+
+import soundfile as sf
+import torch
+
+from src.inference_flexislm import (
+    FlexiSLMInferenceConfig,
+    FlexiSLMInference,
+)
+
+config = FlexiSLMInferenceConfig(
+    auto_download=True,
+    use_flow_matching_decoder=False,
+    enable_flexible_framerate=True,
+    input_framerate=8.0,
+    default_framerate=8.0,
+    decode_audio=True,
+    torch_dtype="bfloat16",
+    attn_implementation="flash_attention_2",
+)
+engine = FlexiSLMInference(config, device="cuda:0")
+
+
+def save_audio(result, output_path):
+    waveform = result.get("audio")
+    if waveform is None:
+        raise RuntimeError("The model did not return decoded audio")
+    if torch.is_tensor(waveform):
+        waveform = waveform.detach().float().cpu().numpy()
+    sf.write(Path(output_path), waveform.squeeze(), 16_000)
+
+
+# Text-to-speech
+result = engine.generate_tts(
+    sentence="FlexiSLM supports controllable speech generation.",
+    framerate=8.0,
+)
+save_audio(result, "tts.wav")
+
+# Automatic speech recognition
+result = engine.generate_from_audio(
+    audio_path="examples/input.wav",
+    text_query="Please transcribe the audio.",
+    framerate=8.0,
+    output_text_only=True,
+)
+print(result["text"])
+
+# Audio question answering
+result = engine.generate_from_audio(
+    audio_path="examples/question.wav",
+    text_query="",
+    framerate=8.0,
+    output_text_only=True,
+)
+print(result["text"])
+
+# Speech-to-speech generation
+result = engine.generate_from_audio(
+    audio_path="examples/input.wav",
+    text_query="",
+    framerate=8.0,
+    output_text_only=False,
+)
+save_audio(result, "s2s.wav")
+```
+
+#### Python API (Manual downloading)
+
+```bash
+MODEL_ROOT="$PWD/models"
+
+hf download FlexiSLM/FlexiSLM-7B-Stage2 --local-dir "$MODEL_ROOT/FlexiSLM-7B-Stage2"
+hf download FlexiSLM/Qwen2_5-Omni-Audio_Encoder --local-dir "$MODEL_ROOT/Qwen2_5-Omni-Audio_Encoder"
+hf download FunAudioLLM/SenseVoiceSmall --local-dir "$MODEL_ROOT/SenseVoiceSmall"
+hf download jiaqili3/flexicodec 12hz_v1_half_config.yaml nartts_flexicodec_only.safetensors --local-dir "$MODEL_ROOT/FlexiCodec"
+```
+
+Then point the config at those directories:
+
+```python
+from pathlib import Path
+
+import soundfile as sf
+import torch
+
+from src.inference_flexislm import (
+    FlexiSLMInferenceConfig,
+    FlexiSLMInference,
+)
+
+model_root = Path.cwd() / "models"
+config = FlexiSLMInferenceConfig(
+    model_path=str(model_root / "FlexiSLM-7B-Stage2"),
+    qwen25o_encoder_path=str(model_root / "Qwen2_5-Omni-Audio_Encoder"),
+    qwen25o_encoder_config_path=str(
+        model_root / "Qwen2_5-Omni-Audio_Encoder/config.json"
+    ),
+    flexicodec_ckpt_path=str(
+        model_root / "FlexiCodec/nartts_flexicodec_only.safetensors"
+    ),
+    flexicodec_config_path=str(model_root / "FlexiCodec/12hz_v1_half_config.yaml"),
+    sensevoice_path=str(model_root / "SenseVoiceSmall"),
+    use_flow_matching_decoder=False,
+    enable_flexible_framerate=True,
+    input_framerate=8.0,
+    default_framerate=8.0,
+    decode_audio=True,
+    torch_dtype="bfloat16",
+    attn_implementation="flash_attention_2",
+)
+engine = FlexiSLMInference(config, device="cuda:0")
+
+
+def save_audio(result, output_path):
+    waveform = result.get("audio")
+    if waveform is None:
+        raise RuntimeError("The model did not return decoded audio")
+    if torch.is_tensor(waveform):
+        waveform = waveform.detach().float().cpu().numpy()
+    sf.write(Path(output_path), waveform.squeeze(), 16_000)
+
+
+# Text-to-speech
+result = engine.generate_tts(
+    sentence="FlexiSLM supports controllable speech generation.",
+    framerate=8.0,
+)
+save_audio(result, "tts.wav")
+
+# Automatic speech recognition
+result = engine.generate_from_audio(
+    audio_path="examples/input.wav",
+    text_query="Please transcribe the audio.",
+    framerate=8.0,
+    output_text_only=True,
+)
+print(result["text"])
+
+# Audio question answering
+result = engine.generate_from_audio(
+    audio_path="examples/question.wav",
+    text_query="",
+    framerate=8.0,
+    output_text_only=True,
+)
+print(result["text"])
+
+# Speech-to-speech generation
+result = engine.generate_from_audio(
+    audio_path="examples/input.wav",
+    text_query="",
+    framerate=8.0,
+    output_text_only=False,
+)
+save_audio(result, "s2s.wav")
+```
+
+A minimal notebook is available at `examples/inference.ipynb`.
+
+### 2. Batch Inference
+
+Batch inference reads requests from JSONL and uses a YAML file for model, input, output, and multi-GPU runtime settings. Create `examples/requests.jsonl`:
+
+```jsonl
+{"index": 0, "task": "tts", "input": {"text": "FlexiSLM supports controllable speech generation."}, "metadata": {"sample_id": "tts-demo"}}
+{"index": 1, "task": "asr", "input": {"audio_path": "examples/input.wav"}, "metadata": {"sample_id": "asr-demo"}}
+{"index": 2, "task": "audio_qa", "input": {"audio_path": "examples/question.wav", "model_prompt": ""}, "metadata": {"sample_id": "qa-demo"}}
+{"index": 3, "task": "s2s", "input": {"audio_path": "examples/input.wav"}, "metadata": {"sample_id": "s2s-demo"}}
+```
+
+Create `examples/infer_7b.yaml`:
+
+```yaml
+engine:
+  config:
+    model_path: models/FlexiSLM-7B-Stage2
+    qwen25o_encoder_path: models/Qwen2_5-Omni-Audio_Encoder
+    qwen25o_encoder_config_path: models/Qwen2_5-Omni-Audio_Encoder/config.json
+    flexicodec_ckpt_path: models/FlexiCodec/nartts_flexicodec_only.safetensors
+    flexicodec_config_path: models/FlexiCodec/12hz_v1_half_config.yaml
+    sensevoice_path: models/SenseVoiceSmall
+    use_flow_matching_decoder: false
+    enable_flexible_framerate: true
+    input_framerate: 8.0
+    default_framerate: 8.0
+    decode_audio: true
+    torch_dtype: bfloat16
+    attn_implementation: flash_attention_2
+
+input:
+  path: examples/requests.jsonl
+
+output:
+  trace_path: outputs/inference/traces.jsonl
+  audio_dir: outputs/inference/audio
+  error_path: outputs/inference/errors.jsonl
+
+inference:
+  checkpoint: models/FlexiSLM-7B-Stage2
+  target_framerate_hz: 8.0
+  transcribe_model_path: models/whisper-large-v3
+  output_sample_rate: 16000
+
+runtime:
+  devices: [cuda:0]
+  workers_per_device: 1
+  fail_fast: false
+```
+
+Run the batch inference entrypoint:
+
+```bash
+python -m src.infer examples/infer_7b.yaml
+```
+
+The runner writes one unified JSONL trace and stores generated speech under `output.audio_dir`.
+
+## Data
+
+We open-source the data produced by the following pipeline:
+
+1. **Prompt collection and response generation.** Text prompts are collected from public QA, instruction-following, and dialogue datasets. Responses are generated with Qwen3-Omni-30B-A3B. The resulting text pairs are released as [FlexiSLM-Data-5M-t2t](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-5M-t2t).
+2. **Speech synthesis.** Responses are synthesized with Qwen3-TTS, while prompts are synthesized with Fish-Audio using randomly sampled speaker prompts. The resulting 4.2M samples and approximately 26K hours of audio are released as [FlexiSLM-Data-4M-s2s](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-4M-s2s).
+3. **Quality filtering and compression.** Stricter filtering is applied and all audio is converted to MP3. The compact release contains 2.43M samples and approximately 14.8K hours of audio in about 385 GB: [FlexiSLM-Data-2M-s2s-compact](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-2M-s2s-compact).
+For more details, please refer to the dataset READMEs on huggingface.
 
 ## Training Guide
 
-### Environment Setup
+FlexiSLM training has three stages:
 
-1. Clone the repository:
+1. **Talker and input-module pre-training.** Freeze the Qwen backbone and train the Talker, audio embeddings, and input frame-merging module.
+2. **Multi-task LoRA fine-tuning.** Train the Talker and input modules while adapting the Thinker with LoRA.
+3. **Full fine-tuning.** Merge the Stage 2 LoRA weights into the Thinker, enable the Talker-to-Thinker connection, and train all model components.
+
+### Download additional checkpoints and dataset
 ```bash
-git clone https://github.com/AmphionTeam/FlexiSLM.git
-cd FlexiSLM
+MODEL_ROOT="$PWD/models"
+TRAIN_DATA_ROOT="$PWD/data/training"
+BENCHMARK_DATA_ROOT="$PWD/data/benchmarks"
+
+hf download Qwen/Qwen2.5-7B-Instruct --local-dir "$MODEL_ROOT/Qwen2.5-7B-Instruct"
+hf download Qwen/Qwen2.5-0.5B-Instruct --local-dir "$MODEL_ROOT/Qwen2.5-0.5B-Instruct"
+hf download openai/whisper-large-v3 --local-dir "$MODEL_ROOT/whisper-large-v3"
+
+hf download FlexiSLM/FlexiSLM-Data-2M-s2s-compact \
+  --repo-type dataset \
+  --local-dir "$TRAIN_DATA_ROOT/FlexiSLM-Data-2M-s2s-compact"
+
 ```
 
-2. Install dependencies:
-```bash
-pip install -r requirements.txt
-```
-### Repository Layout
+### 1. Data Configuration
 
-```text
-FlexiSLM/
-├── assets/                 # Static images and other documentation assets
-├── config/                 # Declarative training and runtime configurations
-│   └── datasets/           # Dataset recipes referenced by training configs
-├── examples/               # Small example data and runnable notebooks
-│   └── data/               # Minimal ASR, TTS, and dialogue JSONL samples
-├── local/                  # Offline data preparation, conversion, and audit tools
-├── scripts/                # Thin shell launchers and shared runtime environment setup
-├── src/                    # Reusable training, inference, and model implementation
-│   ├── dataset/            # Dataset loading, preprocessing, and collation
-│   ├── models/             # FlexiSLM model definitions, configs, and loading utilities
-│   ├── processor/          # Text and input processing utilities
-│   └── trainer/            # Trainer implementation and training helpers
-├── README.md               # Installation, training, data, and inference guide
-├── LICENSE                 # Project license
-└── requirements.txt        # Python dependencies
-```
+The committed recipes use the compact dataset downloaded in [Download additional checkpoints and dataset](#download-additional-checkpoints-and-dataset):
 
-Keep datasets, model checkpoints, training outputs, logs, and temporary files outside the repository. Place reusable runtime code under `src/`; reserve `local/` for offline or corpus-specific utilities, and keep `scripts/` limited to executable shell entrypoints.
+- `config/datasets/train_stage1.yaml` for Stage 1
+- `config/datasets/train_stage2_3.yaml` for Stages 2 and 3
 
-### Training Scripts
-FlexiSLM training progresses in 3 stages:
-1. **Talker pre-training.** Freeze the LLM backbone and train only the randomly initialized Talker end to end on about 100K hours of English TTS. We also add ASR data to pretrain the input merging transformer.
-2. **Multi-task LoRA fine-tuning.** Activate the input-side Frame Merging Module, Thinker, and Talker; apply LoRA to the Thinker and train on mixed speech tasks.
-3. **Full fine-tuning.** Continue from Stage 2, merge the LoRA updates into the LLM, train all parameters, and enable the Talker-to-Thinker connection to improve speech perception and generation quality.
-
-
-Training arguments are stored in YAML files under `config/`, while the launch scripts live under `scripts/`:
-
-| Stage | Configuration | Launcher |
-| --- | --- | --- |
-| Stage 1 | `config/train_stage1.yaml` | `scripts/train_stage1.sh` |
-| Stage 2 | `config/train_stage2.yaml` | `scripts/train_stage2.sh` |
-| Stage 3 | `config/train_stage3.yaml` | `scripts/train_stage3.sh` |
-<!-- | Stage 2 (v1 merging) | `config/train_stage2_v1merging.yaml` | `scripts/train_stage2_v1merging.sh` | -->
-
-The YAML values can be overridden from the command line:
-
-```bash
-bash scripts/train_stage2.sh \
-  --learning_rate 2e-5 \
-  --output_dir outputs/custom_stage2
-```
-
-Use the shared launcher to run a custom configuration:
-
-```bash
-bash scripts/train.sh config/train_stage2.yaml
-```
-
-The scripts detect local or distributed GPU settings through `scripts/env.sh`. They are launch templates, so adjust environment-specific paths and cluster settings before use.
-
-### Dataset Preparation Workflow
-
-Prepare your dataset in three steps.
-
-Step 1: format your JSONL like the provided examples:
-- `examples/data/asr.jsonl`
-- `examples/data/tts.jsonl`
-- `examples/data/dialog.jsonl`
-
-The common JSONL format is:
-
-```json
-{
-  "messages": [
-    {"role": "system", "content": "Respond in a text-audio interleaved manner."},
-    {"role": "user", "content": "<|audio|>"},
-    {"role": "assistant", "content": "Hello! <|audio|>"}
-  ],
-  "audios": [
-    "/abspath/to/user.wav",
-    "/abspath/to/assistant.wav"
-  ]
-}
-```
-(system message are always overwritten by Qwen-Omni's system message in our setting. Configure this behavior in src/dataset/interleaved.py)
-
-
-Important constraints:
-- `messages[*].content` containing `<|audio|>` means one audio item should be consumed.
-- The total count of `<|audio|>` placeholders must match `len(audios)` for each sample.
-- `audios` may use absolute paths, or relative paths resolved from `audio_root` in YAML.
-
-Step 2: use the precompute script to append audio duration/token metadata.
-
-Script path:
-- `local/precompute_audio_durations.py`
-
-Single JSONL:
-
-```bash
-python local/precompute_audio_durations.py \
-  --input path/to/train.jsonl \
-  --audio-root path/to/audio_root \
-  --workers 32
-```
-
-Batch mode (process all `data_paths` listed in a YAML file):
-
-```bash
-python local/precompute_audio_durations.py \
-  --yaml path/to/train_recipe.yaml \
-  --workers 32
-```
-
-Output naming:
-- `train.jsonl` -> `train.with_durations.jsonl`
-
-Added fields:
-- `audio_durations`
-- `audio_tokens`
-- `num_tokens_est`
-
-Step 3: update YAML recipes to include your dataset files.
-Then pass the YAML paths to training via `--dataset_name` and `--dataset_name_eval`.
-
-Example YAML:
+Both point to:
 
 ```yaml
-xlsx_sample_num: 5
-audio_root: path/to/audio_root
+dataset_backend: webdataset_stream
 
 dataset:
-  my_train_set:
+  speech2speech:
     ratio: 1.0
+    data_format: webdataset_stream
     data_paths:
-      - path/to/train.with_durations.jsonl
-
-  my_eval_set:
-    ratio: 1.0
-    data_paths:
-      - path/to/eval.with_durations.jsonl
+      - data/training/FlexiSLM-Data-2M-s2s-compact/data/train-{00000..00242}-of-00243.tar
+    webdataset:
+      layout: s2s_pair
 ```
 
-Supported `data_paths` types:
-- JSONL file
-- WebDataset tar path, directory, or glob (`data_format: webdataset`)
-- parquet/local HF dataset path or HF dataset id
+The provided recipe uses 60,645 batches per epoch, corresponding to 2,425,778 training samples with 8 GPUs and 5 samples per GPU. Adjust `webdataset_runtime.sampling.steps_per_epoch` when changing the GPU count or per-device batch size.
 
-For WebDataset, build an index before training so distributed workers do not
-scan every tar shard at startup:
+### 2. Launch Training
+
+Training arguments are stored in YAML files under `config/`; launchers live under `scripts/`:
+
+| Stage | Configuration | Launcher | Initialization |
+| --- | --- | --- | --- |
+| Stage 1 (7B) | `config/train_stage1_7B.yaml` | `scripts/train_stage1_7B.sh` | Qwen2.5-7B base model |
+| Stage 2 (7B) | `config/train_stage2_7B.yaml` | `scripts/train_stage2_7B.sh` | exported Stage 1 checkpoint |
+| Stage 3 (7B) | `config/train_stage3_7B.yaml` | `scripts/train_stage3_7B.sh` | merged Stage 2 checkpoint |
+| Stage 2 (0.5B) | `config/train_stage2_0_5B.yaml` | `scripts/train_stage2_0_5B.sh` | exported 0.5B Stage 1 checkpoint |
+
+Launch each stage after updating its YAML:
 
 ```bash
-python local/precompute_webdataset_index.py \
-  --input 'path/to/shards/*.tar' \
-  --output path/to/train.webdataset.jsonl \
-  --task tts \
-  --prompt-template 'Read the following text out loud: {text}'
+bash scripts/train_stage1_7B.sh
+bash scripts/train_stage2_7B.sh
+bash scripts/train_stage3_7B.sh
 ```
 
-Then point the recipe at both the tar source and precomputed index:
-
-```yaml
-dataset:
-  my_webdataset:
-    ratio: 1.0
-    data_format: webdataset
-    webdataset_index_path: path/to/train.webdataset.jsonl
-    data_paths:
-      - path/to/shards/*.tar
-```
-
-The index stores `wds://<tar>::<member>#ch=<channel>` references. Audio remains
-inside the tar shards and is decoded on demand during training.
-
-Run a one-step Stage 2 smoke test against the local S2S WebDataset with:
+The 0.5B Stage 2 recipe uses `Qwen2.5-0.5B-Instruct` and a larger per-device batch:
 
 ```bash
-bash scripts/debug_stage2_s2s_webdataset.sh
+bash scripts/train_stage2_0_5B.sh
 ```
 
-The launcher indexes four samples from the first training shard, uses one GPU
-by default, disables remote reporting and checkpoint saving, and runs a single
-optimizer step. Override `S2S_DATA_ROOT` or `S2S_DEBUG_SHARD` when needed.
-
-## Inference Guide
-
-Primary inference script: `src/inference_flexislm.py`.
-
-Use:
+YAML values can be overridden on the command line:
 
 ```bash
-python -m src.inference_flexislm --help
+bash scripts/train_stage2_7B.sh \
+  --resume_from_checkpoint outputs/train_stage1_7B/exported_model \
+  --output_dir outputs/train_stage2_7B \
+  --learning_rate 2e-5
 ```
 
-Minimal API examples:
-
-```python
-from src.inference_flexislm import InterleavedInferenceConfig, InterleavedS2SInference
-
-cfg = InterleavedInferenceConfig(
-    model_path="/path/to/flexislm_checkpoint",
-    use_flow_matching_decoder=False,
-    flexicodec_ckpt_path="/path/to/flexicodec_ckpt.safetensors",
-    flexicodec_config_path="/path/to/flexicodec_config.yaml",
-    sensevoice_path="/path/to/SenseVoiceSmall",
-)
-engine = InterleavedS2SInference(cfg, device="cuda")
-
-debug_sentence = "And henry the eighth appropriated to himself the religious house of grey ladies and all the properties appertaining thereto."
-debug_audio_path = "/path/to/input_audio.wav"
-
-# Text-to-Speech Synthesis
-tts = engine.generate_tts(
-    sentence=debug_sentence,
-    framerate=1.0,
-)
-
-# Text-to-Speech
-t2s = engine.generate_from_text(
-    text_input=f"Please read the following text: {debug_sentence}",
-    history="",
-    framerate=1.0,
-    output_text_only=False,
-)
-
-# Speech-to-Speech
-s2s = engine.generate_from_audio(
-    audio_path=debug_audio_path,
-    text_query="Please respond naturally to the audio in speech.",
-    history="",
-    framerate=1.0,
-    output_text_only=False,
-)
-
-# Speech-to-Text
-s2t = engine.generate_from_audio(
-    audio_path=debug_audio_path,
-    text_query="Please transcribe the speech in the audio.",
-    history="",
-    framerate=1.0,
-    output_text_only=True,
-)
-
-# Text-to-Text
-t2t = engine.generate_from_text(
-    text_input="What is dynamic frame rate in speech modeling? Answer in one sentence.",
-    history="",
-    framerate=1.0,
-    output_text_only=True,
-)
-```
-
-Quick debug run (same five modes in script):
+Use the shared launcher for a custom configuration:
 
 ```bash
-python -m src.inference_flexislm \
-  --model_path /path/to/flexislm_checkpoint \
-  --debug \
-  --debug_audio_path /path/to/input_audio.wav
+bash scripts/train.sh config/train_stage2_7B.yaml
 ```
 
-Minimal notebook example (imports inference module and runs T2T/S2T/TTS):
+The shared launcher uses Accelerate by default. Stage 3 selects DeepSpeed with `config/ds_config_zero2.json`; set `FLEXISLM_LAUNCHER` and `DEEPSPEED_CONFIG` to override the launcher or ZeRO configuration. GPU and distributed settings are detected by `scripts/env.sh`.
+
+## Evaluation
+
+FlexiSLM uses the bundled [Kimi-Audio-Evalkit](https://github.com/petrichor20211/Kimi-Audio-Evalkit) submodule to evaluate VoiceBench, OpenAudioBench, and LibriSpeech. Inference and scoring are separate. Run all commands below from the FlexiSLM repository root.
+
+A fresh `--recurse-submodules` clone already contains the Evalkit. For an existing clone, initialize it with `git submodule update --init --recursive`. Then install the Evalkit requirements (not needed for training or inference) and download the benchmark data:
 
 ```bash
-examples/inference.ipynb
+pip install -r Kimi-Audio-Evalkit/requirements.txt
+
+BENCHMARK_DATA_ROOT="$PWD/data/benchmarks"
+python Kimi-Audio-Evalkit/data/download_benchmark.py \
+  --datasets VoiceBench,OpenAudioBench,LibriSpeech \
+  --output-dir "$BENCHMARK_DATA_ROOT"
 ```
 
-## Citation and Acknowledgements
+### 1. Build Requests and Run Inference
+
+```bash
+python local/build_vb_oab_requests.py \
+  --benchmark voicebench \
+  --data-root data/benchmarks \
+  --out-dir outputs/evaluation/requests/voicebench \
+  --task audio_qa
+python local/build_vb_oab_requests.py \
+  --benchmark openaudiobench \
+  --data-root data/benchmarks \
+  --out-dir outputs/evaluation/requests/openaudiobench \
+  --task audio_qa
+python local/build_librispeech_requests.py \
+  --data-root data/benchmarks \
+  --out-dir outputs/evaluation/requests/librispeech
+```
+
+Run all ten inference jobs with the committed configuration. The launcher detects the available GPUs and writes every trace to the path expected by `config/eval_benchmarks.yaml`:
+
+```bash
+bash scripts/infer_benchmarks.sh
+```
+
+### 2. Scoring
+
+Export the DeepSeek API key and run the committed evaluation configuration directly:
+
+```bash
+export DEEPSEEK_API_KEY="your_deepseek_api_key"
+python -m src.eval config/eval_benchmarks.yaml
+```
+
+Results are written to `outputs/evaluation/results/`. To run selected jobs only, repeat `--job`, for example:
+
+```bash
+python -m src.eval config/eval_benchmarks.yaml \
+  --job voicebench_openbookqa \
+  --job librispeech_test-clean
+```
+
+The committed configuration covers VoiceBench, OpenAudioBench, and LibriSpeech `test-clean`/`test-other` ASR WER. Use `python -m src.eval --help` for all job selection options.
+
+## Citation
+
 If you find our work useful, please consider citing:
+
 ```bibtex
 @misc{li2026flexislmdynamiccontrollableframe,
       title={FlexiSLM: A Dynamic and Controllable Frame Rate Spoken Language Model},
@@ -328,12 +436,37 @@ If you find our work useful, please consider citing:
 }
 ```
 
-Acknowledgements:
-- Our work uses Qwen 2.5 as the backbone and [Qwen 2.5-Omni](https://github.com/qwenlm/qwen2.5-omni) as audio encoder. 
-- Our training framework is largely based on Huggingface [Transformers](https://github.com/huggingface/transformers).
-- Our previous open-source works [FlexiCodec](https://github.com/AmphionTeam/FlexiCodec) and [DualCodec](https://github.com/jiaqili3/DualCodec) are foundational to this work.
+## Acknowledgements
 
+- Our work uses Qwen 2.5 as the backbone and [Qwen2.5-Omni](https://github.com/QwenLM/Qwen2.5-Omni) as the audio encoder.
+- Our training framework is largely based on [Transformers](https://github.com/huggingface/transformers).
+- Our evaluation uses [Kimi-Audio-Evalkit](https://github.com/MoonshotAI/Kimi-Audio-Evalkit)
+- Our previous open-source works [FlexiCodec](https://github.com/AmphionTeam/FlexiCodec) and [DualCodec](https://github.com/jiaqili3/DualCodec) are foundational to this work.
 
 ## License
 
-This project is licensed under the MIT License. 
+This project is licensed under the MIT License.
+
+## Appendix: Project Structure
+If you want to understand the project structure, you can refer to the following:
+```text
+FlexiSLM/
+├── assets/                 # Documentation and demo assets
+├── config/                 # Training and dataset YAML configurations
+│   └── datasets/           # Dataset recipes used by training
+├── data/                   # Downloaded data
+│   ├── benchmarks/         # VoiceBench, OpenAudioBench, and LibriSpeech
+│   └── training/           # Released FlexiSLM training datasets
+├── examples/               # Inference notebook and small examples
+├── local/                  # Data conversion and benchmark request tools
+├── Kimi-Audio-Evalkit/     # Evaluation toolkit
+├── models/                 # Downloaded models
+├── scripts/                # Training launchers and runtime setup
+├── src/                    # Model, training, inference, and evaluation code
+│   ├── dataset/            # Dataset loading and collation
+│   ├── eval/               # Kimi-Audio-Evalkit adapters
+│   ├── infer/              # YAML-driven inference runner
+│   ├── models/             # FlexiSLM and vendored FlexiCodec implementation
+    └── trainer/            # Trainer implementation
+```
+

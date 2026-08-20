@@ -9,7 +9,6 @@ import pdb
 import re
 import subprocess
 import sys
-import tarfile
 import traceback
 import uuid
 
@@ -23,349 +22,6 @@ from torchvision.transforms import InterpolationMode
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
-
-HUMAN_ROLES = {"user", "human"}
-ASSISTANT_ROLES = {"assistant", "gpt", "assistant_content"}
-AUDIO_EXTENSIONS = (".wav", ".flac", ".mp3", ".m4a", ".ogg")
-WEBDATASET_DEBUG_COLUMNS = (
-    "webdataset_tar_path",
-    "webdataset_audio_member",
-    "webdataset_audio_variant",
-)
-
-
-def _jsonl_with_durations_path(jsonl_path: str) -> str:
-    base, ext = os.path.splitext(jsonl_path)
-    return f"{base}.with_durations{ext}"
-
-
-def _precompute_audio_durations_script_path() -> str:
-    # Repo root: FlexiSLM/src/dataset/ -> ../../local/
-    return os.path.normpath(
-        os.path.join(
-            os.path.dirname(os.path.abspath(__file__)),
-            "..",
-            "..",
-            "local",
-            "precompute_audio_durations.py",
-        )
-    )
-
-
-def _collect_webdataset_tar_paths(data_path: str) -> list:
-    if not isinstance(data_path, str) or not data_path:
-        return []
-    if any(ch in data_path for ch in ["*", "?", "["]):
-        paths = sorted(glob.glob(data_path))
-        return [os.path.abspath(p) for p in paths if os.path.isfile(p) and p.endswith(".tar")]
-    if os.path.isfile(data_path) and data_path.endswith(".tar"):
-        return [os.path.abspath(data_path)]
-    if os.path.isdir(data_path):
-        tar_paths = sorted(glob.glob(os.path.join(data_path, "**", "*.tar"), recursive=True))
-        return [os.path.abspath(p) for p in tar_paths if os.path.isfile(p)]
-    return []
-
-
-def _first_turn_audio_roles(messages) -> list:
-    if not isinstance(messages, list) or not messages:
-        return []
-    msgs = list(messages)
-    if isinstance(msgs[0], dict) and str(msgs[0].get("role", "")).lower() == "system":
-        msgs = msgs[1:]
-    if not msgs:
-        return []
-
-    first_user_idx = None
-    first_assistant_idx = None
-    for idx, msg in enumerate(msgs):
-        if not isinstance(msg, dict):
-            continue
-        role = str(msg.get("role", "")).lower()
-        if first_user_idx is None and role in HUMAN_ROLES:
-            first_user_idx = idx
-        elif first_user_idx is not None and role in ASSISTANT_ROLES:
-            first_assistant_idx = idx
-            break
-
-    if first_user_idx is None:
-        return []
-    if first_assistant_idx is None:
-        kept = msgs[first_user_idx : first_user_idx + 1]
-    else:
-        kept = msgs[first_user_idx : first_assistant_idx + 1]
-
-    roles = []
-    for msg in kept:
-        if not isinstance(msg, dict):
-            continue
-        content = str(msg.get("content", ""))
-        if "<|audio|>" in content:
-            roles.append(str(msg.get("role", "")).lower())
-    return roles
-
-
-def _choose_member_from_json(sample: dict, audio_variant: str) -> str:
-    variant = str(audio_variant or "noisy").strip().lower()
-    if variant == "nonoise":
-        audios_nonoise = sample.get("audios_nonoise")
-        if isinstance(audios_nonoise, list) and audios_nonoise and isinstance(audios_nonoise[0], str):
-            return audios_nonoise[0]
-        variants = sample.get("audio_variants")
-        if isinstance(variants, dict):
-            nonoise_name = variants.get("nonoise")
-            if isinstance(nonoise_name, str) and nonoise_name:
-                return nonoise_name
-
-    audios = sample.get("audios")
-    if isinstance(audios, list) and audios and isinstance(audios[0], str):
-        return audios[0]
-    variants = sample.get("audio_variants")
-    if isinstance(variants, dict):
-        noisy_name = variants.get("noisy")
-        if isinstance(noisy_name, str) and noisy_name:
-            return noisy_name
-    for key in ("wav", "audio", "audio_path", "path"):
-        value = sample.get(key)
-        if isinstance(value, str) and value:
-            return value
-    return ""
-
-
-def _lookup_tar_member(member_names: set, name: str) -> str:
-    if not isinstance(name, str) or not name:
-        return ""
-    clean = name.replace("\\", "/")
-    stripped = clean.lstrip("./")
-    candidates = [
-        clean,
-        stripped,
-        f"./{stripped}",
-        os.path.basename(stripped),
-        f"./{os.path.basename(stripped)}",
-    ]
-    for candidate in candidates:
-        if candidate in member_names:
-            return candidate
-    return ""
-
-
-def _find_sibling_audio_member(json_member: str, member_names: set) -> str:
-    base, _ = os.path.splitext(json_member)
-    for ext in AUDIO_EXTENSIONS:
-        found = _lookup_tar_member(member_names, f"{base}{ext}")
-        if found:
-            return found
-    return ""
-
-
-def _resolve_webdataset_audio_members(
-    sample: dict,
-    json_member: str,
-    member_names: set,
-    audio_variant: str,
-) -> list:
-    variant = str(audio_variant or "noisy").strip().lower()
-    candidates = sample.get("audios_nonoise") if variant == "nonoise" else None
-    if not isinstance(candidates, list) or not candidates:
-        candidates = sample.get("audios")
-
-    if isinstance(candidates, list) and candidates:
-        resolved = [_lookup_tar_member(member_names, item) for item in candidates]
-        if all(resolved):
-            return resolved
-
-    candidate = _choose_member_from_json(sample, audio_variant)
-    found = _lookup_tar_member(member_names, candidate)
-    if found:
-        return [found]
-
-    sibling = _find_sibling_audio_member(json_member, member_names)
-    return [sibling] if sibling else []
-
-
-def _format_audio_text_webdataset_row(
-    sample: dict,
-    tar_path: str,
-    audio_member: str,
-    data_info: dict,
-) -> dict:
-    text_key = str(data_info.get("text_key", "text"))
-    text = str(sample.get(text_key, "")).strip()
-    if not text:
-        return {}
-
-    task = str(data_info.get("webdataset_task", data_info.get("task", "tts"))).strip().lower()
-    audio_ref = f"wds://{tar_path}::{audio_member}#ch=0"
-    row = {}
-
-    if task in {"asr", "s2t", "speech_to_text"}:
-        prompt = str(data_info.get("asr_prompt", "Transcribe the following audio:"))
-        row["messages"] = [
-            {"role": "user", "content": f"{prompt}<|audio|>"},
-            {"role": "assistant", "content": text},
-        ]
-    else:
-        prompt_template = str(
-            data_info.get(
-                "tts_prompt_template",
-                "Read the following text out loud: {text}",
-            )
-        )
-        row["messages"] = [
-            {"role": "user", "content": prompt_template.format(text=text)},
-            {"role": "assistant", "content": f"{text}<|audio|>"},
-        ]
-
-    row["audios"] = [audio_ref]
-    duration = sample.get("duration")
-    if duration is not None:
-        try:
-            row["audio_durations"] = [float(duration)]
-        except Exception:
-            pass
-    return row
-
-
-def _build_wds_audio_refs(sample: dict, tar_path: str, audio_members: list) -> list:
-    roles = _first_turn_audio_roles(sample.get("messages", []))
-    if len(audio_members) > 1:
-        # Separate per-turn members, as used by the FlexiSLM S2S shards.
-        return [f"wds://{tar_path}::{member}#ch=0" for member in audio_members]
-
-    audio_member = audio_members[0]
-    if roles:
-        # A single multi-channel member stores user/assistant audio in channels 0/1.
-        return [
-            f"wds://{tar_path}::{audio_member}#ch={1 if role in ASSISTANT_ROLES else 0}"
-            for role in roles
-        ]
-    return [f"wds://{tar_path}::{audio_member}#ch=0"]
-
-
-def _iter_webdataset_rows(
-    tar_paths,
-    data_info,
-    audio_variant,
-    max_rows=None,
-    tar_fingerprint=None,
-    log_label="WebDataset",
-):
-    _ = tar_fingerprint
-    total_tars = len(tar_paths)
-    yielded = 0
-    log_interval_samples = 10000
-    tar_completed = 0
-    for tar_path in tar_paths:
-        try:
-            with tarfile.open(tar_path, mode="r") as tf:
-                json_members = []
-                member_names = set()
-                for member in tf:
-                    if not member.isfile():
-                        continue
-                    member_names.add(member.name)
-                    if member.name.lower().endswith(".json"):
-                        json_members.append(member)
-                for member in json_members:
-                    if max_rows is not None and yielded >= max_rows:
-                        logger.info(
-                            f"{log_label}: reached max_rows={max_rows} after {yielded} samples "
-                            f"from {tar_completed}/{total_tars} tars, stopping"
-                        )
-                        return
-                    try:
-                        fp = tf.extractfile(member)
-                        if fp is None:
-                            continue
-                        row = json.loads(fp.read().decode("utf-8"))
-                    except Exception:
-                        continue
-
-                    audio_members = _resolve_webdataset_audio_members(
-                        row,
-                        member.name,
-                        member_names,
-                        audio_variant,
-                    )
-                    if not audio_members:
-                        continue
-
-                    if isinstance(row.get("messages"), list):
-                        row["audios"] = _build_wds_audio_refs(row, tar_path, audio_members)
-                    else:
-                        row = _format_audio_text_webdataset_row(
-                            row,
-                            tar_path,
-                            audio_members[0],
-                            data_info,
-                        )
-                        if not row:
-                            continue
-
-                    row["webdataset_tar_path"] = tar_path
-                    row["webdataset_audio_member"] = audio_members[0]
-                    row["webdataset_audio_variant"] = audio_variant
-                    yielded += 1
-                    if yielded % log_interval_samples == 0:
-                        logger.info(
-                            f"{log_label}: yielded {yielded} samples "
-                            f"from {tar_completed + 1}/{total_tars} tars"
-                        )
-                    yield row
-            tar_completed += 1
-            if tar_completed % 10 == 0 or tar_completed == total_tars:
-                logger.info(
-                    f"{log_label}: completed {tar_completed}/{total_tars} tar files, "
-                    f"yielded {yielded} samples so far"
-                )
-        except Exception as e:
-            logger.warning(f"Failed reading tar {tar_path}: {e}")
-            continue
-    logger.info(
-        f"{log_label}: finished all {total_tars} tar files, yielded {yielded} samples total"
-    )
-
-
-def _resolve_webdataset_index_path(data_info, data_name):
-    index_path = data_info.get("webdataset_index_path")
-    if not isinstance(index_path, str) or not index_path.strip():
-        data_format = data_info.get("data_format", "webdataset")
-        raise ValueError(
-            f"WebDataset source '{data_name}' with data_format='{data_format}' requires "
-            "webdataset_index_path in YAML. Run local/precompute_webdataset_index.py "
-            "first to generate the JSONL index."
-        )
-
-    index_path = os.path.expanduser(os.path.expandvars(index_path.strip()))
-    if not os.path.isfile(index_path):
-        raise ValueError(
-            f"WebDataset index file not found for source '{data_name}': {index_path}. "
-            "Run local/precompute_webdataset_index.py first to generate the JSONL index."
-        )
-    return index_path
-
-
-def load_webdataset_duplex(data_path, data_info, data_name, output_dir):
-    """
-    Load a precomputed WebDataset JSONL index.
-
-    The training path must not scan tar shards. The index rows are expected to
-    already contain Amphion-compatible messages/audios with wds:// references.
-    """
-    index_path = _resolve_webdataset_index_path(data_info, data_name)
-    logger.info(
-        f"Loading WebDataset[{data_name}] from precomputed index: {index_path} "
-        f"(source path: {data_path})"
-    )
-    ds = load_json(index_path, output_dir)
-    if ds is None:
-        raise ValueError(
-            f"Failed to load WebDataset index for source '{data_name}': {index_path}. "
-            "Run local/precompute_webdataset_index.py first to generate a valid JSONL index."
-        )
-    logger.info(f"Loaded {len(ds)} samples from WebDataset index {index_path}")
-    return ds
-
 
 def _feature_is_null_type(feat):
     """Check if a HF Feature is a null/all-null type (incompatible with concrete types for concatenation)."""
@@ -652,9 +308,6 @@ class BaseDataset(torch.utils.data.Dataset):
                 if isinstance(data_path, str):
                     data_path = os.path.expanduser(os.path.expandvars(data_path))
 
-                data_format = str(data_info.get("data_format", "")).strip().lower()
-                is_webdataset = data_format in {"webdataset", "webdataset_tar", "duplex_webdataset"}
-
                 # Allow HF hub names (e.g. "yuantuo666/qwen3omni_gends_428k_0227") or parquet paths
                 is_hf_hub = (
                     isinstance(data_path, str)
@@ -667,23 +320,14 @@ class BaseDataset(torch.utils.data.Dataset):
                 is_parquet = isinstance(data_path, str) and (
                     data_path.endswith(".parquet")
                     or (os.path.isfile(data_path) and "parquet" in data_path.lower())
-                    or (
-                        os.path.isdir(data_path) and not is_webdataset
-                    )  # local HF dataset dir (parquet, arrow, etc.)
+                    or os.path.isdir(data_path)  # local HF dataset dir (parquet, arrow, etc.)
                 )
 
-                if not is_hf_hub and not is_parquet and not os.path.isfile(data_path) and not os.path.isdir(data_path) and not is_webdataset:
+                if not is_hf_hub and not is_parquet and not os.path.isfile(data_path) and not os.path.isdir(data_path):
                     logger.warning(f"Data file not found {data_path}")
                     continue
 
-                if is_webdataset:
-                    this_data = load_webdataset_duplex(
-                        data_path,
-                        data_info,
-                        data_name,
-                        self.output_dir,
-                    )
-                elif is_hf_hub or is_parquet:
+                if is_hf_hub or is_parquet:
                     this_data = load_parquet_qwen3omni(
                         data_path,
                         data_info,
@@ -708,15 +352,6 @@ class BaseDataset(torch.utils.data.Dataset):
                 remove_column_names = [c for c in column_names if c.startswith("_")]
                 logger.info(f"Removing debug columns from dataset: {remove_column_names}")
                 this_data = this_data.remove_columns(remove_column_names)
-
-                webdataset_debug_columns = [
-                    c for c in WEBDATASET_DEBUG_COLUMNS if c in this_data.column_names
-                ]
-                if webdataset_debug_columns:
-                    logger.info(
-                        f"Removing WebDataset debug columns from dataset: {webdataset_debug_columns}"
-                    )
-                    this_data = this_data.remove_columns(webdataset_debug_columns)
 
                 # Keep both a stable numeric source id and human-readable source
                 # metadata for downstream dataset-specific masking and diagnostics.

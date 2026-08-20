@@ -403,20 +403,16 @@ def _remove_emojis_and_asterisks(text):
 
 
 def text_normalize_llm(text):
-    """
-    Normalize only numbers in text (e.g., 123 -> one hundred twenty-three, 1st -> first)
-    and capitalize sentences. Intended for LLM output where other normalization is not desired.
-    """
     text = _remove_emojis_and_asterisks(text)
     # text = text.lower()
     try:
         text = expand_ordinals(text)
     except Exception as e:
         logger.warning("expand_ordinals failed in text_normalize_llm: %s", e)
-    try:
-        text = expand_numbers(text)
-    except Exception as e:
-        logger.warning("expand_numbers failed in text_normalize_llm: %s", e)
+    # try:
+    #     text = expand_numbers(text)
+    # except Exception as e:
+    #     logger.warning("expand_numbers failed in text_normalize_llm: %s", e)
     try:
         text = capitalize_sentences(text)
     except Exception as e:

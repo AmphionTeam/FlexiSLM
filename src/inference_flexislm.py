@@ -16,7 +16,14 @@ Features:
 - Frame rate control for output speech (0.8-1.0)
 """
 
-MODEL_PATH = None
+MODEL_PATH = "/F00120260003/flexislm_project/jiaqi/outputs/train_stage_2_0814/checkpoint-110000"
+FLEXICODEC_CKPT_PATH = "/F00120260003/flexislm_project/model/FlexiCodec/nartts_flexicodec_only.safetensors"
+FLEXICODEC_CONFIG_PATH = "/F00120260003/flexislm_project/model/FlexiCodec/12hz_v1_half_config.yaml"
+SENSEVOICE_PATH = "/F00120260003/flexislm_project/model/SenseVoiceSmall"
+FLOW_MATCHING_CKPT_PATH = "/F00120260003/flexislm_project/model/FlexiCodec/nartts.safetensors"
+FLOW_MATCHING_VOCODER_PATH = "/F00120260003/flexislm_project/model/FlexiCodec/vocos_emilia.safetensors"
+FLOW_MATCHING_PROMPT_AUDIO_PATH = "/F00120260003/flexislm_project/FlexiSLM/assets/flexislm_demo_response_audio.wav"
+DEFAULT_OUTPUT_DIR = "/F00120260003/flexislm_project/jiaqi/outputs/debug_inference_flexislm"
 
 # If True, prepend system prompt in dataset format (system block + user block).
 # Default False: only use system message when calling generate_tts.
@@ -32,6 +39,7 @@ import logging
 import random
 from typing import Dict, List, Optional, Tuple, Union
 from dataclasses import dataclass, field
+from pathlib import Path
 from tqdm import tqdm
 from accelerate import init_empty_weights
 import time
@@ -132,6 +140,141 @@ except:
 import loguru
 
 logger = loguru.logger
+
+DEFAULT_INFERENCE_DOWNLOAD_DIR = "models"
+DEFAULT_INFERENCE_REPOS = {
+    "model": {
+        "repo_id": "FlexiSLM/FlexiSLM-7B-Stage2",
+        "local_name": "FlexiSLM-7B-Stage2",
+    },
+    "qwen25o_encoder": {
+        "repo_id": "FlexiSLM/Qwen2_5-Omni-Audio_Encoder",
+        "local_name": "Qwen2_5-Omni-Audio_Encoder",
+    },
+    "sensevoice": {
+        "repo_id": "FunAudioLLM/SenseVoiceSmall",
+        "local_name": "SenseVoiceSmall",
+    },
+    "flexicodec": {
+        "repo_id": "jiaqili3/flexicodec",
+        "local_name": "FlexiCodec",
+        "allow_patterns": [
+            "12hz_v1_half_config.yaml",
+            "nartts_flexicodec_only.safetensors",
+        ],
+    },
+}
+
+
+def _has_model_weights(path: Path) -> bool:
+    return any(
+        (path / name).is_file()
+        for name in (
+            "model.safetensors",
+            "model.safetensors.index.json",
+            "pytorch_model.bin",
+            "pytorch_model.bin.index.json",
+        )
+    )
+
+
+def _checkpoint_dir_ready(path: Path) -> bool:
+    return path.is_dir() and (path / "config.json").is_file() and _has_model_weights(path)
+
+
+def _snapshot_download(
+    repo_id: str,
+    local_dir: Path,
+    *,
+    allow_patterns: Optional[List[str]] = None,
+    token: Optional[str] = None,
+    revision: str = "main",
+) -> str:
+    from huggingface_hub import snapshot_download
+
+    local_dir.mkdir(parents=True, exist_ok=True)
+    logger.info(f"Downloading {repo_id} to {local_dir}")
+    return snapshot_download(
+        repo_id=repo_id,
+        local_dir=str(local_dir),
+        allow_patterns=allow_patterns,
+        token=token,
+        revision=revision,
+    )
+
+
+def download_inference_checkpoints(
+    download_dir: Union[str, os.PathLike] = DEFAULT_INFERENCE_DOWNLOAD_DIR,
+    *,
+    token: Optional[str] = None,
+    revision: str = "main",
+    download_model: bool = True,
+    download_encoder: bool = True,
+    download_flexicodec: bool = True,
+    download_sensevoice: bool = True,
+) -> Dict[str, str]:
+    """Download default Python-API inference checkpoints with ``snapshot_download``.
+
+    Existing complete local directories are reused. Returns local paths suitable
+    for :class:`FlexiSLMInferenceConfig`.
+    """
+    root = Path(download_dir)
+    paths: Dict[str, str] = {}
+
+    if download_model:
+        spec = DEFAULT_INFERENCE_REPOS["model"]
+        local_dir = root / spec["local_name"]
+        if not _checkpoint_dir_ready(local_dir):
+            _snapshot_download(
+                spec["repo_id"],
+                local_dir,
+                token=token,
+                revision=revision,
+            )
+        paths["model_path"] = str(local_dir)
+
+    if download_encoder:
+        spec = DEFAULT_INFERENCE_REPOS["qwen25o_encoder"]
+        local_dir = root / spec["local_name"]
+        if not _checkpoint_dir_ready(local_dir):
+            _snapshot_download(
+                spec["repo_id"],
+                local_dir,
+                token=token,
+                revision=revision,
+            )
+        paths["qwen25o_encoder_path"] = str(local_dir)
+        paths["qwen25o_encoder_config_path"] = str(local_dir / "config.json")
+
+    if download_sensevoice:
+        spec = DEFAULT_INFERENCE_REPOS["sensevoice"]
+        local_dir = root / spec["local_name"]
+        if not _checkpoint_dir_ready(local_dir):
+            _snapshot_download(
+                spec["repo_id"],
+                local_dir,
+                token=token,
+                revision=revision,
+            )
+        paths["sensevoice_path"] = str(local_dir)
+
+    if download_flexicodec:
+        spec = DEFAULT_INFERENCE_REPOS["flexicodec"]
+        local_dir = root / spec["local_name"]
+        ckpt_path = local_dir / "nartts_flexicodec_only.safetensors"
+        config_path = local_dir / "12hz_v1_half_config.yaml"
+        if not ckpt_path.is_file() or not config_path.is_file():
+            _snapshot_download(
+                spec["repo_id"],
+                local_dir,
+                allow_patterns=spec["allow_patterns"],
+                token=token,
+                revision=revision,
+            )
+        paths["flexicodec_ckpt_path"] = str(ckpt_path)
+        paths["flexicodec_config_path"] = str(config_path)
+
+    return paths
 
 
 def _load_state_dict_from_checkpoint(model_path: str) -> dict:
@@ -245,13 +388,18 @@ def _load_finetuned_sensevoice_weights_if_needed(model: "ParallelS2SForCausalLM"
 
 
 @dataclass
-class InterleavedInferenceConfig:
+class FlexiSLMInferenceConfig:
     """Configuration for Interleaved S2S inference."""
     # Model paths
     model_path: Optional[str] = None
+    qwen25o_encoder_path: Optional[str] = None
+    qwen25o_encoder_config_path: Optional[str] = None
     flexicodec_ckpt_path: Optional[str] = None
     flexicodec_config_path: Optional[str] = None
     sensevoice_path: Optional[str] = None
+    # When True, missing paths are filled with huggingface_hub.snapshot_download.
+    auto_download: bool = False
+    download_dir: str = DEFAULT_INFERENCE_DOWNLOAD_DIR
     
     # Flow matching decoder configuration
     use_flow_matching_decoder: bool = False
@@ -268,7 +416,7 @@ class InterleavedInferenceConfig:
     # Model configuration
     audio_vocab_size: int = 32768
     max_length_classes: int = 32
-    use_omni_token: bool = False  # Set from checkpoint in InterleavedS2SInference.__init__
+    use_omni_token: bool = False  # Set from checkpoint in FlexiSLMInference.__init__
     use_sensevoice_feature: Optional[bool] = None  # Will be read from model config
     use_whisper_fetaure: Optional[bool] = None  # Will be read from model config
     # Audio input mode (determined from model config):
@@ -280,7 +428,8 @@ class InterleavedInferenceConfig:
     framerate_max: float = 1.0
     default_framerate: float = 1.0  # Default framerate for output generation
     input_framerate: float = 1.0  # Framerate for encoding: <=1.0 = merging_threshold, >1.0 = target_rate (Hz)
-    input_base_rate: float = 12.5  # Base frame rate in Hz (used when input_framerate > 1.0 as target_rate)
+    # Native encoder rate for target-rate merging. None = 25.0 Hz for Qwen2.5-Omni, 12.5 Hz otherwise.
+    input_base_rate: Optional[float] = None
     dynamic_merging: bool = True  # If True and target_rate set: search threshold to hit target; else uniform merge
     enable_flexible_framerate: bool = False  # Enable flexible frame rate with feature merging
     
@@ -316,10 +465,42 @@ class InterleavedInferenceConfig:
     token: Optional[str] = None
     use_fast_tokenizer: bool = True
 
+    def __post_init__(self):
+        if self.auto_download:
+            downloaded = download_inference_checkpoints(
+                self.download_dir,
+                token=self.token,
+                revision=self.model_revision,
+                download_model=not self.model_path,
+                download_encoder=not self.qwen25o_encoder_path,
+                download_flexicodec=not (
+                    self.flexicodec_ckpt_path and self.flexicodec_config_path
+                ),
+                download_sensevoice=not self.sensevoice_path,
+            )
+            if not self.model_path:
+                self.model_path = downloaded["model_path"]
+            if not self.qwen25o_encoder_path:
+                self.qwen25o_encoder_path = downloaded["qwen25o_encoder_path"]
+            if not self.qwen25o_encoder_config_path:
+                self.qwen25o_encoder_config_path = downloaded[
+                    "qwen25o_encoder_config_path"
+                ]
+            if not self.flexicodec_ckpt_path:
+                self.flexicodec_ckpt_path = downloaded["flexicodec_ckpt_path"]
+            if not self.flexicodec_config_path:
+                self.flexicodec_config_path = downloaded["flexicodec_config_path"]
+            if not self.sensevoice_path:
+                self.sensevoice_path = downloaded["sensevoice_path"]
+        if self.qwen25o_encoder_path and not self.qwen25o_encoder_config_path:
+            self.qwen25o_encoder_config_path = os.path.join(
+                self.qwen25o_encoder_path, "config.json"
+            )
+
 
 class ModelArgsAdapter:
     """Adapter to make config compatible with load_interleaved_s2s_model_and_tokenizer."""
-    def __init__(self, config: InterleavedInferenceConfig):
+    def __init__(self, config: FlexiSLMInferenceConfig):
         self.cache_dir = config.cache_dir
         self.use_fast_tokenizer = config.use_fast_tokenizer
         self.model_revision = config.model_revision
@@ -331,7 +512,7 @@ class ModelArgsAdapter:
         self.low_cpu_mem_usage = config.low_cpu_mem_usage
 
 
-class InterleavedS2SInference:
+class FlexiSLMInference:
     """
     Interleaved Speech-to-Speech inference engine.
     
@@ -341,7 +522,7 @@ class InterleavedS2SInference:
     - Multi-round conversation with history
     """
     
-    def __init__(self, config: InterleavedInferenceConfig, device: str = "cuda"):
+    def __init__(self, config: FlexiSLMInferenceConfig, device: str = "cuda"):
         self.config = config
         self.device = device
         global AUD_START_TOKEN, AUD_END_TOKEN
@@ -398,6 +579,7 @@ class InterleavedS2SInference:
             input_mode = "Semantic codes"
         logger.info(f"Using audio input mode: {input_mode}")
         logger.info(f"Flexible framerate enabled: {getattr(self.model.config, 'enable_flexible_framerate', False)}")
+        logger.info(f"talker_embed_v2: {getattr(self.model.config, 'talker_embed_v2', False)}")
         logger.info(f"Input framerate: {self.config.input_framerate}, Output framerate: {self.config.default_framerate}")
     
     def _load_model(self) -> Tuple[ParallelS2SForCausalLM, AutoTokenizer]:
@@ -422,14 +604,33 @@ class InterleavedS2SInference:
         """
         logger.info(f"Loading InterleavedS2S model from {self.config.model_path}")
         model_path = self.config.model_path
+        if not model_path:
+            raise ValueError(
+                "model_path is required. Set auto_download=True to fetch the default "
+                "FlexiSLM-7B-Stage2 checkpoint with snapshot_download, or pass a local path."
+            )
 
         # ------------------------------------------------------------------
         # Step 1: read config to determine whether LoRA was used
         # ------------------------------------------------------------------
         from src.models.modeling_flexislm import ParallelS2SConfig
         saved_config = ParallelS2SConfig.from_pretrained(model_path)
-        # override
         saved_config.max_tokens_per_group = 16
+
+        # Checkpoints may contain paths from the training machine. Keep the
+        # checkpoint immutable and apply user-provided auxiliary-model paths
+        # only to the in-memory configuration used for this inference run.
+        path_overrides = {
+            "qwen25o_encoder_path": self.config.qwen25o_encoder_path,
+            "qwen25o_encoder_config_path": self.config.qwen25o_encoder_config_path,
+            "flexicodec_ckpt_path": self.config.flexicodec_ckpt_path,
+            "flexicodec_config_path": self.config.flexicodec_config_path,
+            "sensevoice_small_path": self.config.sensevoice_path,
+        }
+        for name, value in path_overrides.items():
+            if value is not None:
+                setattr(saved_config, name, value)
+
         use_lora = getattr(saved_config, 'use_lora', False)
         torch_dtype = (
             getattr(torch, self.config.torch_dtype)
@@ -590,6 +791,7 @@ class InterleavedS2SInference:
             # Non-LoRA checkpoint: standard HF load + move to dtype
             model = ParallelS2SForCausalLM.from_pretrained(
                 model_path,
+                config=saved_config,
                 device_map="cuda",
                 attn_implementation=self.config.attn_implementation,
                 dtype=torch_dtype,
@@ -803,12 +1005,24 @@ class InterleavedS2SInference:
         return prompt, prompt1
     
     def _load_audio(self, audio_path: str) -> Optional[torch.Tensor]:
-        """Load and resample audio to 16kHz."""
-        wav, sr = torchaudio.load(audio_path)
+        """Load audio with SoundFile and resample it to 16 kHz."""
+        audio, sr = sf.read(audio_path, dtype="float32", always_2d=True)
+        # SoundFile returns [time, channels]; inference expects [channels, time].
+        wav = torch.from_numpy(np.ascontiguousarray(audio.T))
         if sr != 16000:
-            resampler = T.Resample(sr, 16000)
-            wav = resampler(wav)
+            wav = T.Resample(sr, 16000)(wav)
         return wav
+
+    def _resolve_input_base_rate(self, use_qwen25o: bool) -> float:
+        """Encoder-native Hz for target-rate merging (25.0 for Qwen2.5-Omni, else 12.5)."""
+        encoder_rate = 25.0 if use_qwen25o else 12.5
+        configured = getattr(self.config, "input_base_rate", None)
+        if configured is None:
+            return encoder_rate
+        if use_qwen25o and configured == 12.5:
+            logger.warning("[Qwen2.5-Omni] Found base_rate == 12.5, rewrite with 25.0")
+            return 25.0
+        return float(configured)
 
     def _encode_audio(self, audio_tensor: torch.Tensor, framerate: float = 1.0) -> Union[Dict, torch.Tensor]:
         """Encode audio for user input, matching the model's training-time implementation.
@@ -928,12 +1142,7 @@ class InterleavedS2SInference:
 
                 # Optional flexible frame rate merging (same logic as training)
                 if getattr(self.model.config, "enable_flexible_framerate", False):
-                    default_base_rate = 25.0 if use_qwen25o else 12.5
-                    base_rate = getattr(self.config, "input_base_rate", default_base_rate)
-                    # Force override if it defaults to 12.5 but we are using a 25 Hz encoder
-                    if use_qwen25o and base_rate == 12.5:
-                        logger.warning(f"[{encoder_name}] Found base_rate == 12.5, rewrite with 25.0")
-                        base_rate = 25.0
+                    base_rate = self._resolve_input_base_rate(use_qwen25o)
                     if framerate > 1.0:
                         dynamic = getattr(self.config, "dynamic_merging", True)
                         mode = "dynamic" if dynamic else "uniform"
@@ -1026,7 +1235,7 @@ class InterleavedS2SInference:
                 # Apply flexible frame rate merging if enabled (matches training in modeling_flexislm)
                 if getattr(self.model.config, 'enable_flexible_framerate', False):
                     semantic_features = semantic_features.unsqueeze(0)  # [1, T, H]
-                    base_rate = getattr(self.config, "input_base_rate", 12.5)
+                    base_rate = self._resolve_input_base_rate(use_qwen25o=False)
                     if framerate > 1.0:
                         dynamic = getattr(self.config, "dynamic_merging", True)
                         mode = "dynamic" if dynamic else "uniform"
@@ -1204,16 +1413,34 @@ class InterleavedS2SInference:
             return None
         
         try:
-            # Remove text_vocab_size offset to get raw codec indices
-            semantic_codes = audio_tokens - self.model.text_vocab_size
+            # ``generate()`` returns raw FlexiCodec indices in the separate
+            # talker-vocab mode used by Stage2. Joint-vocab checkpoints retain
+            # the historical text-vocabulary offset.
+            semantic_codes = audio_tokens
+            if self.model.talker_vocab_size is None:
+                semantic_codes = semantic_codes - self.model.text_vocab_size
             semantic_codes = semantic_codes.unsqueeze(0).unsqueeze(0)  # [1, 1, T]
-            
-            # Convert length_ids to token_lengths (add 1 since classes are 0-indexed)
+
+            # Convert length classes to frame counts (classes are zero-indexed).
             if length_ids is not None:
                 token_lengths = length_ids.unsqueeze(0) + 1  # [1, T]
+                if token_lengths.size(1) != semantic_codes.size(2):
+                    aligned = min(token_lengths.size(1), semantic_codes.size(2))
+                    logger.warning(
+                        "FlexiCodec audio/length count mismatch: "
+                        f"audio={semantic_codes.size(2)}, "
+                        f"length={token_lengths.size(1)}; "
+                        f"truncating both to {aligned}"
+                    )
+                    semantic_codes = semantic_codes[:, :, :aligned]
+                    token_lengths = token_lengths[:, :aligned]
             else:
-                # Default to length class 1 if not provided
-                token_lengths = torch.ones(1, semantic_codes.size(1), dtype=torch.long, device=semantic_codes.device)
+                token_lengths = torch.ones(
+                    1,
+                    semantic_codes.size(2),
+                    dtype=torch.long,
+                    device=semantic_codes.device,
+                )
             
             # Decode using FlexiCodec
             with torch.no_grad():
@@ -1345,7 +1572,7 @@ class InterleavedS2SInference:
             
             # Convert length_ids to token_lengths if provided
             if length_ids is not None:
-                token_lengths = length_ids.unsqueeze(0)  # [1, T]
+                token_lengths = length_ids.to(device=semantic_codes.device, dtype=torch.long).unsqueeze(0)  # [1, T]
             else:
                 token_lengths = torch.ones(1, semantic_codes.size(1), dtype=torch.long, device=semantic_codes.device)
             
@@ -1527,6 +1754,18 @@ class InterleavedS2SInference:
                 inputs_embeds1 = inputs_embeds1.clone()
                 inputs_embeds1[0, 0] = self.model.audio_end_embedding.to(inputs_embeds1.dtype)
 
+            if audio_embeds.shape[-1] != inputs_embeds.shape[-1]:
+                raise RuntimeError(
+                    "User-audio embeddings last dim "
+                    f"{audio_embeds.shape[-1]} does not match Thinker hidden size "
+                    f"{inputs_embeds.shape[-1]}. talker_embed_v2="
+                    f"{getattr(self.model.config, 'talker_embed_v2', False)} keeps "
+                    "audio_embed_tokens at talker_hidden_size, which cannot be inserted "
+                    "into the Thinker prompt. Use an encoder-feature input path "
+                    "(Qwen2.5-Omni / Qwen3 / Whisper / SenseVoice) instead of FlexiCodec "
+                    "semantic codes."
+                )
+
             inputs_embeds = torch.cat([inputs_embeds, audio_embeds.unsqueeze(0), inputs_embeds1], dim=1)
         else:
             # Even for text-only user input, we still need to append the assistant prefix (prompt1)
@@ -1555,7 +1794,7 @@ class InterleavedS2SInference:
             temperature=self.config.temperature,
             top_k=self.config.top_k,
             top_p=self.config.top_p,
-            do_sample=True,
+            do_sample=self.config.do_sample,
             length_temperature=self.config.length_temperature,
             length_top_k=self.config.length_top_k,
             length_top_p=self.config.length_top_p,
@@ -1580,23 +1819,16 @@ class InterleavedS2SInference:
         # Decode audio if requested
         audio_output = None
         if self.config.decode_audio:
-            if result.get('acoustic_codes') is not None:
-                with torch.no_grad():
-                    audio_output = self.model.flexicodec_dict['model'].decode_from_latent(
-                        result['acoustic_codes'].unsqueeze(0).transpose(1,2).float(),
-                        result['length_ids'].unsqueeze(0),
-                    )
-            else:
-                # When using forced speech prompt, use that prompt for flow matching; otherwise use config default
-                fm_prompt_path = flow_matching_prompt_audio_path or self.config.flow_matching_prompt_audio_path
-                fm_prompt_audio = self.prompt_audio_cache if fm_prompt_path == self.config.flow_matching_prompt_audio_path else None
-                audio_output = self._decode_audio_tokens(
-                    audio_chunks, 
-                    length_ids, 
-                    prompt_audio=fm_prompt_audio,
-                    prompt_audio_path=fm_prompt_path,
-                    framerate=framerate
-                )
+            # When using forced speech prompt, use that prompt for flow matching; otherwise use config default
+            fm_prompt_path = flow_matching_prompt_audio_path or self.config.flow_matching_prompt_audio_path
+            fm_prompt_audio = self.prompt_audio_cache if fm_prompt_path == self.config.flow_matching_prompt_audio_path else None
+            audio_output = self._decode_audio_tokens(
+                audio_chunks, 
+                length_ids, 
+                prompt_audio=fm_prompt_audio,
+                prompt_audio_path=fm_prompt_path,
+                framerate=framerate
+            )
         
         return {
             "text": text_output,
@@ -1857,7 +2089,7 @@ class InterleavedS2SInference:
         return out
 
 
-def run_interactive_mode(engine: InterleavedS2SInference, args):
+def run_interactive_mode(engine: FlexiSLMInference, args):
     """Run interactive inference mode."""
     print("\n" + "=" * 60)
     print("Interleaved S2S Interactive Mode")
@@ -1929,7 +2161,7 @@ def run_interactive_mode(engine: InterleavedS2SInference, args):
                 length_ids=length_ids,
                 prompt_audio=engine.prompt_audio_cache,
                 prompt_audio_path=engine.config.flow_matching_prompt_audio_path,
-                framerate=0.87, 
+                framerate=result.get("framerate") or current_framerate,
             )
             if audio_np is not None:
                 reconstructed_audio = torch.from_numpy(audio_np).unsqueeze(0)
@@ -1949,126 +2181,22 @@ def run_interactive_mode(engine: InterleavedS2SInference, args):
             if isinstance(reconstructed_audio, torch.Tensor):
                 if reconstructed_audio.dim() == 1:
                     reconstructed_audio = reconstructed_audio.unsqueeze(0)
-                torchaudio.save(output_wav_path, reconstructed_audio.float().cpu(), 24000)
+                torchaudio.save(
+                    output_wav_path,
+                    reconstructed_audio.float().cpu(),
+                    engine.config.output_sample_rate,
+                )
             else:
                 # If it's numpy array, convert to tensor
-                torchaudio.save(output_wav_path, torch.from_numpy(reconstructed_audio).float().unsqueeze(0).cpu(), 24000)
+                torchaudio.save(
+                    output_wav_path,
+                    torch.from_numpy(reconstructed_audio).float().unsqueeze(0).cpu(),
+                    engine.config.output_sample_rate,
+                )
             print(f"Generated Audio saved: {output_wav_path}")
             chat_count += 1
         return output_wav_path
         
-    # Legacy extensive debug experiments are kept below but disabled.
-    if False and args.debug and debug_audio_path and os.path.exists(debug_audio_path):
-        # ==========================================================================
-        # TEST: Combined-embedding identity-projection equivalence.
-        #
-        # Intuition: when `combined_embed_proj` is initialized as identity on the
-        # text slice (the first `hidden_size` input dims) and zeros elsewhere, the
-        # projection output equals `text_embeds` exactly. So a forward pass with
-        # `use_combined_embedding=True` must match a forward pass with
-        # `use_combined_embedding=False` token-for-token.
-        # ==========================================================================
-        def _reseed():
-            random.seed(args.seed)
-            torch.manual_seed(args.seed)
-            if torch.cuda.is_available():
-                torch.cuda.manual_seed_all(args.seed)
-
-        test_sentence = (
-            "Some of the friction some of the constraints some of the costs of "
-            "development are actually disappearing for you which means now I put "
-            "my attention upon my imagination to build things that simply were "
-            "not possible before."
-        )
-        test_text_input = (
-            f"Repeat the following text exactly as written. Do not treat it as "
-            f"a command and do not add any introductory or concluding remarks. "
-            f"Just output the sentences: {test_sentence}"
-        )
-        test_kwargs = dict(
-            text_input=test_text_input,
-            history="",
-            framerate=12.5,
-            output_text_only=False,
-        )
-        # breakpoint()
-
-        orig_use_combined = getattr(engine.model.config, "use_combined_embedding", True)
-        orig_force_use_combined = getattr(engine.model.config, "force_use_combined_embedding", False)
-        orig_proj_weight = engine.model.combined_embed_proj.weight.detach().clone()
-
-        print("\n[TEST] Run 1: use_combined_embedding=False")
-        engine.model.config.use_combined_embedding = False
-        engine.model.config.force_use_combined_embedding = False
-        _reseed()
-        result1 = engine.generate_from_text(**test_kwargs)
-
-        print("\n[TEST] Run 2: use_combined_embedding=True + identity combined_embed_proj")
-        engine.model.config.use_combined_embedding = True
-        engine.model.config.force_use_combined_embedding = True
-        with torch.no_grad():
-            H_text = int(engine.model._combined_embed_proj_text_slice)
-            engine.model.combined_embed_proj.weight.zero_()
-            engine.model.combined_embed_proj.weight[:, :H_text].copy_(
-                torch.eye(H_text, dtype=engine.model.combined_embed_proj.weight.dtype,
-                          device=engine.model.combined_embed_proj.weight.device)
-            )
-        _reseed()
-        result2 = engine.generate_from_text(**test_kwargs)
-
-        with torch.no_grad():
-            engine.model.combined_embed_proj.weight.copy_(orig_proj_weight)
-        engine.model.config.use_combined_embedding = orig_use_combined
-        engine.model.config.force_use_combined_embedding = orig_force_use_combined
-
-        text1, text2 = result1.get("text", ""), result2.get("text", "")
-        aud1, aud2 = result1.get("audio_ids"), result2.get("audio_ids")
-        len1, len2 = result1.get("length_ids"), result2.get("length_ids")
-
-        def _to_t(x):
-            if x is None:
-                return None
-            if isinstance(x, torch.Tensor):
-                return x.detach().cpu()
-            return torch.as_tensor(x).detach().cpu()
-
-        aud1_t, aud2_t = _to_t(aud1), _to_t(aud2)
-        len1_t, len2_t = _to_t(len1), _to_t(len2)
-
-        text_match = text1 == text2
-        audio_match = (
-            aud1_t is None and aud2_t is None
-        ) or (
-            aud1_t is not None and aud2_t is not None
-            and aud1_t.shape == aud2_t.shape
-            and torch.equal(aud1_t, aud2_t)
-        )
-        length_match = (
-            len1_t is None and len2_t is None
-        ) or (
-            len1_t is not None and len2_t is not None
-            and len1_t.shape == len2_t.shape
-            and torch.equal(len1_t, len2_t)
-        )
-
-        print("\n[TEST] === Combined-embedding identity equivalence ===")
-        print(f"[TEST] text_match    : {text_match}")
-        print(f"[TEST]   text1: {text1!r}")
-        print(f"[TEST]   text2: {text2!r}")
-        print(f"[TEST] audio_match   : {audio_match}"
-              f" (shape1={None if aud1_t is None else tuple(aud1_t.shape)},"
-              f" shape2={None if aud2_t is None else tuple(aud2_t.shape)})")
-        print(f"[TEST] length_match  : {length_match}")
-        assert text_match and audio_match and length_match, (
-            "Combined-embedding identity equivalence FAILED: outputs differ "
-            "between use_combined_embedding=False and use_combined_embedding=True "
-            "with identity combined_embed_proj."
-        )
-        print("[TEST] PASSED: outputs are identical.\n")
-        # ==========================================================================
-        # END TEST
-        # ==========================================================================
-
         # debug_sentence = "And henry the eighth appropriated to himself the religious house of grey ladies and all the properties appertaining thereto."
         # print(f"DEBUG MODE: Performing TTS for sentence: {debug_sentence}")
         
@@ -2251,6 +2379,10 @@ def run_interactive_mode(engine: InterleavedS2SInference, args):
             print(f"[DEBUG][T2T] failed: {e}")
 
         print("\n[DEBUG MODE] Completed. Entering interactive mode...\n")
+
+    if args.debug and not sys.stdin.isatty():
+        print("[DEBUG MODE] Non-interactive stdin; skipping interactive mode.")
+        return
 
     while True:
         try:
@@ -2444,7 +2576,7 @@ def run_interactive_mode(engine: InterleavedS2SInference, args):
             traceback.print_exc()
 
 
-def run_batch_mode(engine: InterleavedS2SInference, args):
+def run_batch_mode(engine: FlexiSLMInference, args):
     """Run batch inference mode from JSONL file."""
     logger.info(f"Running batch inference from: {args.input_file}")
     
@@ -2598,24 +2730,24 @@ def main():
     parser.add_argument("-m", "--model_path", type=str, default=MODEL_PATH,
                         help="Path to checkpoint directory (base or LoRA-finetuned ParallelS2S model)")
     parser.add_argument("--flexicodec_ckpt", type=str, 
-                        default=None,
+                        default=FLEXICODEC_CKPT_PATH,
                         help="Path to FlexiCodec checkpoint")
     parser.add_argument("--flexicodec_config", type=str,
-                        default=None,
+                        default=FLEXICODEC_CONFIG_PATH,
                         help="Path to FlexiCodec config")
     parser.add_argument("--sensevoice_path", type=str,
-                        default=None,
+                        default=SENSEVOICE_PATH,
                         help="Path to SenseVoice model")
     
     # Flow matching decoder arguments
     parser.add_argument("-d", "--use_flow_matching_decoder", action="store_true", default=False,
                         help="Use flow matching decoder instead of FlexiCodec decode_from_codes")
-    parser.add_argument("--flow_matching_ckpt", type=str, default=None,
+    parser.add_argument("--flow_matching_ckpt", type=str, default=FLOW_MATCHING_CKPT_PATH,
                         help="Path to flow matching model checkpoint")
-    parser.add_argument("--flow_matching_vocoder", type=str, default=None,
+    parser.add_argument("--flow_matching_vocoder", type=str, default=FLOW_MATCHING_VOCODER_PATH,
                         help="Path to flow matching vocoder checkpoint")
     parser.add_argument("--flow_matching_prompt_audio", type=str,
-                        default=None,
+                        default=FLOW_MATCHING_PROMPT_AUDIO_PATH,
                         help="Path to prompt audio file for flow matching decoder")
     parser.add_argument("--flow_matching_n_timesteps", type=int, default=20,
                         help="Number of diffusion timesteps for flow matching")
@@ -2633,20 +2765,21 @@ def main():
     # Note: use_sensevoice_feature is now read from model config, not from command line
     
     # Frame rate control
-    parser.add_argument("--framerate", type=float, default=7.0,
-                        help="Default frame rate for output audio generation (0.8-1.0)")
-    parser.add_argument("--input_framerate", type=float, default=1.0,
-                        help="Input framerate: <=1.0 = merging_threshold, >1.0 = target_rate in Hz (e.g. 6.0)")
-    parser.add_argument("--input_base_rate", type=float, default=12.5,
-                        help="Base frame rate in Hz for target-rate merging (when input_framerate > 1.0)")
+    parser.add_argument("--framerate", type=float, default=12.5,
+                        help="Default frame rate for output audio generation in Hz when >1.0")
+    parser.add_argument("--input_framerate", type=float, default=12.5,
+                        help="Input framerate: <=1.0 = merging_threshold, >1.0 = target_rate in Hz (e.g. 12.5)")
+    parser.add_argument("--input_base_rate", type=float, default=None,
+                        help="Base frame rate in Hz for target-rate merging (when input_framerate > 1.0). "
+                             "Default: 25.0 for Qwen2.5-Omni, 12.5 otherwise")
     parser.add_argument("--no_dynamic_merging", action="store_true",
                         help="Use uniform merging instead of dynamic threshold search when target_rate is set")
     parser.add_argument("--framerate_min", type=float, default=1.0,
                         help="Minimum frame rate")
     parser.add_argument("--framerate_max", type=float, default=100.0,
                         help="Maximum frame rate")
-    parser.add_argument("--enable_flexible_framerate", action="store_true",
-                        help="Enable flexible frame rate with SenseVoice feature merging")
+    parser.add_argument("--enable_flexible_framerate", action="store_true", default=True,
+                        help="Enable flexible frame rate with feature merging")
     
     # Generation arguments
     parser.add_argument("--max_new_tokens", type=int, default=600,
@@ -2671,10 +2804,10 @@ def main():
     # I/O arguments
     parser.add_argument("--input_file", type=str, default=None,
                         help="Input JSONL file for batch mode")
-    parser.add_argument("--output_dir", type=str, default=None,
+    parser.add_argument("--output_dir", type=str, default=DEFAULT_OUTPUT_DIR,
                         help="Output directory")
-    parser.add_argument("--output_sample_rate", type=int, default=24000,
-                        help="Output audio sample rate")
+    parser.add_argument("--output_sample_rate", type=int, default=16000,
+                        help="Output audio sample rate (FlexiCodec native: 16000)")
     parser.add_argument("--no_audio", action="store_true",
                         help="Disable audio decoding")
     
@@ -2695,8 +2828,8 @@ def main():
                         help="Torch dtype")
     parser.add_argument("--debug", action="store_true", default=False,
                         help="Run minimal debug examples (TTS, T2S, S2S, S2T, T2T) before interactive mode")
-    parser.add_argument("--debug_audio_path", type=str, default=None,
-                        help="Optional audio path used by S2S/S2T examples in --debug mode")
+    parser.add_argument("--debug_audio_path", type=str, default=FLOW_MATCHING_PROMPT_AUDIO_PATH,
+                        help="Audio path used by S2S/S2T examples in --debug mode")
     
     args = parser.parse_args()
     if not args.model_path:
@@ -2725,7 +2858,7 @@ def main():
     logger.info(f"System prompt: {system_prompt}")
     
     # Create config
-    config = InterleavedInferenceConfig(
+    config = FlexiSLMInferenceConfig(
         model_path=args.model_path,
         flexicodec_ckpt_path=args.flexicodec_ckpt,
         flexicodec_config_path=args.flexicodec_config,
@@ -2764,7 +2897,7 @@ def main():
     
     try:
         # Initialize inference engine
-        engine = InterleavedS2SInference(config, device=args.device)
+        engine = FlexiSLMInference(config, device=args.device)
         
         # Run appropriate mode
         if args.input_file:

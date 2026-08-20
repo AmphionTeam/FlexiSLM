@@ -1,19 +1,24 @@
-# Stage 1: pre-train the Talker and input merging transformer.
-# Keys map directly to the dataclass arguments in src/arguments.py.
+# Stage 1 (7B): freeze the Qwen backbone and pre-train the Talker and input modules.
+# Paths are relative to the repository root.
 
 # Model
-model_name_or_path: Qwen/Qwen2.5-7B-Instruct
-config_name: Qwen/Qwen2.5-7B-Instruct
-tokenizer_name: Qwen/Qwen2.5-7B-Instruct
+model_name_or_path: models/Qwen2.5-7B-Instruct
+config_name: models/Qwen2.5-7B-Instruct
+tokenizer_name: models/Qwen2.5-7B-Instruct
 use_joint_text_audio_vocab: false
 freeze_llm: true
+freeze_talker: false
 only_train_talker: false
+only_train_modules: "talker_model,audio_embed_transform,input_merging_transformer,audio_start_embedding,audio_end_embedding"
 
-# Audio encoder and frame-rate control
+# Audio encoder and codec
 use_sensevoice_feature: false
 use_qwen25omni_feature: true
-qwen25omni_encoder_path: path/to/Qwen2.5-Omni-7B
-qwen25omni_encoder_config_path: path/to/Qwen2.5-Omni-7B/config.json
+qwen25omni_encoder_path: models/Qwen2_5-Omni-Audio_Encoder
+qwen25omni_encoder_config_path: models/Qwen2_5-Omni-Audio_Encoder/config.json
+flexicodec_config_path: models/FlexiCodec/12hz_v1_half_config.yaml
+flexicodec_ckpt_path: models/FlexiCodec/nartts_flexicodec_only.safetensors
+sensevoice_small_path: models/SenseVoiceSmall
 finetune_speech_encoder: false
 enable_flexible_framerate: true
 training_framerate_options: "0.86,0.87,0.88,0.90,0.91,1.0,1.0"
@@ -23,61 +28,57 @@ framerate_max: 1.0
 use_sinusoidal: true
 per_sample_frame_rate_embed: true
 
-# Talker and embeddings
+# Talker and input modules
 early_diverge_talker: false
 talker_concat_lm_text_output: true
-talker_hidden_size: 1024
+talker_hidden_size: 1280
 talker_num_layers: 20
+length_loss_weight: 0.1
+talker_num_attention_heads: 8
+talker_intermediate_size: 5120
+talker_checkpoint_path: ""
 text_loss_weight: 2.0
 use_mlp_for_audio_embed: true
 use_omni_token: true
 no_pad: true
+use_combined_embedding: false
 force_use_combined_embedding: false
 use_input_merging_transformer: true
 use_input_merging_transformer_v2: true
 input_merging_transformer_d_model: 768
 use_learnable_audio_boundary: true
-extend_lm_head: false
 use_lora: false
 
 # Data
 dataset_name: config/datasets/train_stage1.yaml
-dataset_name_eval: config/datasets/eval.yaml
-max_eval_samples: 5000
 
 # Training
 do_train: true
-do_eval: true
-output_dir: outputs/train_stage1
-run_name: train_stage1
-num_train_epochs: 3
-per_device_train_batch_size: 5
+output_dir: outputs/train_stage1_7B
+run_name: train_stage1_7B
+num_train_epochs: 1
+per_device_train_batch_size: 16
 max_tokens_per_batch: 4000
-per_device_eval_batch_size: 1
-gradient_accumulation_steps: 1
+gradient_accumulation_steps: 2
 auto_find_batch_size: false
-eval_strategy: steps
-eval_steps: 5000
-eval_accumulation_steps: 1
-bf16_full_eval: true
 save_strategy: steps
-save_steps: 20000
-save_total_limit: 120
+save_steps: 15000
+save_total_limit: 10
 max_grad_norm: 1.0
 learning_rate: 5.0e-4
 weight_decay: 0.01
 adam_beta1: 0.9
 adam_beta2: 0.95
 adam_epsilon: 1.0e-8
-warmup_ratio: 0.02
+warmup_ratio: 0.005
 lr_scheduler_type: cosine_with_min_lr
-lr_scheduler_kwargs: '{"min_lr": 4e-5}'
-logging_steps: 100
+lr_scheduler_kwargs: {min_lr: 4.0e-5}
+logging_steps: 10
 log_level: info
 model_max_length: 1024
 gradient_checkpointing: false
 ddp_timeout: 7200
-dataloader_num_workers: 4
+dataloader_num_workers: 8
 dataloader_pin_memory: true
 bf16: true
 fp16: false
@@ -87,3 +88,5 @@ trust_remote_code: true
 attn_implementation: flash_attention_2
 seed: 42
 data_seed: 42
+# Iterable WebDataset loaders require an explicit optimizer-step limit.
+max_steps: 350000

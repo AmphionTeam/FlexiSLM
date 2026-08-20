@@ -9,7 +9,12 @@ from typing import Any, Mapping
 
 
 DEFAULT_ASR_PROMPT = "Please transcribe the audio."
-DEFAULT_OUTPUT_SAMPLE_RATE = 24_000
+# FlexiCodec waveforms are natively decoded at 16 kHz. Saving the unchanged
+# samples with another rate changes playback speed and invalidates audio ASR.
+DEFAULT_OUTPUT_SAMPLE_RATE = 16_000
+
+# Lazy per-(model_path, device) Whisper transcriber cache for s2s traces.
+_TRANSCRIBER_CACHE: dict[tuple[str, str], Any] = {}
 
 
 def infer(
@@ -19,6 +24,7 @@ def infer(
     output_dir: str | os.PathLike[str] = "outputs/infer",
     checkpoint: str | None = None,
     target_framerate_hz: float | None = None,
+    transcribe_model_path: str | None = None,
     output_sample_rate: int = DEFAULT_OUTPUT_SAMPLE_RATE,
 ) -> dict[str, Any]:
     """Infer one request and return a record in the unified trace schema."""
@@ -42,7 +48,27 @@ def infer(
             checkpoint=checkpoint,
             target_framerate_hz=target_framerate_hz,
         )
-    raise ValueError(f"Unsupported inference task: {task!r}; expected 'tts' or 'asr'")
+    if task == "audio_qa":
+        return _infer_audio_qa(
+            engine,
+            request,
+            checkpoint=checkpoint,
+            target_framerate_hz=target_framerate_hz,
+        )
+    if task == "s2s":
+        return _infer_s2s(
+            engine,
+            request,
+            output_dir=Path(output_dir),
+            checkpoint=checkpoint,
+            target_framerate_hz=target_framerate_hz,
+            transcribe_model_path=transcribe_model_path,
+            output_sample_rate=output_sample_rate,
+        )
+    raise ValueError(
+        f"Unsupported inference task: {task!r}; "
+        "expected 'tts', 'asr', 'audio_qa' or 's2s'"
+    )
 
 
 def _infer_tts(
@@ -87,6 +113,7 @@ def _infer_tts(
         output_audio_path=str(audio_path.resolve()),
         reference_text=parts.evaluation.get("reference_text"),
         prediction_text=None,
+        subset=parts.evaluation.get("subset"),
         group=parts.evaluation.get("group"),
         metadata=parts.metadata,
         checkpoint=checkpoint,
@@ -129,6 +156,7 @@ def _infer_asr(
         output_audio_path=None,
         reference_text=parts.evaluation.get("reference_text"),
         prediction_text=prediction,
+        subset=parts.evaluation.get("subset"),
         group=parts.evaluation.get("group"),
         metadata=parts.metadata,
         checkpoint=checkpoint,
@@ -136,6 +164,178 @@ def _infer_asr(
         audio_duration_seconds=_audio_duration(Path(audio_path)),
         engine=engine,
     )
+
+
+def _infer_audio_qa(
+    engine: Any,
+    request: Mapping[str, Any],
+    *,
+    checkpoint: str | None,
+    target_framerate_hz: float | None,
+) -> dict[str, Any]:
+    """Audio question answering: audio + text query -> text answer only."""
+    parts = _request_parts(request)
+    audio_path = _required_string(parts.input, "audio_path", task="audio_qa")
+    framerate = _target_framerate(engine, parts.metadata, target_framerate_hz)
+    # audio-only by default (matches legacy VoiceBench s2t): empty text query,
+    # the user turn contains only the audio token.
+    model_prompt = parts.input.get("model_prompt") or ""
+
+    result = engine.generate_from_audio(
+        audio_path=audio_path,
+        text_query=model_prompt,
+        framerate=framerate,
+        output_text_only=True,
+    )
+    if isinstance(result, Mapping):
+        prediction = str(result.get("text") or "")
+    elif isinstance(result, str):
+        prediction = result
+    else:
+        raise TypeError("generate_from_audio() must return a mapping or string")
+
+    return _trace(
+        index=parts.index,
+        task="audio_qa",
+        input_data=parts.input,
+        output_text=prediction,
+        output_audio_path=None,
+        reference_text=parts.evaluation.get("reference_text")
+        or parts.evaluation.get("answer"),
+        prediction_text=prediction,
+        subset=parts.evaluation.get("subset"),
+        group=parts.evaluation.get("group"),
+        answer=parts.evaluation.get("answer"),
+        audio_content=parts.evaluation.get("audio_content"),
+        instruction=parts.evaluation.get("instruction"),
+        instruction_kwargs=parts.evaluation.get("instruction_kwargs"),
+        metadata=parts.metadata,
+        checkpoint=checkpoint,
+        target_framerate_hz=framerate,
+        audio_duration_seconds=_audio_duration(Path(audio_path)),
+        engine=engine,
+    )
+
+
+def _infer_s2s(
+    engine: Any,
+    request: Mapping[str, Any],
+    *,
+    output_dir: Path,
+    checkpoint: str | None,
+    target_framerate_hz: float | None,
+    transcribe_model_path: str | None,
+    output_sample_rate: int,
+) -> dict[str, Any]:
+    """Speech-to-speech: audio + text query -> audio, optionally transcribed."""
+    parts = _request_parts(request)
+    audio_path = _required_string(parts.input, "audio_path", task="s2s")
+    framerate = _target_framerate(engine, parts.metadata, target_framerate_hz)
+    # audio-only by default (matches legacy s2s): empty text query, the user
+    # turn contains only the audio token.
+    model_prompt = parts.input.get("model_prompt") or ""
+
+    result = engine.generate_from_audio(
+        audio_path=audio_path,
+        text_query=model_prompt,
+        framerate=framerate,
+        output_text_only=False,
+    )
+    if not isinstance(result, Mapping):
+        raise TypeError("generate_from_audio() must return a mapping for s2s")
+    direct_text = str(result.get("text") or "")
+
+    audio = result.get("audio")
+    if audio is None:
+        audio = _decode_tts_audio(engine, result)
+    if audio is None:
+        raise ValueError("generate_from_audio() did not return decodable audio")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    audio_path_out = output_dir / _wav_name(parts.index, parts.metadata.get("sample_id"))
+    duration = _save_wav(audio_path_out, audio, output_sample_rate)
+
+    transcription = None
+    if transcribe_model_path:
+        transcription = _transcribe_audio(
+            str(audio_path_out.resolve()),
+            model_path=transcribe_model_path,
+            device=str(getattr(engine, "device", "cuda:0")),
+        )
+
+    return _trace(
+        index=parts.index,
+        task="s2s",
+        input_data=parts.input,
+        output_text=direct_text,
+        output_audio_path=str(audio_path_out.resolve()),
+        reference_text=parts.evaluation.get("reference_text")
+        or parts.evaluation.get("answer"),
+        prediction_text=transcription,
+        subset=parts.evaluation.get("subset"),
+        group=parts.evaluation.get("group"),
+        answer=parts.evaluation.get("answer"),
+        audio_content=parts.evaluation.get("audio_content"),
+        instruction=parts.evaluation.get("instruction"),
+        instruction_kwargs=parts.evaluation.get("instruction_kwargs"),
+        metadata=parts.metadata,
+        checkpoint=checkpoint,
+        target_framerate_hz=framerate,
+        audio_duration_seconds=duration,
+        engine=engine,
+    )
+
+
+def _transcribe_audio(audio_path: str, *, model_path: str, device: str) -> str:
+    """Transcribe one WAV with Whisper-Large-V3 (transformers), cached per worker."""
+    key = (model_path, device)
+    if key not in _TRANSCRIBER_CACHE:
+        import torch
+        from transformers import (
+            WhisperForConditionalGeneration,
+            WhisperProcessor,
+        )
+
+        dtype = torch.float16 if str(device).startswith("cuda") else torch.float32
+        processor = WhisperProcessor.from_pretrained(model_path, local_files_only=True)
+        model = (
+            WhisperForConditionalGeneration.from_pretrained(
+                model_path, local_files_only=True, torch_dtype=dtype
+            )
+            .to(device)
+            .eval()
+        )
+
+        @torch.inference_mode()
+        def _transcribe_one(path: str) -> str:
+            import torchaudio
+            import torchaudio.transforms as T
+
+            audio, source_rate = torchaudio.load(path)
+            if audio.shape[0] > 1:
+                audio = audio.mean(dim=0, keepdim=True)
+            if source_rate != 16_000:
+                audio = T.Resample(source_rate, 16_000)(audio)
+            audio = audio.squeeze(0).cpu().numpy()
+            inputs = processor(
+                audio,
+                sampling_rate=16_000,
+                return_tensors="pt",
+                return_attention_mask=True,
+            )
+            features = inputs.input_features.to(device, dtype=model.dtype)
+            attention_mask = inputs.attention_mask.to(device)
+            generated = model.generate(
+                features,
+                attention_mask=attention_mask,
+                language="english",
+                task="transcribe",
+            )
+            return processor.batch_decode(
+                generated, skip_special_tokens=True
+            )[0].strip()
+
+        _TRANSCRIBER_CACHE[key] = _transcribe_one
+    return _TRANSCRIBER_CACHE[key](audio_path)
 
 
 class _RequestParts:
@@ -206,7 +406,12 @@ def _trace(
     output_audio_path: str | None,
     reference_text: Any,
     prediction_text: str | None,
+    subset: Any,
     group: Any,
+    answer: Any = None,
+    audio_content: Any = None,
+    instruction: Any = None,
+    instruction_kwargs: Any = None,
     metadata: Mapping[str, Any],
     checkpoint: str | None,
     target_framerate_hz: float | None,
@@ -225,7 +430,12 @@ def _trace(
         "evaluation": {
             "reference_text": reference_text,
             "prediction_text": prediction_text,
+            "subset": subset,
             "group": group,
+            "answer": answer,
+            "audio_content": audio_content,
+            "instruction": instruction,
+            "instruction_kwargs": instruction_kwargs,
         },
         "metadata": {
             "sample_id": metadata.get("sample_id"),
@@ -294,9 +504,26 @@ def _decode_tts_audio(engine: Any, result: Mapping[str, Any]) -> Any:
 
 def _audio_duration(path: Path) -> float | None:
     try:
-        import soundfile
+        import wave
 
-        info = soundfile.info(str(path))
-        return float(info.frames / info.samplerate)
-    except (ImportError, OSError, RuntimeError, ValueError, ZeroDivisionError):
+        with wave.open(str(path), "rb") as handle:
+            frame_rate = handle.getframerate()
+            if frame_rate <= 0:
+                return None
+            return float(handle.getnframes() / frame_rate)
+    except (EOFError, OSError, wave.Error):
+        pass
+
+    try:
+        import torchaudio
+
+        info_fn = getattr(torchaudio, "info", None)
+        if callable(info_fn):
+            info = info_fn(str(path))
+            return float(info.num_frames / info.sample_rate)
+        waveform, sample_rate = torchaudio.load(str(path))
+        if sample_rate <= 0:
+            return None
+        return float(waveform.shape[-1] / sample_rate)
+    except (AttributeError, ImportError, OSError, RuntimeError, ValueError, ZeroDivisionError):
         return None

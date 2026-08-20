@@ -1,11 +1,39 @@
-
-xlsx_sample_num: 5
-
-audio_root: path/to/VoiceAssistant-400K/audio
+# Paths are relative to the repository root and match README.md.
+dataset_backend: webdataset_stream
+num_mel_bins: 128
 
 dataset:
-  # Here we use voiceassistant dataset as example. For actual training we use FSLM-Data instead of VoiceAssistant-400K
-  voiceassistant_400k:
+  speech2speech:
     ratio: 1.0
+    data_format: webdataset_stream
     data_paths:
-      - path/to/voiceassistant_400k.filtered.with_durations.jsonl
+      - data/training/FlexiSLM-Data-2M-s2s-compact/data/train-{00000..00242}-of-00243.tar
+    webdataset:
+      layout: s2s_pair
+      audio_extensions: [wav, flac, mp3, m4a, ogg]
+      duplicate_member_policy: error
+
+webdataset_runtime:
+  sampling:
+    mode: finite_padded
+    # ceil(2,425,778 samples / (8 GPUs * 5 samples per GPU))
+    steps_per_epoch: 60645
+    seed: 42
+    shuffle: true
+  shuffle:
+    max_samples: 4096
+    initial_samples: 1024
+    max_bytes: 2147483648
+  bucketing:
+    pool_samples: 2048
+    pool_bytes: 1073741824
+    chunk_size: 128
+  batching:
+    max_cost: 5000
+    max_samples: 5
+    min_samples: 1
+    drop_last: false
+    oversized_sample: drop
+    decode_failure_policy: skip_and_refill
+  errors:
+    max_consecutive_errors: 100

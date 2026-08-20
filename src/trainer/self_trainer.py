@@ -21,24 +21,17 @@ The Trainer class, to easily train a 🤗 Transformers from scratch or finetune 
 _TEXT_LOSS_SKIP_THRESHOLD = 6.0
 _TEXT_LOSS_SKIP_AFTER_STEP = 30000
 
+import json
 import os
 import random
 import logging
 from functools import partial
 import torch
-from torch import nn
 from torch.utils.data import DataLoader
-from typing import Any, Union
 from tqdm import tqdm
 from transformers import Trainer, TrainerCallback
-from transformers.trainer_utils import SaveStrategy, seed_worker
-from transformers.utils import is_datasets_available, is_sagemaker_mp_enabled
-
-# Import datasets module
-try:
-    import datasets
-except ImportError:
-    datasets = None
+from transformers.trainer_utils import EvalLoopOutput, SaveStrategy, seed_worker
+from transformers.utils import is_sagemaker_mp_enabled
 
 logger = logging.getLogger(__name__)
 logger.setLevel("INFO")
@@ -113,8 +106,7 @@ class TokenBudgetBatchSampler(torch.utils.data.Sampler):
         return batches
 
     def _rank_batches(self):
-        """Slice the shuffled order for this rank only."""
-        # Drop tail that doesn't divide evenly (like drop_last for DDP)
+        """Slice complete batch groups evenly across training ranks."""
         total = len(self._order)
         usable = (total // self.world_size) * self.world_size
         order = self._order[:usable]
@@ -157,11 +149,134 @@ class SkipFinalCheckpointCallback(TrainerCallback):
         return self._skip_final_save(args, state, control, SaveStrategy.EPOCH)
 
 
+class TrainingProfilerCallback(TrainerCallback):
+    """Capture a short CPU/CUDA/NCCL trace when explicitly enabled.
+
+    Set ``FLEXISLM_PROFILE_DIR`` to enable profiling. The wait, warmup, and
+    active step counts default to 10/5/20 and can be changed with matching
+    ``FLEXISLM_PROFILE_*_STEPS`` environment variables. Each distributed rank
+    writes a separate TensorBoard-compatible trace directory.
+    """
+
+    def __init__(self):
+        self.profiler = None
+        self.profile_steps = 0
+        self.total_profile_steps = 0
+
+    def on_train_begin(self, args, state, control, **kwargs):
+        root = os.environ.get("FLEXISLM_PROFILE_DIR")
+        if not root:
+            return control
+        wait = int(os.environ.get("FLEXISLM_PROFILE_WAIT_STEPS", "10"))
+        warmup = int(os.environ.get("FLEXISLM_PROFILE_WARMUP_STEPS", "5"))
+        active = int(os.environ.get("FLEXISLM_PROFILE_ACTIVE_STEPS", "20"))
+        if min(wait, warmup, active) < 0 or active == 0:
+            raise ValueError(
+                "FlexiSLM profiler step counts must be non-negative and active > 0"
+            )
+        trace_dir = os.path.join(root, f"rank{args.process_index}")
+        os.makedirs(trace_dir, exist_ok=True)
+        activities = [torch.profiler.ProfilerActivity.CPU]
+        if torch.cuda.is_available():
+            activities.append(torch.profiler.ProfilerActivity.CUDA)
+        self.profiler = torch.profiler.profile(
+            activities=activities,
+            schedule=torch.profiler.schedule(
+                wait=wait, warmup=warmup, active=active, repeat=1
+            ),
+            on_trace_ready=torch.profiler.tensorboard_trace_handler(trace_dir),
+            record_shapes=True,
+            profile_memory=True,
+            with_stack=False,
+        )
+        self.profiler.__enter__()
+        self.profile_steps = 0
+        self.total_profile_steps = wait + warmup + active
+        logger.info(
+            "Enabled training profiler for rank %d: wait=%d warmup=%d active=%d output=%s",
+            args.process_index,
+            wait,
+            warmup,
+            active,
+            trace_dir,
+        )
+        return control
+
+    def _close(self):
+        if self.profiler is not None:
+            self.profiler.__exit__(None, None, None)
+            self.profiler = None
+
+    def on_step_end(self, args, state, control, **kwargs):
+        if self.profiler is not None:
+            self.profiler.step()
+            self.profile_steps += 1
+            if self.profile_steps >= self.total_profile_steps:
+                self._close()
+        return control
+
+    def on_train_end(self, args, state, control, **kwargs):
+        self._close()
+        return control
+
+
 class ATrainer(Trainer):
+    _NATIVE_DATALOADER_STATE = "native_dataloader_state_rank{rank}.json"
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        # This trainer performs its own task/token normalization.
+        self.model_accepts_loss_kwargs = False
+        self._native_resume_checkpoint = None
+        self._native_train_loader = None
+        self._task_metric_sums = None
+        self._task_metric_counts = None
+        self._task_sample_counts = None
         # Run after DefaultFlowCallback so its forced final checkpoint is disabled.
         self.add_callback(SkipFinalCheckpointCallback)
+        self.add_callback(TrainingProfilerCallback)
+
+    def _native_dataloader_state_path(self, checkpoint_dir):
+        return os.path.join(
+            checkpoint_dir,
+            self._NATIVE_DATALOADER_STATE.format(rank=self.args.process_index),
+        )
+
+    def _load_from_checkpoint(self, resume_from_checkpoint, model=None):
+        result = super()._load_from_checkpoint(resume_from_checkpoint, model=model)
+        if getattr(self.train_dataset, "is_native_webdataset", False):
+            state_path = self._native_dataloader_state_path(resume_from_checkpoint)
+            if os.path.isfile(state_path):
+                self._native_resume_checkpoint = resume_from_checkpoint
+                # The stateful loader performs deterministic replay itself. Letting
+                # Trainer also call skip_first_batches would advance the stream twice.
+                self.args.ignore_data_skip = True
+                logger.info("Will restore native WebDataset state from %s", state_path)
+            else:
+                logger.warning(
+                    "Native WebDataset state is absent from %s; falling back to "
+                    "Trainer batch skipping",
+                    resume_from_checkpoint,
+                )
+        return result
+
+    def _save_checkpoint(self, model, trial):
+        super()._save_checkpoint(model, trial)
+        loader = self._native_train_loader
+        state_fn = getattr(loader, "state_dict", None)
+        if not callable(state_fn):
+            return
+        run_dir = self._get_output_dir(trial=trial)
+        checkpoint_dir = os.path.join(run_dir, f"checkpoint-{self.state.global_step}")
+        os.makedirs(checkpoint_dir, exist_ok=True)
+        state_path = self._native_dataloader_state_path(checkpoint_dir)
+        temporary_path = f"{state_path}.tmp.{os.getpid()}"
+        with open(temporary_path, "w", encoding="utf-8") as stream:
+            json.dump(state_fn(), stream, sort_keys=True)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary_path, state_path)
 
     def create_optimizer(self):
         talker_lr = getattr(self.args, "talker_learning_rate", None)
@@ -253,16 +368,23 @@ class ATrainer(Trainer):
         )
         return self.optimizer
 
-    def _get_dataset_lengths(self, dataset):
-        if hasattr(dataset, "lengths"):
-            return dataset.lengths
-        if (
-            isinstance(dataset, torch.utils.data.Subset)
-            and hasattr(dataset.dataset, "lengths")
-        ):
-            base_lengths = dataset.dataset.lengths
-            return [base_lengths[i] for i in dataset.indices]
+    def _get_named_param_group_lr(self, group_name):
+        optimizer = getattr(self, "optimizer", None)
+        if optimizer is None:
+            return None
+        for param_group in optimizer.param_groups:
+            name = param_group.get("name")
+            if name == group_name or (
+                isinstance(name, str) and name.startswith(f"{group_name}_")
+            ):
+                lr = param_group.get("lr")
+                if lr is None:
+                    return None
+                if torch.is_tensor(lr):
+                    return float(lr.detach().item())
+                return float(lr)
         return None
+
     def _get_train_sampler(self, train_dataset=None):
         if train_dataset is None:
             train_dataset = self.train_dataset
@@ -275,7 +397,44 @@ class ATrainer(Trainer):
             )
         return super()._get_train_sampler(train_dataset)
 
+    def _disable_accelerate_batch_dispatch(self):
+        dataloader_config = getattr(self.accelerator, "dataloader_config", None)
+        if dataloader_config is not None:
+            dataloader_config.dispatch_batches = False
+            dataloader_config.split_batches = False
+            dataloader_config.even_batches = False
+
+    def _build_native_webloader(self, dataset):
+        self._disable_accelerate_batch_dispatch()
+        return dataset.build_loader(
+            collate_fn=self.data_collator,
+            num_workers=self.args.dataloader_num_workers,
+            pin_memory=self.args.dataloader_pin_memory,
+            persistent_workers=self.args.dataloader_persistent_workers,
+            prefetch_factor=getattr(self.args, "dataloader_prefetch_factor", None),
+        )
+
     def get_train_dataloader(self) -> DataLoader:
+        train_dataset = self.train_dataset
+        if getattr(train_dataset, "is_native_webdataset", False):
+            # The dataset already partitions shards by rank and emits complete
+            # dynamic batches. Accelerate must not dispatch or split them again.
+            loader = self._build_native_webloader(train_dataset)
+            if self._native_resume_checkpoint is not None:
+                state_path = self._native_dataloader_state_path(
+                    self._native_resume_checkpoint
+                )
+                with open(state_path, "r", encoding="utf-8") as stream:
+                    loader.load_state_dict(json.load(stream))
+                logger.info(
+                    "Restored native WebDataset cursor from %s; replay will occur "
+                    "from the start of the saved epoch",
+                    state_path,
+                )
+                self._native_resume_checkpoint = None
+            self._native_train_loader = loader
+            return loader
+
         max_tokens = getattr(self.args, "max_tokens_per_batch", None)
         if max_tokens is None:
             return super().get_train_dataloader()
@@ -284,7 +443,6 @@ class ATrainer(Trainer):
         if getattr(self.args, "per_device_train_batch_size", None) is not None:
             max_batch_size = max(1, 3 * self.args.per_device_train_batch_size)
 
-        train_dataset = self.train_dataset
         if not hasattr(train_dataset, "lengths"):
             raise ValueError("Dataset has no 'lengths' attribute; "
                              "falling back to default dataloader")
@@ -332,116 +490,181 @@ class ATrainer(Trainer):
         )
         return dataloader
         # return self.accelerator.prepare(dataloader)
-    def get_eval_dataloader(self, eval_dataset=None) -> DataLoader:
-        """
-        Build the eval dataloader without Hugging Face's RemoveColumnsCollator.
 
-        InterleavedDataCollator needs fields such as `input_ids_per_turn` that
-        are not standard model-forward columns for wrapped/PEFT models. The
-        default Trainer eval dataloader can strip them before collation.
-        """
-        if eval_dataset is None and self.eval_dataset is None:
-            raise ValueError("Trainer: evaluation requires an eval_dataset.")
+    def get_eval_dataloader(self, eval_dataset=None):
+        if eval_dataset is None:
+            eval_dataset = self.eval_dataset
+        if isinstance(eval_dataset, str):
+            eval_dataset = self.eval_dataset[eval_dataset]
+        if getattr(eval_dataset, "is_native_webdataset", False):
+            set_epoch = getattr(eval_dataset, "set_epoch", None)
+            if callable(set_epoch):
+                set_epoch(0)
+            return self._build_native_webloader(eval_dataset)
+        return super().get_eval_dataloader(eval_dataset)
 
-        dataloader_key = eval_dataset if isinstance(eval_dataset, str) else "eval"
-        if (
-            hasattr(self, "_eval_dataloaders")
-            and dataloader_key in self._eval_dataloaders
-            and self.args.dataloader_persistent_workers
-        ):
-            return self._eval_dataloaders[dataloader_key]
+    _EVAL_STAT_FIELDS = (
+        "text_loss_sum",
+        "text_token_count",
+        "audio_loss_sum",
+        "audio_token_count",
+        "length_loss_sum",
+        "length_token_count",
+        "auxiliary_loss_sum",
+        "samples",
+        "batches",
+        "finite_batches",
+    )
 
-        eval_dataset = (
-            self.eval_dataset[eval_dataset]
-            if isinstance(eval_dataset, str)
-            else eval_dataset
-            if eval_dataset is not None
-            else self.eval_dataset
-        )
-        max_tokens = getattr(self.args, "max_tokens_per_batch", None)
-        if max_tokens is not None:
-            max_batch_size = None
-            if getattr(self.args, "per_device_train_batch_size", None) is not None:
-                max_batch_size = max(1, 3 * self.args.per_device_train_batch_size)
-
-            eval_lengths = self._get_dataset_lengths(eval_dataset)
-            if eval_lengths is None:
-                raise ValueError(
-                    "Eval dataset has no 'lengths' attribute; "
-                    "cannot use the training token-budget sampler"
-                )
-
-            batch_sampler = TokenBudgetBatchSampler(
-                lengths=eval_lengths,
-                max_tokens=max_tokens,
-                max_batch_size=max_batch_size,
-                shuffle=True,
-                seed=self.args.seed,
-                drop_last=self.args.dataloader_drop_last,
-                rank=self.args.process_index,
-                world_size=self.args.world_size,
-            )
-
-            dataloader_params = {
-                "batch_sampler": batch_sampler,
-                "collate_fn": self.data_collator,
-                "num_workers": self.args.dataloader_num_workers,
-                "pin_memory": self.args.dataloader_pin_memory,
-                "worker_init_fn": partial(
-                    seed_worker,
-                    num_workers=self.args.dataloader_num_workers,
-                    rank=self.args.process_index,
-                ),
-            }
-            if self.args.dataloader_persistent_workers and self.args.dataloader_num_workers > 0:
-                dataloader_params["persistent_workers"] = True
-
-            dataloader = DataLoader(eval_dataset, **dataloader_params)
-
-            _sample = batch_sampler._batches[:500] if len(batch_sampler._batches) > 500 else batch_sampler._batches
-            batch_sizes = [len(b) for b in _sample]
-            logger.info(
-                f"Eval TokenBudgetBatchSampler: max_tokens={max_tokens}, "
-                f"max_batch_size={max_batch_size}, "
-                f"{len(batch_sampler)} batches/eval, "
-                f"batch_size (sampled) min={min(batch_sizes)} avg={sum(batch_sizes)/len(batch_sizes):.1f} "
-                f"max={max(batch_sizes)}"
-            )
-
-            if self.args.dataloader_persistent_workers:
-                if hasattr(self, "_eval_dataloaders"):
-                    self._eval_dataloaders[dataloader_key] = dataloader
-                else:
-                    self._eval_dataloaders = {dataloader_key: dataloader}
-
-            return dataloader
-
-        dataloader_params = {
-            "batch_size": self.args.eval_batch_size,
-            "collate_fn": self.data_collator,
-            "num_workers": self.args.dataloader_num_workers,
-            "pin_memory": self.args.dataloader_pin_memory,
+    def _init_eval_stats(self, device):
+        return {
+            name: torch.zeros((), device=device, dtype=torch.float64)
+            for name in self._EVAL_STAT_FIELDS
         }
-        if self.args.dataloader_persistent_workers and self.args.dataloader_num_workers > 0:
-            dataloader_params["persistent_workers"] = True
-        if self.args.dataloader_num_workers > 0:
-            dataloader_params["prefetch_factor"] = self.args.dataloader_prefetch_factor
 
-        if not isinstance(eval_dataset, torch.utils.data.IterableDataset):
-            sampler = self._get_train_sampler(eval_dataset)
-            if sampler is not None:
-                dataloader_params["sampler"] = sampler
-            dataloader_params["drop_last"] = self.args.dataloader_drop_last
+    def _accumulate_eval_stats(self, stats, outputs, inputs, loss):
+        stats["batches"] += 1.0
+        sample_count = self._get_local_batch_size(inputs)
+        if sample_count is not None:
+            stats["samples"] += float(sample_count)
+        if loss is None or not bool(torch.isfinite(loss.detach()).all().item()):
+            return
+        stats["finite_batches"] += 1.0
+        for name in (
+            "text_loss_sum",
+            "text_token_count",
+            "audio_loss_sum",
+            "audio_token_count",
+            "length_loss_sum",
+            "length_token_count",
+        ):
+            value = self._output_value(outputs, name)
+            if value is not None and torch.is_tensor(value):
+                stats[name] += value.detach().to(dtype=torch.float64).reshape(())
+        auxiliary = self._output_value(outputs, "auxiliary_loss")
+        if auxiliary is not None and torch.is_tensor(auxiliary):
+            stats["auxiliary_loss_sum"] += auxiliary.detach().to(
+                dtype=torch.float64
+            ).reshape(())
 
-        dataloader = self.accelerator.prepare(DataLoader(eval_dataset, **dataloader_params))
+    def _finalize_eval_stats(self, stats, metric_key_prefix):
+        names = list(self._EVAL_STAT_FIELDS)
+        stacked = torch.stack([stats[name] for name in names])
+        stacked = self._distributed_sum(stacked)
+        reduced = {
+            name: float(value.item()) for name, value in zip(names, stacked)
+        }
 
-        if self.args.dataloader_persistent_workers:
-            if hasattr(self, "_eval_dataloaders"):
-                self._eval_dataloaders[dataloader_key] = dataloader
-            else:
-                self._eval_dataloaders = {dataloader_key: dataloader}
+        def mean(sum_name, count_name):
+            count = reduced[count_name]
+            if count <= 0:
+                return None
+            return reduced[sum_name] / count
 
-        return dataloader
+        text_token_loss = mean("text_loss_sum", "text_token_count")
+        audio_token_loss = mean("audio_loss_sum", "audio_token_count")
+        length_loss = mean("length_loss_sum", "length_token_count")
+        config = getattr(self._unwrap_model(self.model), "config", None)
+        text_weight = float(getattr(config, "text_loss_weight", 1.0) or 1.0)
+        if getattr(config, "freeze_talker", False):
+            combined = text_token_loss
+        elif getattr(config, "only_train_talker", False):
+            parts = [part for part in (audio_token_loss, length_loss) if part is not None]
+            combined = sum(parts) if parts else None
+        else:
+            parts = [
+                part
+                for part in (text_token_loss, audio_token_loss, length_loss)
+                if part is not None
+            ]
+            combined = sum(parts) if parts else None
+        finite_batches = reduced["finite_batches"]
+        if combined is not None and finite_batches > 0 and reduced["auxiliary_loss_sum"]:
+            combined = combined + reduced["auxiliary_loss_sum"] / finite_batches
+
+        metrics = {}
+        if combined is not None:
+            metrics["loss"] = combined
+        if text_token_loss is not None:
+            metrics["text_token_loss"] = text_token_loss
+            metrics["text_ce_loss"] = (
+                text_token_loss / text_weight if text_weight else text_token_loss
+            )
+        if audio_token_loss is not None:
+            metrics["audio_token_loss"] = audio_token_loss
+        if length_loss is not None:
+            metrics["length_loss"] = length_loss
+        metrics["samples"] = reduced["samples"]
+        metrics["batches"] = reduced["batches"]
+        metrics["text_token_count"] = reduced["text_token_count"]
+        metrics["audio_token_count"] = reduced["audio_token_count"]
+        metrics["length_token_count"] = reduced["length_token_count"]
+        prefixed = {
+            key
+            if key.startswith(f"{metric_key_prefix}_")
+            else f"{metric_key_prefix}_{key}": value
+            for key, value in metrics.items()
+        }
+        return prefixed, int(reduced["samples"])
+
+    def evaluation_loop(
+        self,
+        dataloader,
+        description,
+        prediction_loss_only=None,
+        ignore_keys=None,
+        metric_key_prefix="eval",
+    ):
+        eval_dataset = getattr(dataloader, "dataset", None)
+        if not getattr(eval_dataset, "is_native_webdataset", False):
+            return super().evaluation_loop(
+                dataloader,
+                description,
+                prediction_loss_only=prediction_loss_only,
+                ignore_keys=ignore_keys,
+                metric_key_prefix=metric_key_prefix,
+            )
+
+        args = self.args
+        model = self.model
+        if hasattr(model, "eval") and callable(model.eval):
+            model.eval()
+        logger.info("***** Running %s *****", description)
+        logger.info("  Num examples: Unknown")
+        logger.info("  Native WebDataset validation: token-weighted loss reduction")
+        self.callback_handler.eval_dataloader = dataloader
+
+        try:
+            device = next(model.parameters()).device
+        except StopIteration:
+            device = args.device
+        stats = self._init_eval_stats(device)
+        for step, inputs in enumerate(dataloader):
+            inputs = self._prepare_inputs(inputs)
+            with torch.no_grad():
+                with self.compute_loss_context_manager():
+                    loss, outputs = self.compute_loss(
+                        model, inputs, return_outputs=True
+                    )
+            self._accumulate_eval_stats(stats, outputs, inputs, loss)
+            self.control = self.callback_handler.on_prediction_step(
+                args, self.state, self.control
+            )
+
+        metrics, num_samples = self._finalize_eval_stats(stats, metric_key_prefix)
+        logger.info(
+            "Native WebDataset %s finished: samples=%d batches=%.0f loss=%s",
+            description,
+            num_samples,
+            metrics.get(f"{metric_key_prefix}_batches", 0.0),
+            metrics.get(f"{metric_key_prefix}_loss"),
+        )
+        return EvalLoopOutput(
+            predictions=None,
+            label_ids=None,
+            metrics=metrics,
+            num_samples=num_samples,
+        )
 
     def _unwrap_model(self, model):
         if getattr(self, "accelerator", None) is not None:
@@ -464,73 +687,359 @@ class ATrainer(Trainer):
                 return int(value.shape[0])
         return None
 
-    def _update_total_samples_seen(self, inputs):
-        if self.args.process_index != 0:
-            return None, None
+    @staticmethod
+    def _output_value(outputs, name):
+        if isinstance(outputs, dict):
+            return outputs.get(name)
+        return getattr(outputs, name, None)
 
+    @staticmethod
+    def _distributed_sum(value):
+        total = value.detach().clone()
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
+            torch.distributed.all_reduce(total, op=torch.distributed.ReduceOp.SUM)
+        return total
+
+    @staticmethod
+    def _zero_loss_from_model(model, reference):
+        zero_loss = None
+        for parameter in model.parameters():
+            if parameter.requires_grad and parameter.numel() > 0:
+                term = parameter.reshape(-1)[0] * 0.0
+                zero_loss = term if zero_loss is None else zero_loss + term
+        if zero_loss is None:
+            zero_loss = reference.new_zeros((), requires_grad=True)
+        return zero_loss
+
+    @staticmethod
+    def _connected_loss_sum(loss_sum, loss_mean, token_count):
+        if torch.is_tensor(loss_sum) and bool(loss_sum.requires_grad):
+            return loss_sum
+        if (
+            torch.is_tensor(loss_mean)
+            and bool(loss_mean.requires_grad)
+            and token_count is not None
+        ):
+            return loss_mean.reshape(()) * token_count.reshape(())
+        return loss_sum
+
+    @staticmethod
+    def _loss_with_live_graph(live_loss, scaled_loss):
+        live = live_loss.reshape(())
+        scaled = scaled_loss.reshape(())
+        live_value = live.detach()
+        if bool(torch.isfinite(live_value).all().item()) and bool(
+            live_value.abs().gt(0).all().item()
+        ):
+            return live * (scaled.detach() / live_value)
+        return live
+
+    def _normalize_model_loss(
+        self, model, outputs, fallback_loss, *, reduce_across_processes=True
+    ):
+        component_names = (
+            ("text_loss_sum", "text_token_count", "text_loss"),
+            ("audio_loss_sum", "audio_token_count", "audio_loss"),
+            ("length_loss_sum", "length_token_count", "length_loss"),
+        )
+        local_sums = []
+        local_counts = []
+        for loss_name, count_name, mean_name in component_names:
+            local_sum = self._output_value(outputs, loss_name)
+            local_count = self._output_value(outputs, count_name)
+            if local_sum is None or local_count is None:
+                return fallback_loss
+            local_count = local_count.float().reshape(())
+            local_mean = self._output_value(outputs, mean_name)
+            if mean_name == "audio_loss" and (
+                local_mean is None
+                or not (torch.is_tensor(local_mean) and bool(local_mean.requires_grad))
+            ):
+                local_mean = self._output_value(outputs, "audio_token_loss")
+            local_sums.append(
+                self._connected_loss_sum(local_sum, local_mean, local_count)
+            )
+            local_counts.append(local_count)
+
+        if reduce_across_processes:
+            global_counts = self._distributed_sum(torch.stack(local_counts))
+            world_size = (
+                torch.distributed.get_world_size()
+                if torch.distributed.is_available()
+                and torch.distributed.is_initialized()
+                else 1
+            )
+        else:
+            global_counts = torch.stack(local_counts)
+            world_size = 1
+        components = [
+            local_sum * world_size / global_count
+            if bool(global_count.gt(0).item())
+            else local_sum
+            for local_sum, global_count in zip(local_sums, global_counts)
+        ]
+        text_loss, audio_loss, length_loss = components
+        config = getattr(self._unwrap_model(model), "config", None)
+        if getattr(config, "freeze_talker", False):
+            used = (text_loss,)
+            loss = text_loss
+        elif getattr(config, "only_train_talker", False):
+            used = (audio_loss, length_loss)
+            loss = audio_loss + length_loss
+        else:
+            used = (text_loss, audio_loss, length_loss)
+            loss = text_loss + audio_loss + length_loss
+
+        auxiliary_loss = self._output_value(outputs, "auxiliary_loss")
+        if auxiliary_loss is not None:
+            loss = loss + auxiliary_loss
+        detached = [
+            tensor
+            for tensor in used
+            if torch.is_tensor(tensor) and not bool(tensor.requires_grad)
+        ]
+        if (
+            reduce_across_processes
+            and detached
+            and torch.is_tensor(fallback_loss)
+            and bool(fallback_loss.requires_grad)
+        ):
+            if not getattr(self, "_warned_detached_loss_sums", False):
+                logger.warning(
+                    "Training loss sums were detached; backpropagating the "
+                    "model's live loss with the distributed token-count scale."
+                )
+                self._warned_detached_loss_sums = True
+            loss = self._loss_with_live_graph(fallback_loss, loss)
+        return loss
+
+    def _accumulate_task_metrics(self, outputs):
+        sums = self._output_value(outputs, "task_component_loss_sums")
+        counts = self._output_value(outputs, "task_component_token_counts")
+        sample_counts = self._output_value(outputs, "task_sample_counts")
+        if sums is None or counts is None or sample_counts is None:
+            return
+
+        shape = sums.shape
+        packed = torch.cat(
+            [
+                sums.detach().float().reshape(-1),
+                counts.detach().float().reshape(-1),
+                sample_counts.detach().float().reshape(-1),
+            ]
+        )
+        packed = self._distributed_sum(packed)
+        if self.args.process_index != 0:
+            return
+
+        split = shape.numel()
+        global_sums = packed[:split].view(shape).cpu().double()
+        global_counts = packed[split:2 * split].view(shape).cpu().double()
+        global_samples = packed[2 * split:].cpu().double()
+        if self._task_metric_sums is None:
+            self._task_metric_sums = torch.zeros_like(global_sums)
+            self._task_metric_counts = torch.zeros_like(global_counts)
+            self._task_sample_counts = torch.zeros_like(global_samples)
+        self._task_metric_sums += global_sums
+        self._task_metric_counts += global_counts
+        self._task_sample_counts += global_samples
+
+    def _pop_task_metrics(self):
+        if self._task_metric_sums is None:
+            return {}
+
+        sums = self._task_metric_sums
+        counts = self._task_metric_counts
+        sample_counts = self._task_sample_counts
+        self._task_metric_sums = None
+        self._task_metric_counts = None
+        self._task_sample_counts = None
+
+        metrics = {}
+        task_names = ("asr", "tts", "s2s")
+        component_names = ("text_loss", "audio_loss", "length_loss")
+        for task_id, task_name in enumerate(task_names):
+            component_total = 0.0
+            has_tokens = False
+            for component_id, component_name in enumerate(component_names):
+                count = float(counts[task_id, component_id].item())
+                if count <= 0:
+                    continue
+                value = float((sums[task_id, component_id] / count).item())
+                metrics[f"task/{task_name}/{component_name}"] = value
+                component_total += value
+                has_tokens = True
+            if has_tokens:
+                metrics[f"task/{task_name}/loss"] = component_total
+                metrics[f"task/{task_name}/samples"] = int(sample_counts[task_id].item())
+        return metrics
+
+    def _get_local_batch_tokens(self, inputs):
+        cost = inputs.get("batch_cost") if isinstance(inputs, dict) else None
+        if cost is not None:
+            if torch.is_tensor(cost):
+                return float(cost.detach().float().reshape(-1)[0].item())
+            return float(cost)
+
+        tokens = 0.0
+        for key in ("user_input_ids", "assistant_input_ids"):
+            value = inputs.get(key) if isinstance(inputs, dict) else None
+            if value is not None and torch.is_tensor(value) and value.dim() >= 2:
+                tokens += float(value.shape[0] * value.shape[1])
+        if tokens > 0:
+            return tokens
+        value = inputs.get("input_ids") if isinstance(inputs, dict) else None
+        if value is not None and torch.is_tensor(value) and value.dim() >= 2:
+            return float(value.shape[0] * value.shape[1])
+        return None
+
+    def _update_total_samples_seen(self, inputs):
         local_batch_size = self._get_local_batch_size(inputs)
         if local_batch_size is None:
-            return None, None
+            return None, None, None, None
 
-        world_size = max(1, int(getattr(self.args, "world_size", 1) or 1))
-        global_batch_size = local_batch_size * world_size
+        device = next(
+            (
+                value.device
+                for key, value in inputs.items()
+                if key != "batch_cost" and torch.is_tensor(value)
+            ),
+            self.args.device,
+        )
+        global_batch = torch.tensor(local_batch_size, device=device, dtype=torch.long)
+        global_batch = self._distributed_sum(global_batch)
+        global_batch_size = int(global_batch.item())
 
-        self._latest_local_batch_size = local_batch_size
-        self._latest_global_batch_size = global_batch_size
-        self._total_samples_seen = int(getattr(self, "_total_samples_seen", 0)) + global_batch_size
-        return local_batch_size, global_batch_size
+        local_batch_tokens = self._get_local_batch_tokens(inputs)
+        global_batch_tokens = None
+        if local_batch_tokens is not None:
+            global_tokens = torch.tensor(
+                local_batch_tokens, device=device, dtype=torch.float64
+            )
+            global_tokens = self._distributed_sum(global_tokens)
+            global_batch_tokens = float(global_tokens.item())
+
+        if isinstance(inputs, dict):
+            inputs.pop("batch_cost", None)
+
+        if self.args.process_index == 0:
+            self._latest_local_batch_size = local_batch_size
+            self._latest_global_batch_size = global_batch_size
+            self._latest_local_batch_tokens = local_batch_tokens
+            self._latest_global_batch_tokens = global_batch_tokens
+            self._total_samples_seen = (
+                int(getattr(self, "_total_samples_seen", 0)) + global_batch_size
+            )
+        return local_batch_size, global_batch_size, local_batch_tokens, global_batch_tokens
 
     def log(self, logs, start_time=None):
+        logs = dict(logs)
+        is_eval_log = any(str(key).startswith("eval_") for key in logs)
+        if not is_eval_log:
+            dataset = getattr(self, "train_dataset", None)
+            snapshot_fn = getattr(dataset, "metrics_snapshot", None)
+            if callable(snapshot_fn):
+                for name, value in snapshot_fn().items():
+                    if name.endswith("_sum") or name == "unpadded_cost_sum":
+                        continue
+                    logs[f"webdataset/{name}"] = value
+
         if self.args.process_index == 0:
-            logs = dict(logs)
+            if not is_eval_log and "loss" in logs:
+                logs.update(self._pop_task_metrics())
+
             total_samples_seen = getattr(self, "_total_samples_seen", None)
             if total_samples_seen is not None:
                 logs["total_samples_seen"] = total_samples_seen
 
             global_batch_size = getattr(self, "_latest_global_batch_size", None)
-            if global_batch_size is not None:
+            if global_batch_size is not None and not is_eval_log:
                 logs["global_effective_batch_size"] = global_batch_size
 
-        super().log(logs, start_time=start_time)
+            global_batch_tokens = getattr(self, "_latest_global_batch_tokens", None)
+            if global_batch_tokens is not None and not is_eval_log:
+                logs["effective_batch_tokens"] = getattr(
+                    self, "_latest_local_batch_tokens", global_batch_tokens
+                )
+                logs["global_effective_batch_tokens"] = global_batch_tokens
+
+            if not is_eval_log:
+                talker_lr = self._get_named_param_group_lr("talker")
+                if talker_lr is not None:
+                    logs["talker_learning_rate"] = talker_lr
+
+        return super().log(logs, start_time=start_time)
 
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
         """
         Override compute_loss to extract and log text_loss and length_loss.
         """
-        local_batch_size = None
-        global_batch_size = None
-        is_training = model.training
-        if self.args.process_index == 0 and is_training:
-            local_batch_size, global_batch_size = self._update_total_samples_seen(inputs)
+        is_training_step = bool(model.training)
+        if is_training_step:
+            (
+                local_batch_size,
+                global_batch_size,
+                local_batch_tokens,
+                global_batch_tokens,
+            ) = self._update_total_samples_seen(inputs)
+        else:
+            local_batch_size, global_batch_size = None, None
+            local_batch_tokens, global_batch_tokens = None, None
 
         outputs = model(**inputs)
-        
-        # Extract the main loss
+
+        # Extract and globally normalize the model's summed task losses.
         if isinstance(outputs, dict):
             loss = outputs.get("loss")
         else:
             loss = outputs.loss if hasattr(outputs, "loss") else outputs[0]
-        
-        if (
-            loss is not None
-            and getattr(self.state, "global_step", 0) > _TEXT_LOSS_SKIP_AFTER_STEP
-        ):
-            if isinstance(outputs, dict):
-                text_for_skip = outputs.get("text_ce_loss")
-                if text_for_skip is None:
-                    text_for_skip = outputs.get("text_token_loss")
+        if loss is None:
+            raise RuntimeError("model did not return a loss")
+        loss = self._normalize_model_loss(
+            model, outputs, loss, reduce_across_processes=is_training_step
+        )
+
+        if is_training_step:
+            text_for_skip = self._output_value(outputs, "text_ce_loss")
+            if text_for_skip is None:
+                text_for_skip = self._output_value(outputs, "text_token_loss")
+            local_nonfinite = not bool(torch.isfinite(loss.detach()).all().item())
+            local_spike = False
+            if (
+                text_for_skip is not None
+                and torch.is_tensor(text_for_skip)
+                and getattr(self.state, "global_step", 0) > _TEXT_LOSS_SKIP_AFTER_STEP
+            ):
+                local_spike = bool(
+                    torch.isfinite(text_for_skip.detach()).all().item()
+                    and (text_for_skip.detach() > _TEXT_LOSS_SKIP_THRESHOLD).any().item()
+                )
+
+            skip_flags = torch.tensor(
+                [int(local_nonfinite), int(local_spike)],
+                device=loss.device,
+                dtype=torch.int32,
+            )
+            skip_flags = self._distributed_sum(skip_flags)
+            if bool(skip_flags.any().item()):
+                if int(skip_flags[0].item()) > 0:
+                    self._nonfinite_loss_count = int(
+                        getattr(self, "_nonfinite_loss_count", 0)
+                    ) + 1
+                if self.args.process_index == 0:
+                    logger.warning(
+                        "Skipping micro-step %s before backward: "
+                        "nonfinite_ranks=%d, spike_ranks=%d",
+                        getattr(self.state, "global_step", 0),
+                        int(skip_flags[0].item()),
+                        int(skip_flags[1].item()),
+                    )
+                loss = self._zero_loss_from_model(model, loss)
             else:
-                text_for_skip = getattr(outputs, "text_ce_loss", None)
-                if text_for_skip is None:
-                    text_for_skip = getattr(outputs, "text_token_loss", None)
-            if text_for_skip is not None and torch.is_tensor(text_for_skip):
-                if bool((text_for_skip.detach() > _TEXT_LOSS_SKIP_THRESHOLD).item()):
-                    print(f"Trigger text loss skip threshold: {text_for_skip.item()}, loss: {loss.item()}")
-                    loss = torch.nan_to_num(loss, nan=0.0, posinf=0.0, neginf=0.0)
-                    loss = loss * 0.0
+                self._accumulate_task_metrics(outputs)
 
         # Log metrics to swanlab if available (only on main process)
-        if SWANLAB_AVAILABLE and self.args.process_index == 0:
+        if is_training_step and SWANLAB_AVAILABLE and self.args.process_index == 0:
             metrics_to_log = {}
             base = self._unwrap_model(model)
             w = float(getattr(getattr(base, "config", None), "text_loss_weight", 1.0) or 1.0)
@@ -542,40 +1051,35 @@ class ATrainer(Trainer):
                 text_ce = getattr(outputs, "text_ce_loss", None)
                 text_tok_existing = getattr(outputs, "text_token_loss", None)
 
-            metric_prefix = "" if is_training else "eval/"
-
             if text_ce is not None and torch.is_tensor(text_ce):
-                metrics_to_log[f"{metric_prefix}text_ce_loss"] = text_ce.item()
-                metrics_to_log[f"{metric_prefix}text_token_loss"] = text_ce.item() * w
+                metrics_to_log[f"text_ce_loss"] = text_ce.item()
+                metrics_to_log[f"text_token_loss"] = text_ce.item() * w
             elif text_tok_existing is not None and torch.is_tensor(text_tok_existing):
-                metrics_to_log[f"{metric_prefix}text_token_loss"] = text_tok_existing.item()
+                metrics_to_log[f"text_token_loss"] = text_tok_existing.item()
             if hasattr(outputs, "length_loss") and outputs.length_loss is not None:
-                metrics_to_log[f"{metric_prefix}length_loss"] = outputs.length_loss.item()
+                metrics_to_log[f"length_loss"] = outputs.length_loss.item()
             
             if hasattr(outputs, "audio_token_loss") and outputs.audio_token_loss is not None:
-                metrics_to_log[f"{metric_prefix}audio_token_loss"] = outputs.audio_token_loss.item()
-
-            # Depth transformer (acoustic) losses
-            if hasattr(outputs, "acoustic_loss") and outputs.acoustic_loss is not None:
-                metrics_to_log[f"{metric_prefix}acoustic_loss"] = outputs.acoustic_loss.item()
-            if hasattr(outputs, "acoustic_ce_loss") and outputs.acoustic_ce_loss is not None:
-                metrics_to_log[f"{metric_prefix}acoustic_ce_loss"] = outputs.acoustic_ce_loss.item()
-            if hasattr(outputs, "acoustic_per_codebook_loss") and outputs.acoustic_per_codebook_loss is not None:
-                per_q = outputs.acoustic_per_codebook_loss
-                if torch.is_tensor(per_q):
-                    for q_idx, val in enumerate(per_q.tolist()):
-                        metrics_to_log[f"{metric_prefix}acoustic_loss_q{q_idx}"] = val
+                metrics_to_log[f"audio_token_loss"] = outputs.audio_token_loss.item()
             
             if hasattr(outputs, "loss_text_only_data") and outputs.loss_text_only_data is not None:
-                metrics_to_log[f"{metric_prefix}loss_text_only_data"] = outputs.loss_text_only_data.item()
+                metrics_to_log[f"loss_text_only_data"] = outputs.loss_text_only_data.item()
             
             if hasattr(outputs, "loss_audio_dialog_data") and outputs.loss_audio_dialog_data is not None:
-                metrics_to_log[f"{metric_prefix}loss_audio_dialog_data"] = outputs.loss_audio_dialog_data.item()
+                metrics_to_log[f"loss_audio_dialog_data"] = outputs.loss_audio_dialog_data.item()
 
-            if is_training and local_batch_size is not None:
+            for metric_name in ("avg_input_framerate", "avg_output_framerate"):
+                value = self._output_value(outputs, metric_name)
+                if value is not None and torch.is_tensor(value):
+                    metrics_to_log[metric_name] = float(value.detach().float().item())
+
+            if local_batch_size is not None:
                 metrics_to_log["effective_batch_size"] = local_batch_size
                 metrics_to_log["global_effective_batch_size"] = global_batch_size
                 metrics_to_log["total_samples_seen"] = getattr(self, "_total_samples_seen", 0)
+            if local_batch_tokens is not None:
+                metrics_to_log["effective_batch_tokens"] = local_batch_tokens
+                metrics_to_log["global_effective_batch_tokens"] = global_batch_tokens
 
             # Log metrics only when SwanLab is enabled for this run.
             report_to = getattr(self.args, "report_to", []) if hasattr(self, "args") else []
@@ -586,65 +1090,19 @@ class ATrainer(Trainer):
             )
 
             if metrics_to_log and use_swanlab:
-                # Get step if available, otherwise swanlab will track automatically
+                # Gradient accumulation can call compute_loss multiple times before
+                # global_step advances. SwanLab accepts the first value for a key at
+                # a step and warns for every duplicate, so emit custom metrics only
+                # once per training step.
                 step = None
                 if hasattr(self, "state") and hasattr(self.state, "global_step"):
                     step = self.state.global_step
-                swanlab.log(metrics_to_log, step=step)
+                metric_log_id = step
+                if getattr(self, "_last_swanlab_metric_log_id", None) != metric_log_id:
+                    swanlab.log(metrics_to_log, step=step)
+                    self._last_swanlab_metric_log_id = metric_log_id
         
         return (loss, outputs) if return_outputs else loss
-    def evaluate(self, eval_dataset=None, ignore_keys=None, metric_key_prefix="eval"):
-        """
-        Run eval with prediction_loss_only=False so custom eval metrics are emitted.
-
-        Hugging Face Trainer passes prediction_loss_only=True when compute_metrics
-        is None. This trainer logs model-specific metrics from compute_loss, so we
-        temporarily install a no-op compute_metrics and force args.prediction_loss_only
-        off for evaluation.
-        """
-        original_compute_metrics = self.compute_metrics
-        original_prediction_loss_only = getattr(self.args, "prediction_loss_only", False)
-
-        if original_compute_metrics is None:
-            self.compute_metrics = lambda eval_pred: {}
-        self.args.prediction_loss_only = False
-
-        try:
-            return super().evaluate(
-                eval_dataset=eval_dataset,
-                ignore_keys=ignore_keys,
-                metric_key_prefix=metric_key_prefix,
-            )
-        finally:
-            self.compute_metrics = original_compute_metrics
-            self.args.prediction_loss_only = original_prediction_loss_only
-
-    def prediction_step(
-        self,
-        model: nn.Module,
-        inputs: dict[str, Union[torch.Tensor, Any]],
-        prediction_loss_only: bool,
-        ignore_keys=None,
-    ):
-        """
-        Force loss computation for eval batches that do not contain `labels`.
-
-        The interleaved collator provides model-specific inputs instead of a
-        standard `labels` field. The base Trainer otherwise skips loss
-        computation during eval and only reports throughput metrics.
-        """
-
-        inputs = self._prepare_inputs(inputs)
-        with torch.no_grad():
-            with self.compute_loss_context_manager():
-                loss = self.compute_loss(model, inputs, return_outputs=False)
-
-        if loss is None:
-            return (None, None, None)
-        # Keep logits/labels as None to avoid retaining very large model outputs
-        # while still running with prediction_loss_only=False and collecting loss.
-
-        return (loss.detach().mean(), None, None)
     def on_epoch_begin(self, args, state, control, **kwargs):
         dl = self.get_train_dataloader()
         bs = getattr(dl, "batch_sampler", None) or getattr(
@@ -673,55 +1131,13 @@ class ATrainer(Trainer):
         if inputs is None or len(inputs) == 0:
             raise RuntimeError("inputs is None or empty")
 
-        loss = super().training_step(model, inputs)
+        loss = super().training_step(model, inputs, num_items_in_batch)
 
         if loss is None:
             raise RuntimeError("training_step returned None")
 
-        if torch.is_tensor(loss):
-            loss = torch.nan_to_num(loss, nan=0.0, posinf=0.0, neginf=0.0)
-
         return loss
 
-    
-    # def save_model(self, output_dir=None, _internal_call=False):
-    #     output_dir = output_dir or self.args.output_dir
-        
-    #     # In distributed training, only the main process saves the model.
-    #     if self.args.local_rank != -1 and self.args.local_rank != 0:
-    #         logger.info(f"Process {self.args.local_rank}: skipping model save (only main process saves)")
-    #         return
-        
-    #     # Check whether this is a LoRA model.
-    #     is_peft_model = False
-    #     try:
-    #         # Method 1: check PEFT model attributes.
-    #         if hasattr(self.model, 'is_peft_model'):
-    #             is_peft_model = self.model.is_peft_model
-    #         # Method 2: check model type.
-    #         elif hasattr(self.model, '__class__') and 'PeftModel' in str(self.model.__class__):
-    #             is_peft_model = True
-    #         # Method 3: check whether PEFT-related config exists.
-    #         elif hasattr(self.model, 'peft_config') and self.model.peft_config is not None:
-    #             is_peft_model = True
-    #     except Exception:
-    #         pass
-        
-    #     if is_peft_model:
-    #         # Save LoRA model.
-    #         self.model.save_pretrained(output_dir, safe_serialization=True)
-    #         logger.info(f"LoRA model saved to {output_dir}")
-            
-    #     else:
-    #         # Save full model.
-    #         self.model.save_pretrained(output_dir, safe_serialization=True)
-    #         logger.info(f"Full model saved to {output_dir}")
-        
-    #     # Save tokenizer.
-    #     if self.tokenizer is not None:
-    #         self.tokenizer.save_pretrained(output_dir)
-    #         logger.info(f"Tokenizer saved to {output_dir}")
-    
     def save_metrics(self, split, metrics, combined=True):
         """Override save_metrics to ensure only the main process saves metrics."""
         # In distributed training, only the main process saves metrics.

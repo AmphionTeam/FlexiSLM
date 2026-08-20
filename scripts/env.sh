@@ -10,8 +10,14 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-# Set Python path
+# Set Python path to the repository root so `src.*` imports resolve.
+# FlexiCodec is the installed Python package, not src/models/flexicodec.
 export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
+
+# Prefer conda's libstdc++ over the system one before training starts.
+# Required for torchcodec + conda-forge FFmpeg/OpenVINO (CXXABI_1.3.15).
+# shellcheck source=scripts/prepend_conda_lib.sh
+source "${SCRIPT_DIR}/prepend_conda_lib.sh"
 export SWANLAB_API_KEY="${SWANLAB_API_KEY:-}"  # Set your key in environment; do not hard-code secrets.
 
 # Create SwanLab global state directory before distributed workers start.
@@ -133,30 +139,14 @@ fi
 # Common paths
 WORK_DIR="${WORK_DIR:-$REPO_ROOT}"
 TORCHRUN_BIN="${TORCHRUN_BIN:-$(command -v torchrun 2>/dev/null || true)}"
-DEEPSPEED_CONFIG="${DEEPSPEED_CONFIG:-$REPO_ROOT/config/ds_config_zero2.json}"
 
 if [ -z "${TORCHRUN_BIN}" ]; then
     echo "Warning: torchrun not found in PATH. Falling back to 'torchrun'."
     TORCHRUN_BIN="torchrun"
 fi
 
-# Conditionally derive DeepSpeed argument based on GPU count.
-# Can be overridden by setting USE_DEEPSPEED_SINGLE_GPU=false before sourcing.
-USE_DEEPSPEED_SINGLE_GPU=${USE_DEEPSPEED_SINGLE_GPU:-false}
-if [ ! -f "$DEEPSPEED_CONFIG" ]; then
-    echo "Warning: DeepSpeed config not found at $DEEPSPEED_CONFIG. Disabling DeepSpeed."
-    DEEPSPEED_ARG=""
-elif [ "$GPU_COUNT" -gt 1 ]; then
-    echo "Multiple GPUs detected ($GPU_COUNT). Using DeepSpeed."
-    DEEPSPEED_ARG="--deepspeed $DEEPSPEED_CONFIG"
-elif [ "$USE_DEEPSPEED_SINGLE_GPU" = "true" ]; then
-    echo "Single GPU detected. Using DeepSpeed."
-    DEEPSPEED_ARG="--deepspeed $DEEPSPEED_CONFIG"
-else
-    echo "Single GPU detected. Skipping DeepSpeed."
-    DEEPSPEED_ARG=""
-fi
-export DEEPSPEED_ARG
+# DeepSpeed is configured exclusively by the training YAML's `deepspeed` key.
+# Do not enable it implicitly based on the number of visible GPUs.
 
 # Change to working directory
 cd "$WORK_DIR"

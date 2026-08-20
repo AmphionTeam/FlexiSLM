@@ -36,17 +36,28 @@ from typing import Optional, Tuple, Union, List, Dict
 import random
 import math
 import deepspeed
-import torch.distributed as dist
 import os
 from src.models.configuration_flexislm import MultimodalQwen2Config
+from src.models.generation_alignment import DelayedAudioLengthBuffer
+from src.models.utils import (
+    _load_qwen25o_encoder_state_dict,
+    _patch_qwen3_audio_encoder_forward,
+    _qwen25o_output_dim_from_config,
+    debug_print,
+    get_rank,
+)
 from accelerate import init_empty_weights
-from flexicodec.infer import prepare_model, encode_flexicodec
-import flexicodec.model_blocks.mimi.transformer as Stransformer
-import flexicodec.model_blocks.mimi.transformer_windowed as Stransformer_windowed
 import loguru
 logger = loguru.logger
+
+from flexicodec.infer import prepare_model, encode_flexicodec
+import flexicodec
+import flexicodec.model_blocks.mimi.transformer as Stransformer
+import flexicodec.model_blocks.mimi.transformer_windowed as Stransformer_windowed
+logger.info(f"Using FlexiCodec sources from {getattr(flexicodec, '__file__', None)}")
 IGNORE_TOKEN_ID = -100
 # Talker vocab: first 3 tokens are special (AUD_START, AUD_END, AUD_TAG), then audio codes
+AUDIO_TOKEN_OFFSET = 3  # offset for audio codes in talker vocab (indices 0,1,2 = special tokens)
 
 
 def _resolve_text_alignment_pad_loss_weight(config) -> float:
@@ -61,136 +72,7 @@ def _resolve_text_alignment_pad_loss_weight(config) -> float:
     return 0.0 if getattr(config, "freeze_talker", False) else 0.1
 
 
-# Talker vocab: first 3 tokens are special (AUD_START, AUD_END, AUD_TAG), then audio codes
-AUDIO_TOKEN_OFFSET = 3  # offset for audio codes in talker vocab (indices 0,1,2 = special tokens)
-def _patch_qwen3_audio_encoder_forward(encoder):
-    """Patch Qwen3ASRAudioEncoder.forward so chunking is along time axis (not mel).
-    See AmphionASR/src/qwen3_aut/qwen3_encoder_adapter.py for rationale.
-    Also adds forward_cnn_only and forward_transformer_only for batched transformer encoding.
-    """
-    import types
-    from qwen_asr.core.transformers_backend.modeling_qwen3_asr import _get_feat_extract_output_lengths
-
-    def _forward_cnn_only_single(self, input_features, feature_lens):
-        """Run only the CNN + positional embedding + pack for a single sample.
-        input_features: (H, T) mel, feature_lens: (1,) with value T.
-        Returns (hidden_states (S, D), cu_seqlens (1+num_windows,)).
-        """
-        aftercnn_lens = _get_feat_extract_output_lengths(feature_lens)
-        chunk_num = torch.ceil(feature_lens / (self.n_window * 2)).long()
-        chunk_lengths = torch.tensor(
-            [self.n_window * 2] * int(chunk_num.sum().item()),
-            dtype=torch.long,
-            device=feature_lens.device,
-        )
-        tail_chunk_index = F.pad(chunk_num, (1, 0), value=-1).cumsum(0)[1:]
-        chunk_lengths[tail_chunk_index] = feature_lens % (self.n_window * 2)
-        chunk_lengths[chunk_lengths == 0] = self.n_window * 2
-
-        chunk_list = input_features.T.split(chunk_lengths.tolist(), dim=0)
-        padded_feature = nn.utils.rnn.pad_sequence(chunk_list, batch_first=True).transpose(1, 2)
-        feature_lens_after_cnn = _get_feat_extract_output_lengths(chunk_lengths)
-        padded_mask_after_cnn = nn.utils.rnn.pad_sequence(
-            [torch.ones(length, dtype=torch.bool, device=padded_feature.device) for length in feature_lens_after_cnn],
-            batch_first=True,
-        )
-        padded_feature = padded_feature.unsqueeze(1)
-        padded_embeds = []
-        for chunk in padded_feature.split(self.conv_chunksize, dim=0):
-            padded_embed = F.gelu(self.conv2d1(chunk))
-            padded_embed = F.gelu(self.conv2d2(padded_embed))
-            padded_embed = F.gelu(self.conv2d3(padded_embed))
-            padded_embeds.append(padded_embed)
-        padded_embed = torch.cat(padded_embeds, dim=0)
-        b, c, f, t = padded_embed.size()
-        padded_embed = self.conv_out(padded_embed.permute(0, 3, 1, 2).contiguous().view(b, t, c * f))
-
-        positional_embedding = (
-            self.positional_embedding.positional_embedding[: padded_embed.shape[1], :]
-            .unsqueeze(0)
-            .to(padded_embed.dtype)
-        )
-        padded_embed = padded_embed + positional_embedding
-        hidden_states = padded_embed[padded_mask_after_cnn]
-        cu_chunk_lens = [0]
-        window_aftercnn = padded_mask_after_cnn.shape[-1] * (self.n_window_infer // (self.n_window * 2))
-        for cnn_len in aftercnn_lens:
-            cu_chunk_lens += [window_aftercnn] * (int(cnn_len) // window_aftercnn)
-            remainder = int(cnn_len) % window_aftercnn
-            if remainder != 0:
-                cu_chunk_lens += [remainder]
-        cu_seqlens = torch.tensor(cu_chunk_lens, device=aftercnn_lens.device).cumsum(-1, dtype=torch.int32)
-        return hidden_states, cu_seqlens
-
-    def _forward_transformer_only(self, hidden_states, cu_seqlens):
-        """Run only the encoder layers + ln_post + proj (proj may be Identity) on packed batch."""
-        attention_mask = self._prepare_attention_mask(hidden_states, cu_seqlens)
-        for encoder_layer in self.layers:
-            layer_outputs = encoder_layer(
-                hidden_states,
-                cu_seqlens,
-                attention_mask=attention_mask,
-            )
-            hidden_states = layer_outputs[0]
-        hidden_states = self.ln_post(hidden_states)
-        hidden_states = self.proj1(hidden_states)
-        hidden_states = self.act(hidden_states)
-        hidden_states = self.proj2(hidden_states)
-        return hidden_states
-
-    orig_forward = encoder.forward
-
-    def _patched_forward(
-        self,
-        input_features,
-        feature_lens=None,
-        *args,
-        **kwargs,
-    ):
-        if feature_lens is None:
-            if input_features.ndim == 2:
-                feature_lens = torch.tensor(
-                    [input_features.shape[0]], device=input_features.device, dtype=torch.long
-                )
-            elif input_features.ndim == 3:
-                feature_lens = torch.tensor(
-                    [input_features.shape[1]], device=input_features.device, dtype=torch.long
-                )
-            else:
-                raise ValueError(f"Unexpected input_features shape: {tuple(input_features.shape)}")
-        feature_lens = feature_lens.to(dtype=torch.long)
-        if input_features.ndim != 2:
-            return orig_forward(input_features, feature_lens=feature_lens, *args, **kwargs)
-        t = int(feature_lens[0].item()) if feature_lens.numel() > 0 else input_features.shape[0]
-        if input_features.shape[0] == t:
-            input_features_ft = input_features.transpose(0, 1).contiguous()
-        else:
-            input_features_ft = input_features.contiguous()
-        return orig_forward(input_features_ft, feature_lens=feature_lens, *args, **kwargs)
-
-    encoder.forward = types.MethodType(_patched_forward, encoder)
-    encoder.forward_cnn_only = types.MethodType(_forward_cnn_only_single, encoder)
-    encoder.forward_transformer_only = types.MethodType(_forward_transformer_only, encoder)
-    return encoder
-
-
 num_params = lambda x: f"{sum(p.numel() for p in x.parameters()):,}"
-
-
-def get_rank():
-    """Get the current process rank in distributed training, or 0 if not distributed."""
-    if dist.is_initialized():
-        return dist.get_rank()
-    else:
-        return 0
-
-
-def get_world_size():
-    """Get the world size in distributed training, or 1 if not distributed."""
-    if dist.is_initialized():
-        return dist.get_world_size()
-    else:
-        return 1
 
 
 def choose_rank_shifted_option(options):
@@ -206,25 +88,6 @@ def choose_rank_shifted_option(options):
     base_index = random.randrange(len(options))
 
     return options[(base_index + get_rank()) % len(options)]
-
-
-def debug_print(message, rank=None, force=False):
-    """Print debug message with rank information.
-    
-    Args:
-        message: Message to print
-        rank: Optional rank to include (if None, will get current rank)
-        force: If True, print even if not rank 0 (useful for debugging all ranks)
-    """
-    return
-    if rank is None:
-        rank = get_rank()
-    world_size = get_world_size()
-    
-    if force or rank == 0:
-        logger.info(f"[Rank {rank}/{world_size}] {message}")
-    elif rank < 4:  # Print for first 4 ranks to avoid too much output
-        logger.info(f"[Rank {rank}/{world_size}] {message}")
 
 
 class Mlp(nn.Module):
@@ -513,7 +376,6 @@ class ParallelS2SConfig(MultimodalQwen2Config):
         text_loss_weight: float = 1.0,
         length_loss_weight: float = 1.0,
         text_alignment_pad_loss_weight: Optional[float] = None,
-        extend_lm_head: bool = False,
         no_pad: bool = False,
         freeze_llm: bool = False,
         only_train_llm: bool = False,
@@ -598,7 +460,6 @@ class ParallelS2SConfig(MultimodalQwen2Config):
         self.text_loss_weight = text_loss_weight
         self.length_loss_weight = length_loss_weight
         self.text_alignment_pad_loss_weight = text_alignment_pad_loss_weight
-        self.extend_lm_head = bool(extend_lm_head)
         self.no_pad = bool(no_pad)
         # Combined embeddings: whether main LM receives text+audio+length embeddings
         self.use_combined_embedding = kwargs.get('use_combined_embedding', True)
@@ -616,18 +477,22 @@ class ParallelS2SConfig(MultimodalQwen2Config):
         self.per_sample_frame_rate_embed = per_sample_frame_rate_embed
         self.max_tokens_per_group = max_tokens_per_group
         # Training-time discrete framerate options (defaults match previous hardcoded values)
-        if training_framerate_options is None:
-            self.training_framerate_options = [0.87, 0.91, 1.0]
-        elif isinstance(training_framerate_options, str):
-            self.training_framerate_options = [float(x.strip()) for x in training_framerate_options.split(",")]
-        else:
-            self.training_framerate_options = list(training_framerate_options)
-        if training_input_framerate_options is None:
-            self.training_input_framerate_options = [0.87, 0.91, 1.0, 0.85]
-        elif isinstance(training_input_framerate_options, str):
-            self.training_input_framerate_options = [float(x.strip()) for x in training_input_framerate_options.split(",")]
-        else:
-            self.training_input_framerate_options = list(training_input_framerate_options)
+        # YAML may parse a lone `1.0` as float rather than a one-element list/string.
+        def _parse_framerate_options(value, default):
+            if value is None:
+                return list(default)
+            if isinstance(value, str):
+                return [float(x.strip()) for x in value.split(",") if x.strip()]
+            if isinstance(value, (int, float)):
+                return [float(value)]
+            return [float(x) for x in value]
+
+        self.training_framerate_options = _parse_framerate_options(
+            training_framerate_options, [0.87, 0.91, 1.0]
+        )
+        self.training_input_framerate_options = _parse_framerate_options(
+            training_input_framerate_options, [0.87, 0.91, 1.0, 0.85]
+        )
         self.freeze_llm = freeze_llm
         self.only_train_llm = only_train_llm
         self.freeze_talker = freeze_talker
@@ -650,6 +515,46 @@ class ParallelS2SConfig(MultimodalQwen2Config):
         self.predict_second_audio_token = bool(predict_second_audio_token)
 
 
+def _task_ids_from_audio_masks(
+    user_has_audio: torch.Tensor, assistant_has_audio: torch.Tensor
+) -> torch.Tensor:
+    """Map modality masks to ASR=0, TTS=1, S2S=2 (or -1 for text-only)."""
+    user_mask = user_has_audio.to(dtype=torch.bool).view(-1)
+    assistant_mask = assistant_has_audio.to(
+        device=user_mask.device, dtype=torch.bool
+    ).view(-1)
+    task_ids = torch.full_like(user_mask, -1, dtype=torch.long)
+    task_ids[user_mask & ~assistant_mask] = 0
+    task_ids[~user_mask & assistant_mask] = 1
+    task_ids[user_mask & assistant_mask] = 2
+    return task_ids
+
+
+def _task_component_stats(
+    token_losses: torch.Tensor,
+    token_weights: torch.Tensor,
+    task_ids: torch.Tensor,
+    sample_lengths: Optional[List[int]] = None,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Partition shifted causal-token sums/counts into ASR, TTS, and S2S."""
+    task_ids = task_ids.to(device=token_losses.device, dtype=torch.long).view(-1)
+    if sample_lengths is None:
+        owners = task_ids[:, None].expand_as(token_losses)
+    else:
+        owners = torch.repeat_interleave(
+            task_ids,
+            torch.as_tensor(sample_lengths, device=task_ids.device),
+        )[1:].view_as(token_losses)
+
+    sums = token_losses.new_zeros(3)
+    counts = token_weights.new_zeros(3)
+    for task_id in range(3):
+        mask = owners.eq(task_id)
+        sums[task_id] = (token_losses * token_weights * mask).sum()
+        counts[task_id] = (token_weights * mask).sum()
+    return sums, counts
+
+
 @dataclass
 class InterleavedS2SOutputWithPast(CausalLMOutputWithPast):
     length_logits: Optional[torch.FloatTensor] = None
@@ -657,12 +562,23 @@ class InterleavedS2SOutputWithPast(CausalLMOutputWithPast):
     text_loss: Optional[torch.FloatTensor] = None
     text_ce_loss: Optional[torch.FloatTensor] = None  # unweighted mean text CE (before text_loss_weight)
     text_token_loss: Optional[torch.FloatTensor] = None
+    text_loss_sum: Optional[torch.FloatTensor] = None
+    text_token_count: Optional[torch.FloatTensor] = None
+    audio_loss: Optional[torch.FloatTensor] = None
     audio_token_loss: Optional[torch.FloatTensor] = None
-    acoustic_loss: Optional[torch.FloatTensor] = None
-    acoustic_ce_loss: Optional[torch.FloatTensor] = None  # unweighted mean acoustic CE
-    acoustic_per_codebook_loss: Optional[torch.FloatTensor] = None  # [n_q_a] unweighted CE per codebook
+    audio_loss_sum: Optional[torch.FloatTensor] = None
+    audio_token_count: Optional[torch.FloatTensor] = None
+    length_loss_sum: Optional[torch.FloatTensor] = None
+    length_token_count: Optional[torch.FloatTensor] = None
+    auxiliary_loss: Optional[torch.FloatTensor] = None
+    # Rows are ASR/TTS/S2S; columns are text/audio/length.
+    task_component_loss_sums: Optional[torch.FloatTensor] = None
+    task_component_token_counts: Optional[torch.FloatTensor] = None
+    task_sample_counts: Optional[torch.FloatTensor] = None
     loss_text_only_data: Optional[torch.FloatTensor] = None
     loss_audio_dialog_data: Optional[torch.FloatTensor] = None
+    avg_input_framerate: Optional[torch.FloatTensor] = None  # Hz after user-audio merging
+    avg_output_framerate: Optional[torch.FloatTensor] = None  # Hz after assistant-audio merging
 
 class InterleavedQwen2Model(Qwen2Model):
     """Thin Qwen2Model wrapper used by :class:`ParallelS2SForCausalLM`.
@@ -868,9 +784,7 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
             
         self.config = config
         self.vocab_size = config.vocab_size
-        # lm_head will be created later dynamically or as extended_text_lm_head,
-        # but Qwen2ForCausalLM expects self.lm_head to exist if tie_word_embeddings is true.
-        # We'll create a standard lm_head for compatibility, though it may be replaced.
+        # Qwen2ForCausalLM expects self.lm_head to exist if tie_word_embeddings is true.
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
 
         # Training-time option: freeze everything except talker; also disables
@@ -942,11 +856,6 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
         
         # Separate mode: talker has embed_tokens and lm_head; no separate speech_lm_head/audio_token_embedding
         self.talker_vocab_size = talker_vocab_size if not config.use_joint_text_audio_vocab else None
-        # Learnable delay embeddings for speech delay
-        self.speech_delay_embeddings = nn.Parameter(
-            torch.randn(config.speech_delay_tokens, config.talker_hidden_size) * 0.02
-        )
-        logger.info(f"  - Created speech delay embeddings: {config.speech_delay_tokens} tokens x {config.talker_hidden_size} dims")
         
         # Learnable framerate embeddings (20 embeddings for 0.80, 0.81, ..., 0.99)
         # Only created when use_sinusoidal=False; otherwise use continuous sinusoidal embedding
@@ -966,11 +875,38 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
             self.config.codec_hidden_size = 1280
             self._whisper_encoder_dim = 1280
         if getattr(config, "use_qwen25o_feature", False):
-            self.config.codec_hidden_size = config.hidden_size
+            self.config.codec_hidden_size = _qwen25o_output_dim_from_config(
+                config.qwen25o_encoder_config_path
+            )
         if getattr(config, "use_qwen25o_feature", False):
-            self.audio_embed_transform = nn.Identity()
-            logger.info(f"  - Created Identity audio embed transform for Qwen2.5-Omni (encoder already projects to {config.hidden_size})")
-            logger.warning(f"  - use_qwen25o_feature is True, audio_embed_transform is set to Identity. --use_mlp_for_audio_embed will be ignored if set.")
+            encoder_dim = self.config.codec_hidden_size
+            if encoder_dim == config.hidden_size:
+                self.audio_embed_transform = nn.Identity()
+                logger.info(
+                    f"  - Created Identity audio embed transform for Qwen2.5-Omni "
+                    f"({encoder_dim} -> {config.hidden_size})"
+                )
+            elif config.use_mlp_for_audio_embed:
+                hidden_features = int(config.hidden_size * config.audio_embed_mlp_hidden_ratio)
+                self.audio_embed_transform = Mlp(
+                    in_features=encoder_dim,
+                    hidden_features=hidden_features,
+                    out_features=config.hidden_size,
+                    act_layer=nn.GELU,
+                    drop=config.audio_embed_mlp_dropout,
+                )
+                logger.info(
+                    f"  - Created MLP audio embed transform for Qwen2.5-Omni: "
+                    f"{encoder_dim} -> {hidden_features} -> {config.hidden_size}"
+                )
+            else:
+                self.audio_embed_transform = nn.Linear(
+                    encoder_dim, config.hidden_size
+                )
+                logger.info(
+                    f"  - Created Linear audio embed transform for Qwen2.5-Omni: "
+                    f"{encoder_dim} -> {config.hidden_size}"
+                )
         elif config.use_mlp_for_audio_embed:
             hidden_features = int(config.hidden_size * config.audio_embed_mlp_hidden_ratio)
             self.audio_embed_transform = Mlp(
@@ -1498,7 +1434,9 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
         Notes:
         - Unlike Qwen3 path, we DO keep encoder.proj.
         - Therefore encoder output dim is config.output_dim, not d_model.
-        - qwen25o_encoder_path is expected to be a sharded checkpoint directory.
+        - qwen25o_encoder_path may be either:
+            (1) an encoder-only directory (model.safetensors), or
+            (2) a full Qwen2.5-Omni-7B sharded checkpoint directory.
         - qwen25o_encoder_config_path should point to either:
             (1) audio encoder config json, or
             (2) full omni config json containing "audio_config".
@@ -1525,7 +1463,6 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
                 )
 
             import json as _json
-            from safetensors.torch import load_file
             from transformers.models.qwen2_5_omni.modeling_qwen2_5_omni import (
                 Qwen2_5OmniAudioEncoder,
             )
@@ -1554,59 +1491,9 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
 
             config = Qwen2_5OmniAudioEncoderConfig(**_cfg_dict)
             encoder = Qwen2_5OmniAudioEncoder(config)
-
-            index_file = os.path.join(path, "model.safetensors.index.json")
-            with open(index_file, "r") as f:
-                index_data = _json.load(f)
-
-            weight_map = index_data.get("weight_map", {})
-            if not weight_map:
-                raise ValueError(f"Checkpoint index has no weight_map entries: {index_file}")
-
-            expected_keys = set(encoder.state_dict())
-            checkpoint_keys = set(weight_map)
-            longest_key_length = max(map(len, expected_keys))
-            anchor_keys = {
-                key for key in expected_keys if len(key) == longest_key_length
-            }
-            candidate_prefixes = {
-                checkpoint_key[:-len(anchor_key)]
-                for checkpoint_key in checkpoint_keys
-                for anchor_key in anchor_keys
-                if checkpoint_key.endswith(anchor_key)
-            }
-            matching_prefixes = []
-            for prefix in candidate_prefixes:
-                remapped_keys = {
-                    key[len(prefix):]
-                    for key in checkpoint_keys
-                    if key.startswith(prefix)
-                }
-                if remapped_keys == expected_keys:
-                    matching_prefixes.append(prefix)
-
-            if len(matching_prefixes) != 1:
-                raise ValueError(
-                    "Could not uniquely infer the Qwen2.5-Omni audio encoder "
-                    "weight prefix from the checkpoint index: "
-                    f"found {len(matching_prefixes)} complete matches "
-                    f"({sorted(matching_prefixes)!r})."
-                )
-            weight_prefix = matching_prefixes[0]
-
-            # Load on demand: only open shards containing audio encoder weights.
-            required_shards = {
-                shard for key, shard in weight_map.items()
-                if key.startswith(weight_prefix)
-            }
-            remapped_dict = {}
-            for shard in sorted(required_shards):
-                shard_path = os.path.join(path, shard)
-                part = load_file(shard_path, device="cpu")
-                for key, value in part.items():
-                    if key.startswith(weight_prefix):
-                        remapped_key = key[len(weight_prefix):]
-                        remapped_dict[remapped_key] = value
+            remapped_dict = _load_qwen25o_encoder_state_dict(
+                path, encoder.state_dict().keys()
+            )
 
             # IMPORTANT: keep proj weights, so do NOT filter out "proj.*"
             missing, unexpected = encoder.load_state_dict(remapped_dict, strict=False)
@@ -1621,6 +1508,12 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
             if encoder_dim is None:
                 raise RuntimeError("Failed to infer Qwen2.5-Omni encoder dim from config.output_dim")
             self._qwen25o_encoder_dim = encoder_dim
+            if encoder_dim != self.config.codec_hidden_size:
+                raise RuntimeError(
+                    "Qwen2.5-Omni encoder output_dim changed after model "
+                    f"initialization: expected {self.config.codec_hidden_size}, "
+                    f"loaded {encoder_dim}"
+                )
 
             try:
                 ctx = deepspeed.zero.Init(enabled=False) if self.training else contextlib.nullcontext()
@@ -1767,6 +1660,20 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
             and self.config.use_sensevoice_feature
             and not getattr(self.config, "only_train_llm", False)
         )
+
+    @staticmethod
+    def _mean_achieved_framerate(
+        num_tokens: Optional[torch.Tensor],
+        orig_frames: Optional[torch.Tensor],
+        base_rate: float,
+    ) -> Optional[torch.Tensor]:
+        """Mean post-merge frame rate (Hz) over samples in a batch."""
+        if num_tokens is None or orig_frames is None or num_tokens.numel() == 0:
+            return None
+        orig = orig_frames.to(device=num_tokens.device, dtype=torch.float32).clamp(min=1.0)
+        rates = num_tokens.to(dtype=torch.float32) / orig * float(base_rate)
+        rates = torch.nan_to_num(rates, nan=float(base_rate))
+        return rates.mean().detach()
 
     # ------------------------------------------------------------------
     # Helper: SenseVoice feature merging for flexible frame rate
@@ -2048,7 +1955,22 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
         emb[:, 0:half_dim] = sin
         emb[:, half_dim:2 * half_dim] = cos
         return emb  # [B, H]
-    
+
+    def _project_talker_cond(self, talker_cond_cat: torch.Tensor) -> torch.Tensor:
+        """Project concatenated Talker conditioning; assert width matches talker_cond_proj."""
+        expected = int(self.talker_model.talker_cond_proj.in_features)
+        got = int(talker_cond_cat.shape[-1])
+        if got != expected:
+            raise RuntimeError(
+                "Talker cond concat last dim "
+                f"{got} != talker_cond_proj.in_features {expected} "
+                f"(talker_embed_v2={getattr(self.config, 'talker_embed_v2', False)}, "
+                f"talker_concat_lm_text_output={getattr(self.config, 'talker_concat_lm_text_output', False)}, "
+                f"hidden_size={self.config.hidden_size}, "
+                f"talker_hidden_size={self.config.talker_hidden_size})"
+            )
+        return self.talker_model.talker_cond_proj(talker_cond_cat)
+
     # ------------------------------------------------------------------
     # Helper: build parallel text and speech sequences
     # ------------------------------------------------------------------
@@ -2419,6 +2341,9 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
             and getattr(self.config, "input_merging_transformer_num_layers", 0) > 0
         )
         dummy_encoder_loss = 0.0  # Added: collect dummy gradients for skipped encoder paths.
+        avg_input_framerate = None
+        avg_output_framerate = None
+        input_base_rate = 25.0 if self.config.use_qwen25o_feature else 12.5
 
         assistant_semantic_codes = None
         assistant_token_lengths = None
@@ -2488,6 +2413,9 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
                 u_codec_lens = user_audio_features_lens[u_rows] if user_audio_features_lens is not None else None
             # Apply flexible frame rate merging if enabled
             if self.config.enable_flexible_framerate:
+                user_premerge_lens = (
+                    u_codec_lens.detach() if u_codec_lens is not None else None
+                )
                 if use_uniform_input_merging:
                     debug_print(
                         f"    - Applying uniform input merging with target rate {selected_input_target_rate:.2f} Hz",
@@ -2497,7 +2425,7 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
                         u_codec,
                         u_codec_lens,
                         target_rate=selected_input_target_rate,
-                        base_rate=25 if self.config.use_qwen25o_feature else 12.5,
+                        base_rate=input_base_rate,
                         dynamic_merging=False,
                     )
                 else:
@@ -2509,8 +2437,11 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
                         u_codec, # [B, T, H]
                         u_codec_lens,
                         merging_threshold=selected_framerate_input,
-                        base_rate=25 if self.config.use_qwen25o_feature else 12.5,
+                        base_rate=input_base_rate,
                     )
+                avg_input_framerate = self._mean_achieved_framerate(
+                    u_codec_lens, user_premerge_lens, input_base_rate
+                )
                 if use_input_merging_v2:
                     # v2 path: keep pre-merge frames; defer aggregation to the
                     # interleaved merging transformer (run after audio_embed_transform).
@@ -2671,37 +2602,19 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
             assistant_semantic_codes = a_codec["semantic_codes"].squeeze(1).to(dtype=torch.long)  # [Na, T]
             assistant_token_lengths = a_codec["token_lengths"].to(dtype=torch.long)  # [Na, T]
             assistant_code_lens = a_codec.get("total_frames", a_codec.get("speech_token_len", None))  # [Na]
-            # ------------------------------------------------------------------
-            # Rank-0 only: print actual achieved output frame rate per sample.
-            # Computed as code_lens / (audio_features_lens / 1.33) * 12.5  (Hz),
-            # mirroring the per_sample_frame_rate_embed formula below.
-            # ------------------------------------------------------------------
-            if rank == 0 and assistant_code_lens is not None:
-                try:
-                    a_rows_list = a_rows.tolist()
-                    actual_rates = []
-                    for k, r in enumerate(a_rows_list):
-                        code_len = float(assistant_code_lens[k].item())
-                        if assistant_audio_features_lens is not None:
-                            feat_len = float(assistant_audio_features_lens[r].item()) / 1.33
-                            feat_len = max(feat_len, 1.0)
-                            actual_rates.append(code_len / feat_len * 12.5)
-                        else:
-                            actual_rates.append(float("nan"))
-                    requested = (
-                        f"uniform target={selected_output_target_rate:.2f}Hz"
-                        if use_uniform_output_merging
-                        else f"selected_framerate={selected_framerate}"
-                    )
-                    rates_str = ", ".join(f"{r:.2f}" for r in actual_rates)
-                    # print(
-                    #     f"[rank0][output_framerate] requested={requested} "
-                    #     f"| actual_rates_Hz=[{rates_str}] "
-                    #     f"| code_lens={assistant_code_lens.tolist()}",
-                    #     flush=True,
-                    # )
-                except Exception as _e:
-                    print(f"[rank0][output_framerate] failed to compute: {_e}", flush=True)
+            # Achieved output Hz: merged tokens / original 12.5 Hz frames.
+            if assistant_code_lens is not None:
+                if assistant_token_lengths is not None:
+                    orig_frames = assistant_token_lengths.to(dtype=torch.float32).sum(dim=1)
+                elif assistant_audio_features_lens is not None:
+                    orig_frames = (
+                        assistant_audio_features_lens[a_rows].float() / 1.33
+                    ).floor()
+                else:
+                    orig_frames = None
+                avg_output_framerate = self._mean_achieved_framerate(
+                    assistant_code_lens, orig_frames, 12.5
+                )
             debug_print(f"    - assistant_semantic_codes shape: {assistant_semantic_codes.shape}", rank=rank)
             debug_print(f"    - assistant_token_lengths shape: {assistant_token_lengths.shape}", rank=rank)
             debug_print(f"    - assistant_code_lens: {assistant_code_lens}", rank=rank)
@@ -3015,7 +2928,7 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
 
         # Compute text logits from main LM
         debug_print(f"  - Computing text logits...", rank=rank)
-        text_logits = self._compute_text_logits(hidden_states)  # [B, L, V_text_ext]
+        text_logits = self._compute_text_logits(hidden_states)  # [B, L, V_text]
         debug_print(f"    - text_logits shape: {text_logits.shape}", rank=rank)
         logits = text_logits  # Text-only logits
         
@@ -3146,7 +3059,7 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
             talker_cond_cat = torch.cat([talker_base, fr_emb_talker, audio_talker, length_talker, text_context_talker], dim=-1)
         else:
             talker_cond_cat = torch.cat([talker_base, fr_emb_talker, audio_talker, length_talker], dim=-1)
-        talker_cond = self.talker_model.talker_cond_proj(talker_cond_cat)
+        talker_cond = self._project_talker_cond(talker_cond_cat)
         # Forward through talker
         talker_outputs = self.talker_model.model(
             input_ids=None,
@@ -3195,93 +3108,151 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
         text_ce_loss = None
         len_loss = None
         text_token_loss = None
+        text_loss_sum = None
+        text_token_count = None
+        audio_loss = None
         audio_token_loss = None
-        acoustic_loss = None
-        acoustic_ce_loss = None
-        acoustic_per_codebook_loss = None
+        audio_loss_sum = None
+        audio_token_count = None
+        length_loss_sum = None
+        length_token_count = None
+        auxiliary_loss = None
         loss_text_only_data = None
         loss_audio_dialog_data = None
+        task_component_loss_sums = None
+        task_component_token_counts = None
+        task_sample_counts = None
 
         if labels is not None:
             debug_print(f"  - Computing losses", rank=rank)
             debug_print(f"    - logits shape: {logits.shape}, labels shape: {labels.shape}", rank=rank)
             
-            # Text loss (unweighted CE for logging; weighted tensor drives gradients / total loss)
+            task_ids = _task_ids_from_audio_masks(
+                user_has_audio.to(device=logits.device),
+                assistant_has_audio.to(device=logits.device),
+            )
+            task_component_loss_sums = logits.new_zeros((3, 3), dtype=torch.float32)
+            task_component_token_counts = logits.new_zeros((3, 3), dtype=torch.float32)
+            task_sample_counts = torch.stack(
+                [task_ids.eq(task_id).sum() for task_id in range(3)]
+            ).to(dtype=torch.float32)
+
+            # Compute text CE once, then partition the same token losses by task.
             w = float(getattr(self.config, "text_loss_weight", 1.0) or 1.0)
             pad_w = _resolve_text_alignment_pad_loss_weight(self.config)
-            if (
-                pad_w > 0.0
-                and alignment_pad_mask is not None
-                and bool(alignment_pad_mask.any().item())
-            ):
-                text_ce = self._weighted_text_causal_lm_loss(
-                    logits,
-                    labels,
-                    alignment_pad_mask,
-                    pad_w,
-                    IGNORE_TOKEN_ID,
-                    logits.size(-1),
+            shift_text_labels = labels[..., 1:].contiguous().to(logits.device)
+            text_token_ce = F.cross_entropy(
+                logits[..., :-1, :].contiguous().float().view(-1, logits.size(-1)),
+                shift_text_labels.view(-1),
+                reduction="none",
+                ignore_index=IGNORE_TOKEN_ID,
+            ).view_as(shift_text_labels)
+            text_weights = shift_text_labels.ne(IGNORE_TOKEN_ID).to(
+                dtype=text_token_ce.dtype
+            )
+            if pad_w > 0.0 and alignment_pad_mask is not None:
+                shifted_pad = alignment_pad_mask[..., 1:].to(
+                    device=logits.device, dtype=torch.bool
                 )
-            else:
-                text_ce = self.loss_function(
-                    logits=logits,
-                    labels=labels,
-                    ignore_index=IGNORE_TOKEN_ID,
-                    vocab_size=logits.size(-1),
+                text_weights = text_weights * torch.where(
+                    shifted_pad,
+                    text_weights.new_tensor(pad_w),
+                    text_weights.new_tensor(1.0),
                 )
+            text_token_count = text_weights.sum()
+            text_ce_sum = (text_token_ce * text_weights).sum()
+            text_ce = text_ce_sum / text_token_count.clamp_min(1e-8)
+            text_loss_sum = text_ce_sum * w + dummy_encoder_loss
             text_loss = text_ce * w + dummy_encoder_loss
             text_ce_loss = text_ce.detach()
+            task_text_sums, task_text_counts = _task_component_stats(
+                text_token_ce * w,
+                text_weights,
+                task_ids,
+                main_sample_lengths if use_packing else None,
+            )
+            task_component_loss_sums[:, 0] = task_text_sums.detach()
+            task_component_token_counts[:, 0] = task_text_counts.detach()
             debug_print(f"    - text_loss: {text_loss.item() if text_loss is not None else None:.4f}", rank=rank)
-            
-            # Speech and length losses (parallel mode)
+
+            # Speech and length losses use the same per-token CE for training
+            # sums and per-task metrics.
             if has_speech_tokens:
                 if self.talker_vocab_size is not None:
-                    # Separate mode: speech_logits are [B,L,V_talker]; labels: talker_id = (token_id - text_vocab_size) + 3
-                    speech_labels_for_loss = speech_labels - self.text_vocab_size + AUDIO_TOKEN_OFFSET
-                    speech_loss = self.loss_function(
-                        logits=speech_logits.float(),
-                        labels=speech_labels_for_loss,
-                        ignore_index=IGNORE_TOKEN_ID - self.text_vocab_size + AUDIO_TOKEN_OFFSET,
-                        vocab_size=speech_logits.size(-1),
+                    speech_labels_for_loss = (
+                        speech_labels - self.text_vocab_size + AUDIO_TOKEN_OFFSET
+                    )
+                    speech_ignore_index = (
+                        IGNORE_TOKEN_ID - self.text_vocab_size + AUDIO_TOKEN_OFFSET
                     )
                 else:
-                    speech_loss = self.loss_function(
-                        logits=speech_logits.float(),
-                        labels=speech_labels,
-                        ignore_index=IGNORE_TOKEN_ID,
-                        vocab_size=speech_logits.size(-1),
-                    )
-                debug_print(f"    - speech_loss: {speech_loss.item():.4f}", rank=rank)
-                
-                speech_len_loss = self.loss_function(
-                    logits=speech_length_logits.float(),
-                    labels=length_labels,
-                    ignore_index=IGNORE_TOKEN_ID,
-                    vocab_size=speech_length_logits.size(-1),
+                    speech_labels_for_loss = speech_labels
+                    speech_ignore_index = IGNORE_TOKEN_ID
+                shift_speech_labels = speech_labels_for_loss[..., 1:].contiguous()
+                audio_token_ce = F.cross_entropy(
+                    speech_logits[..., :-1, :].contiguous().float().view(
+                        -1, speech_logits.size(-1)
+                    ),
+                    shift_speech_labels.view(-1),
+                    reduction="none",
+                    ignore_index=speech_ignore_index,
+                ).view_as(shift_speech_labels)
+                audio_weights = shift_speech_labels.ne(speech_ignore_index).to(
+                    dtype=audio_token_ce.dtype
                 )
-                debug_print(f"    - speech_len_loss: {speech_len_loss.item():.4f}", rank=rank)
-                
-                audio_token_loss = speech_loss.detach()  # For logging
-                try:
-                    assert not torch.isnan(speech_loss)
-                except:
-                    print(f'error encountered nan in speech_loss: {speech_loss.item()}')
-                    print(f'length_labels: {length_labels}')
-                    print(f'speech_labels: {speech_labels}')
-                    print(f'speech_logits: {speech_logits}')
-                    print(f'length_labels.max: {length_labels.max()}')
-                    print(f'speech_labels.max: {speech_labels.max()}')
-                    print(f'speech_logits.max: {speech_logits.max()}')
-                    print(f'length_labels.shape: {length_labels.shape}')
-                    print(f'speech_labels.shape: {speech_labels.shape}')
-                    print(f'speech_logits.shape: {speech_logits.shape}')
-                    raise
+                audio_token_count = audio_weights.sum()
+                audio_loss_sum = (audio_token_ce * audio_weights).sum()
+                speech_loss = audio_loss_sum / audio_token_count.clamp_min(1e-8)
+                task_audio_sums, task_audio_counts = _task_component_stats(
+                    audio_token_ce,
+                    audio_weights,
+                    task_ids,
+                    talker_sample_lengths if use_packing else None,
+                )
+                task_component_loss_sums[:, 1] = task_audio_sums.detach()
+                task_component_token_counts[:, 1] = task_audio_counts.detach()
+                debug_print(f"    - speech_loss: {speech_loss.item():.4f}", rank=rank)
 
-                # if torch.isnan(speech_len_loss): 
-                    # speech_len_loss = torch.zeros_like(speech_len_loss, requires_grad=True)
-                    # speech_loss = torch.zeros_like(speech_loss, requires_grad=True)
+                length_labels_for_loss = (
+                    length_labels + AUDIO_TOKEN_OFFSET
+                    if self.config.predict_second_audio_token
+                    else length_labels
+                )
+                length_ignore_index = (
+                    IGNORE_TOKEN_ID + AUDIO_TOKEN_OFFSET
+                    if self.config.predict_second_audio_token
+                    else IGNORE_TOKEN_ID
+                )
+                shift_length_labels = length_labels_for_loss[..., 1:].contiguous()
+                length_token_ce = F.cross_entropy(
+                    speech_length_logits[..., :-1, :].contiguous().float().view(
+                        -1, speech_length_logits.size(-1)
+                    ),
+                    shift_length_labels.view(-1),
+                    reduction="none",
+                    ignore_index=length_ignore_index,
+                ).view_as(shift_length_labels)
+                length_weights = shift_length_labels.ne(length_ignore_index).to(
+                    dtype=length_token_ce.dtype
+                )
+                length_token_count = length_weights.sum()
+                length_ce_sum = (length_token_ce * length_weights).sum()
+                speech_len_loss = length_ce_sum / length_token_count.clamp_min(1e-8)
+                debug_print(f"    - speech_len_loss: {speech_len_loss.item():.4f}", rank=rank)
+
+                audio_loss = speech_loss
+                audio_token_loss = speech_loss.detach()
                 length_loss_weight = getattr(self.config, "length_loss_weight", 1.0)
                 len_loss = speech_len_loss * length_loss_weight
+                length_loss_sum = length_ce_sum * length_loss_weight
+                task_length_sums, task_length_counts = _task_component_stats(
+                    length_token_ce * length_loss_weight,
+                    length_weights,
+                    task_ids,
+                    talker_sample_lengths if use_packing else None,
+                )
+                task_component_loss_sums[:, 2] = task_length_sums.detach()
+                task_component_token_counts[:, 2] = task_length_counts.detach()
 
             else:
                 # DeepSpeed ZeRO-2 fix: use zero-valued contributions from model
@@ -3289,7 +3260,12 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
                 # participate in gradient allreduce on every rank.
                 speech_loss = (speech_logits.mean() * 0.0 if speech_logits.numel() > 0 else speech_logits.sum() * 0.0) + dummy_assistant_audio
                 len_loss = speech_length_logits.mean() * 0.0 if speech_length_logits.numel() > 0 else speech_length_logits.sum() * 0.0
+                audio_loss = speech_loss
                 audio_token_loss = torch.tensor(0.0, device=text_loss.device, dtype=text_loss.dtype) + dummy_assistant_audio
+                audio_token_count = speech_logits.new_zeros((), dtype=torch.float32)
+                length_token_count = speech_length_logits.new_zeros((), dtype=torch.float32)
+                audio_loss_sum = speech_loss
+                length_loss_sum = len_loss
                 debug_print(f"    - No speech sequences, speech_loss=0, len_loss=0", rank=rank)
 
             text_token_loss = text_loss.detach()  # weighted text term (same as text_ce_loss * w)
@@ -3324,8 +3300,14 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
             # DeepSpeed ZeRO-2: keep audio_embed_transform in the backward
             # graph even when no user audio is present (its output gets sliced
             # to length 0, disconnecting it from the loss).
+            auxiliary_loss = loss.new_zeros(())
             if user_semantic_embeds is not None:
-                loss = loss + (user_semantic_embeds.mean() * 0.0 if user_semantic_embeds.numel() > 0 else user_semantic_embeds.sum() * 0.0)
+                auxiliary_loss = (
+                    user_semantic_embeds.mean() * 0.0
+                    if user_semantic_embeds.numel() > 0
+                    else user_semantic_embeds.sum() * 0.0
+                )
+                loss = loss + auxiliary_loss
 
             debug_print(f"    - Combined loss: {loss.item() if loss is not None else None:.4f}", rank=rank)
         else:
@@ -3333,7 +3315,7 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
         # DeepSpeed ZeRO-2 safety net: ensure ALL trainable parameters
         # have at least a zero gradient so every rank calls allreduce for
         # every parameter.  This covers embedding layers (talker embed_tokens,
-        # length_embedding, speech_delay_embeddings, combined_embed_proj, etc.)
+        # length_embedding, combined_embed_proj, etc.)
         # whose outputs may be detached/bypassed on text-only batches.
         # NOTE not enabled yet.
         # for p in self.parameters():
@@ -3357,12 +3339,22 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
             text_loss=text_loss,
             text_ce_loss=text_ce_loss,
             text_token_loss=text_token_loss,
+            text_loss_sum=text_loss_sum,
+            text_token_count=text_token_count,
+            audio_loss=audio_loss,
             audio_token_loss=audio_token_loss,
-            acoustic_loss=acoustic_loss,
-            acoustic_ce_loss=acoustic_ce_loss,
-            acoustic_per_codebook_loss=acoustic_per_codebook_loss,
+            audio_loss_sum=audio_loss_sum,
+            audio_token_count=audio_token_count,
+            length_loss_sum=length_loss_sum,
+            length_token_count=length_token_count,
+            auxiliary_loss=auxiliary_loss,
+            task_component_loss_sums=task_component_loss_sums,
+            task_component_token_counts=task_component_token_counts,
+            task_sample_counts=task_sample_counts,
             loss_text_only_data=loss_text_only_data,
             loss_audio_dialog_data=loss_audio_dialog_data,
+            avg_input_framerate=avg_input_framerate,
+            avg_output_framerate=avg_output_framerate,
         )
     
     # ------------------------------------------------------------------
@@ -3514,7 +3506,7 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
         else:
             return torch.argmax(logits, dim=-1)
 
-    # ------------------------------------------------------------------
+# ------------------------------------------------------------------
     # Generate method
     # ------------------------------------------------------------------
     @torch.no_grad()
@@ -3631,7 +3623,6 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
         generated_text_ids = []
         generated_audio_ids = []
         generated_length_ids = []
-        generated_acoustic_codes = None
         all_scores = [] if output_scores else None
         all_length_scores = [] if output_scores else None
         
@@ -3695,9 +3686,10 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
                 self.config.use_qwen3_feature
                 or self.config.use_whisper_fetaure
                 or self.config.use_qwen25o_feature
+                or getattr(self.config, "use_firered_aed_feature", False)
             ), (
                 "Teacher-forced TTS prompting requires use_qwen3_feature=True or use_whisper_fetaure=True "
-                "or use_qwen25o_feature=True"
+                "or use_qwen25o_feature=True or use_firered_aed_feature=True"
                 "(token ID mapping: talker 0=AUD_END, 1=AUD_START)"
             )
             force_audio_ids = force_audio_ids.to(device)
@@ -3742,7 +3734,7 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
                 talker_cond_cat = torch.cat([talker_base, fr_emb_talker, audio_talker, length_talker, text_context_talker], dim=-1)
             else:
                 talker_cond_cat = torch.cat([talker_base, fr_emb_talker, audio_talker, length_talker], dim=-1)
-            talker_cond = self.talker_model.talker_cond_proj(talker_cond_cat)
+            talker_cond = self._project_talker_cond(talker_cond_cat)
             talker_outputs = self.talker_model.model(
                 input_ids=None,
                 attention_mask=attention_mask,
@@ -3826,13 +3818,13 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
             if not output_text_only:
                 # Sample next speech token (from talker vocab)
                 if self.talker_vocab_size is not None:
-                    # Separate mode: speech_logits [B, V_talker], 0=AUD_START, 1=AUD_END, 2=AUD_TAG, 3..=audio codes
+                    # Separate mode: speech_logits [B, V_talker], 0=AUD_END, 1=AUD_START, 2=AUD_TAG, 3..=audio codes
                     next_audio_token = self._sample_token(
                         speech_logits,
-                        temperature=1.0,
-                        top_k=20,
+                        temperature=temperature,
+                        top_k=top_k,
                         top_p=top_p,
-                        do_sample=True,
+                        do_sample=do_sample,
                     )  # [B] - talker token id
                     next_audio_token_offset = next_audio_token - AUDIO_TOKEN_OFFSET  # audio code for embedding lookup
                 else:
@@ -3844,7 +3836,7 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
                         temperature=temperature,
                         top_k=top_k,
                         top_p=top_p,
-                        do_sample=True,
+                        do_sample=do_sample,
                     )  # [B] - indices in [text_vocab_size, V_total)
                     next_audio_token_offset = next_audio_token - self.text_vocab_size
 
@@ -4058,8 +4050,10 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
                         )
                     else:
                         # All-zero-state: text-conditioning is zeroed out anyway.
+                        # Match the LM-slot width already used for talker_base:
+                        # hidden_size under talker_embed_v2, else talker_hidden_size.
                         text_emb_talker = torch.zeros(
-                            batch_size, 1, self.config.talker_hidden_size,
+                            batch_size, 1, talker_base.shape[-1],
                             device=device, dtype=talker_base.dtype,
                         )
                     if bool(zero_talker_text_cond.any().item()):
@@ -4068,7 +4062,7 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
                     talker_cond_cat = torch.cat([talker_base, fr_emb_talker, audio_cond_talker, length_cond_talker, text_emb_talker], dim=-1)
                 else:
                     talker_cond_cat = torch.cat([talker_base, fr_emb_talker, audio_cond_talker, length_cond_talker], dim=-1)
-                talker_inputs_embeds = self.talker_model.talker_cond_proj(talker_cond_cat)
+                talker_inputs_embeds = self._project_talker_cond(talker_cond_cat)
 
                 talker_outputs = self.talker_model.model(
                     input_ids=None,
@@ -4087,9 +4081,7 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
                 zero_talker_text_cond |= freeze_next
                 
         
-        # Stack generated tokens. Acoustic codes (if any) were already produced
-        # in-step inside the loop using talker_hidden[t] + semantic[t-1], matching
-        # training -- no trailing flush needed.
+        # Stack generated tokens.
         if len(generated_text_ids) > 0:
             generated_text_ids = torch.stack(generated_text_ids, dim=1)  # [B, num_generated]
         else:
@@ -4132,7 +4124,6 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
                 "generated_ids": generated_text_ids,
                 "audio_ids": generated_audio_ids.squeeze(0) if batch_size == 1 else generated_audio_ids,
                 "length_ids": generated_length_ids.squeeze(0) if batch_size == 1 else generated_length_ids,
-                "acoustic_codes": generated_acoustic_codes.squeeze(0) if (generated_acoustic_codes is not None and batch_size == 1) else generated_acoustic_codes,
             }
             if output_scores:
                 result["scores"] = all_scores

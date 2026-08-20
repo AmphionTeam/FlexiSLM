@@ -1,4 +1,4 @@
-
+*_tmp.py
 dist
 *.whl
 dualcodec_ckpts
@@ -16,6 +16,9 @@ output_checkpoints
 *.o
 *.png
 /outputs/
+/models/
+/data/benchmarks/
+/data/training/
 *.log
 *.wav
 *.zip
@@ -46,6 +49,7 @@ __pycache__/
 /lib/
 /lib64/
 /output/
+/logs/
 /parts/
 /sdist/
 /var/
@@ -66,6 +70,9 @@ __pycache__/
 pip-log.txt
 pip-delete-this-directory.txt
 
+# Unit tests
+/tests/
+
 # Unit test / coverage reports
 .tox/
 .coverage
@@ -83,6 +90,13 @@ coverage.xml
 # Local files
 scripts/yutong
 config/yutong
+scripts/jiaqi
+config/jiaqi
+.cursor/
+.cursorignore
+.ignore
 
 # Local path reference documentation
 /docs/
+
+src/models/flexicodec

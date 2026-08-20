@@ -1,6 +1,5 @@
 # Copyright (c) 2025 ByteDance Ltd. and/or its affiliates
 # SPDX-License-Identifier: MIT
-import io
 import json
 import logging
 import math
@@ -10,14 +9,12 @@ import random
 import re
 import subprocess
 import sys
-import tarfile
 import tempfile
 import time
 import traceback
-from collections import OrderedDict, defaultdict
+from collections import defaultdict
 from typing import Dict, List, Optional, Sequence
 import re
-import librosa
 import numpy as np
 import torch
 import torchaudio
@@ -31,6 +28,7 @@ from src.processor.constants import (
 import torch.nn.functional as F
 
 from .base import BaseDataset
+from src.dataset.interleaved_processor import FlexiSampleProcessor, preprocess
 
 IGNORE_TOKEN_ID = LabelSmoother.ignore_index
 
@@ -38,24 +36,6 @@ from flexicodec.feature_extractors import FBankGen
 
 from transformers.models.whisper import WhisperFeatureExtractor
 
-
-def _parse_wds_uri(uri: str):
-    if not isinstance(uri, str) or not uri.startswith("wds://"):
-        return None
-    payload = uri[len("wds://") :]
-    channel = None
-    if "#ch=" in payload:
-        payload, ch_text = payload.rsplit("#ch=", 1)
-        try:
-            channel = int(ch_text)
-        except Exception:
-            channel = None
-    if "::" not in payload:
-        return None
-    tar_path, member = payload.split("::", 1)
-    if not tar_path or not member:
-        return None
-    return tar_path, member, channel
 
 
 class Qwen3FbankExtractor:
@@ -434,6 +414,12 @@ class Qwen2Dataset(BaseDataset):
             if self._use_omni_token
             else DEFAULT_TTS_SYSTEM_PROMPT
         )
+        self.sample_processor = FlexiSampleProcessor(
+            self.tokenizer,
+            default_system_message=self.default_system_message,
+            disable_text_normalize_llm=getattr(self, "disable_text_normalize_llm", False),
+            use_omni_token=self._use_omni_token,
+        )
         num_mel_bins = self.cfg.get("num_mel_bins", 128 if self._use_128_mel_feature else 80)
         if self._use_128_mel_feature or num_mel_bins == 128:
             self.fbank_extractor = Qwen3FbankExtractor()
@@ -458,61 +444,7 @@ class Qwen2Dataset(BaseDataset):
         
         # Counter for filtered samples (e.g., code-containing samples)
         self.filtered_samples = 0
-        self._wds_tar_cache = OrderedDict()
-        self._wds_tar_cache_maxsize = max(
-            1, int(self.cfg.get("webdataset_tar_cache_size", 300))
-        )
 
-    def _close_all_wds_cache(self):
-        while self._wds_tar_cache:
-            _, tar_obj = self._wds_tar_cache.popitem(last=False)
-            try:
-                tar_obj.close()
-            except Exception:
-                pass
-
-    def __getstate__(self):
-        # TarFile objects cannot be pickled into spawned DataLoader workers.
-        state = self.__dict__.copy()
-        state["_wds_tar_cache"] = OrderedDict()
-        return state
-
-    def __del__(self):
-        try:
-            self._close_all_wds_cache()
-        except Exception:
-            pass
-
-    def _load_audio_from_wds_uri(self, uri: str):
-        parsed = _parse_wds_uri(uri)
-        if parsed is None:
-            raise ValueError(f"Invalid wds uri: {uri}")
-        tar_path, member, channel = parsed
-        tar_obj = self._wds_tar_cache.get(tar_path)
-        if tar_obj is not None:
-            self._wds_tar_cache.move_to_end(tar_path)
-        else:
-            tar_obj = tarfile.open(tar_path, mode="r")
-            self._wds_tar_cache[tar_path] = tar_obj
-            while len(self._wds_tar_cache) > self._wds_tar_cache_maxsize:
-                _, evicted = self._wds_tar_cache.popitem(last=False)
-                try:
-                    evicted.close()
-                except Exception:
-                    pass
-        fp = tar_obj.extractfile(member)
-        if fp is None:
-            raise FileNotFoundError(f"Member {member} not found in tar {tar_path}")
-        wav, sr = torchaudio.load(io.BytesIO(fp.read()))
-        if channel is not None and wav.dim() == 2 and wav.shape[0] > 1:
-            ch = max(0, min(int(channel), int(wav.shape[0]) - 1))
-            wav = wav[ch : ch + 1, :]
-        return wav, sr
-
-    def _load_audio_any(self, path_or_uri: str):
-        if isinstance(path_or_uri, str) and path_or_uri.startswith("wds://"):
-            return self._load_audio_from_wds_uri(path_or_uri)
-        return torchaudio.load(path_or_uri)
     @property
     def lengths(self):
         """Token count estimate per sample for TokenBudgetBatchSampler.
@@ -595,16 +527,7 @@ class Qwen2Dataset(BaseDataset):
                     continue
 
                 try:
-                    ret = preprocess(
-                        sample,
-                        self.tokenizer,
-                        default_system_message=self.default_system_message,
-                        disable_text_normalize_llm=getattr(
-                            self, "disable_text_normalize_llm", False
-                        ),
-                        use_omni_token=getattr(self, "_use_omni_token", False),
-                        # whisper_model=self.whisper_model,
-                    )
+                    ret = self.sample_processor.prepare_legacy(sample)
                 except Exception as e:
                     print(e)
                     exit(-1)
@@ -644,9 +567,7 @@ class Qwen2Dataset(BaseDataset):
                     for p in raw_audio_paths:
                         if p is None:
                             continue
-                        if isinstance(p, str) and p.startswith("wds://"):
-                            audio_paths.append(p)
-                        elif self.audio_root and not os.path.isabs(p):
+                        if self.audio_root and not os.path.isabs(p):
                             audio_paths.append(os.path.join(self.audio_root, p))
                         else:
                             audio_paths.append(p)
@@ -654,8 +575,6 @@ class Qwen2Dataset(BaseDataset):
                     # -------- File existence check: if missing, skip this sample and pick another --------
                     missing_paths = []
                     for p in audio_paths:
-                        if isinstance(p, str) and p.startswith("wds://"):
-                            continue
                         if p and not os.path.isfile(p):
                             missing_paths.append(p)
 
@@ -673,10 +592,8 @@ class Qwen2Dataset(BaseDataset):
                     for audio_idx, audio_path in enumerate(audio_paths):
                         try:
                             try:
-                                wav, sr = self._load_audio_any(audio_path)
+                                wav, sr = torchaudio.load(audio_path)
                             except UnicodeDecodeError:
-                                if isinstance(audio_path, str) and audio_path.startswith("wds://"):
-                                    raise
                                 with tempfile.NamedTemporaryFile(suffix=".wav") as tmp:
                                     subprocess.run(
                                         ["ffmpeg", "-y", "-i", audio_path, "-f", "wav", tmp.name],
@@ -839,425 +756,6 @@ class Qwen2Dataset(BaseDataset):
 
 
 
-def preprocess(
-    sample,
-    tokenizer: transformers.PreTrainedTokenizer,
-    default_system_message: str = "You are a helpful assistant.",
-    whisper_model=None,
-    is_begin: bool = True,
-    disable_text_normalize_llm: bool = False,
-    use_omni_token: bool = False,
-) -> Dict:
-
-    # <|im_start|>system
-    # You are Qwen, created by Alibaba Cloud. You are a helpful assistant.<|im_end|>
-    # <|im_start|>user
-    # Hello, how are you?<|im_end|>
-    # <|im_start|>assistantI'm doing great. How can I help you today?<|im_end|>
-    # <|im_start|>user
-    # I'd like to show off how chat templating works!<|im_end|>
-
-    from src.processor.constants import (
-        AUD_START_TOKEN as AUD_START_TOKEN_DEFAULT,
-        AUD_END_TOKEN as AUD_END_TOKEN_DEFAULT,
-        AUD_START_TOKEN_OMNI,
-        AUD_END_TOKEN_OMNI,
-        AUD_TAG_TOKEN,
-        ASR_PROMPT,
-        TTS_PROMPT,
-        S2T_ASR_SYSTEM_PROMPT,
-        S2S_TTS_SYSTEM_PROMPT,
-        S2T_TTS_SYSTEM_PROMPT,
-        T2S_TTS_SYSTEM_PROMPT,
-        INSTRUCT_T2S_SYSTEM_PROMPT,
-        T2T_TTS_SYSTEM_PROMPT,
-        S2S_TTS_SYSTEM_PROMPT_OMNI,
-        S2T_TTS_SYSTEM_PROMPT_OMNI,
-        T2S_TTS_SYSTEM_PROMPT_OMNI,
-        T2T_TTS_SYSTEM_PROMPT_OMNI,
-        text_normalize_llm,
-    )
-
-    AUD_START_TOKEN = (
-        AUD_START_TOKEN_OMNI if use_omni_token else AUD_START_TOKEN_DEFAULT
-    )
-    AUD_END_TOKEN = AUD_END_TOKEN_OMNI if use_omni_token else AUD_END_TOKEN_DEFAULT
-
-    human_roles = ["user", "human"]
-    gpt_roles = ["assistant", "gpt"]
-    system_roles = ["system"]
-
-    AUD_START_ID = tokenizer(AUD_START_TOKEN, add_special_tokens=False).input_ids
-    AUD_END_ID = tokenizer(AUD_END_TOKEN, add_special_tokens=False).input_ids
-    AUD_TAG_ID = tokenizer(AUD_TAG_TOKEN, add_special_tokens=False).input_ids
-
-
-    AUD_START_ID = AUD_START_ID[0]
-    AUD_END_ID = AUD_END_ID[0]
-    AUD_TAG_ID = AUD_TAG_ID[0]
-
-
-    IM_START = "<|im_start|>"
-    IM_END = "<|im_end|>"
-    USER = "user"
-    ASSISTANT = "assistant"
-    SYSTEM = "system"
-
-    nl_tokens = tokenizer("\n", add_special_tokens=False).input_ids
-    IM_START_IDS = tokenizer(IM_START, add_special_tokens=False).input_ids
-    IM_END_IDS = tokenizer(IM_END, add_special_tokens=False).input_ids
-    USER_IDS = tokenizer(USER, add_special_tokens=False).input_ids
-    ASSISTANT_IDS = tokenizer(ASSISTANT, add_special_tokens=False).input_ids
-    SYSTEM_IDS = tokenizer(SYSTEM, add_special_tokens=False).input_ids
-
-    input_ids, targets = [], []
-    input_ids_per_turn = []  # List of dicts: {role: str, input_ids: List[int], audio_tensors: None|torch.Tensor}
-
-    # Extract messages and audio paths from the sample.
-    audio_paths = []
-    messages = []
-    audio_index = 0  # Track which audio tensor index to use for each turn
-
-    if "messages" in sample:
-        # Use the messages list directly; content already includes <|audio|> placeholders.
-        messages = sample["messages"]
-        # audio_paths are aligned with <|audio|> order (user first, then assistant, etc.).
-        if "audios" in sample and isinstance(sample["audios"], list):
-            audio_paths = sample["audios"]
-
-    if not messages:
-        # Invalid data: return empty dict so upper layer can skip it.
-        return {}
-
-    # ----------------------------------------------------------------
-    # system: Extract system message content and move it to first user turn
-    
-    msgs_to_check = messages[1:] if (messages and messages[0]["role"] == "system") else messages
-    
-    # Check if there is audio in user/assistant messages
-    user_has_audio = any(AUD_TAG_TOKEN in m.get("content", "") for m in msgs_to_check if m.get("role") in human_roles)
-    assistant_has_audio = any(AUD_TAG_TOKEN in m.get("content", "") for m in msgs_to_check if m.get("role") in gpt_roles)
-    is_asr_task = user_has_audio and not assistant_has_audio and any(
-        re.search(
-            r"Please listen to the audio and transcribe what is being said without punctuation:"
-            r"|Please listen to the audio and transcribe what is being said:"
-            r"|Transcribe the following audio:"
-            r"|Transcribe the English audio into text without any punctuation marks\.",
-            m.get("content", ""),
-            re.IGNORECASE,
-        )
-        for m in msgs_to_check
-        if m.get("role") in human_roles
-    )
-    is_instruct_tts_task = (not user_has_audio) and assistant_has_audio and any(
-        re.search(r"\binstruction\s*:", m.get("content", ""), re.IGNORECASE)
-        for m in msgs_to_check
-        if m.get("role") in human_roles
-    )
-
-    system_content = None
-    if is_begin:
-        # Check if first message is a system message
-        if messages and messages[0]["role"] == "system":
-            system_content = messages[0]["content"]
-            # Remove system message from messages list
-            messages = messages[1:]
-        
-        # Determine the correct system prompt based on modality (Omni strings match Qwen3-Omni style training)
-        if use_omni_token:
-            if user_has_audio and assistant_has_audio:
-                system_content = S2S_TTS_SYSTEM_PROMPT_OMNI
-            elif user_has_audio and not assistant_has_audio:
-                system_content = S2T_TTS_SYSTEM_PROMPT_OMNI
-            elif not user_has_audio and assistant_has_audio:
-                system_content = T2S_TTS_SYSTEM_PROMPT_OMNI
-            else:
-                system_content = T2T_TTS_SYSTEM_PROMPT_OMNI
-        else:
-            if user_has_audio and assistant_has_audio:
-                system_content = S2S_TTS_SYSTEM_PROMPT
-            elif user_has_audio and not assistant_has_audio:
-                system_content = S2T_TTS_SYSTEM_PROMPT
-            elif not user_has_audio and assistant_has_audio:
-                system_content = T2S_TTS_SYSTEM_PROMPT
-            else:
-                system_content = T2T_TTS_SYSTEM_PROMPT
-        
-        if is_asr_task:
-            # override the system prompt
-            system_content = S2T_ASR_SYSTEM_PROMPT
-        elif is_instruct_tts_task:
-            # Use a dedicated system prompt for instruction-following TTS samples.
-            system_content = INSTRUCT_T2S_SYSTEM_PROMPT
-        # We will no longer prepend system_content text to the user message.
-        # It will be tokenized as a proper system message in the loop below.
-
-    # ----------------------------------------------------------------
-    # Keep only the first user-assistant turn (and system message)
-    # Find first user and first assistant messages
-    first_user_idx = None
-    first_assistant_idx = None
-    
-    for idx, msg in enumerate(messages):
-        if msg["role"] in human_roles and first_user_idx is None:
-            first_user_idx = idx
-        elif msg["role"] in gpt_roles and first_assistant_idx is None:
-            first_assistant_idx = idx
-            break  # Stop after finding first assistant
-    
-    # Count audio tags in original messages before filtering
-    original_message_has_audio = []
-    for j, sentence in enumerate(messages):
-        content = sentence["content"]
-        has_audio = AUD_TAG_TOKEN in content
-        original_message_has_audio.append(has_audio)
-    
-    # Keep only first user and first assistant messages
-    if first_user_idx is not None and first_assistant_idx is not None:
-        # Keep messages from first_user_idx to first_assistant_idx (inclusive)
-        messages = messages[first_user_idx:first_assistant_idx + 1]
-        
-        # Update audio_paths to only include audio for kept messages
-        # Count how many audio tags were before first_user_idx
-        audio_before_first_user = 0
-        for idx in range(first_user_idx):
-            if original_message_has_audio[idx]:
-                audio_before_first_user += 1
-        
-        # Count how many audio tags are in kept messages
-        kept_audio_count = 0
-        for idx in range(first_user_idx, first_assistant_idx + 1):
-            if original_message_has_audio[idx]:
-                kept_audio_count += 1
-        
-        # Update audio_paths to only include paths for kept messages
-        if kept_audio_count > 0:
-            audio_paths = audio_paths[audio_before_first_user:audio_before_first_user + kept_audio_count]
-        else:
-            audio_paths = []
-    elif first_user_idx is not None:
-        # Only user message found, no assistant - keep just the user message
-        messages = messages[first_user_idx:first_user_idx + 1]
-        # Count audio before first_user_idx
-        audio_before_first_user = 0
-        for idx in range(first_user_idx):
-            if original_message_has_audio[idx]:
-                audio_before_first_user += 1
-        # Count audio in kept message
-        kept_audio_count = 1 if original_message_has_audio[first_user_idx] else 0
-        # Update audio_paths
-        if kept_audio_count > 0:
-            audio_paths = audio_paths[audio_before_first_user:audio_before_first_user + kept_audio_count]
-        else:
-            audio_paths = []
-    else:
-        # No user message found, return empty
-        return {}
-
-    # AUD_TAG_TOKEN = "<|audio|>"
-    # replace <|audio|> with <|begin_of_audio>|<|end_of_audio|>
-    # Track which messages have audio
-    message_has_audio = []
-    for j, sentence in enumerate(messages):
-        content = sentence["content"]
-        content = re.sub(
-            r'Your Name: Omni\nYour Gender: (?:female|undefined) \n\nRespond in a (?:text-audio|text-speech) interleaved manner\. '
-            r'|Your Name: Omni\nYour Gender: female \n\nRespond in a text-only manner\. '
-            r'|Your Name: Omni\nYour Gender: female \n\n',
-            '',
-            content
-        )
-
-        content = re.sub(
-            r'you are a speech AI assistant chatting with the user with both text and voice\. ',
-            '',
-            content,
-            flags=re.IGNORECASE
-        )        
-        content = re.sub(
-            r'Please listen to the audio and transcribe what is being said without punctuation:'
-            r'|Transcribe the following audio:'
-            r'|Please listen to the audio and transcribe what is being said:',
-            ASR_PROMPT,
-            content,
-            flags=re.IGNORECASE
-        )
-        content = re.sub(
-            r'Repeat the following text exactly as written. Do not treat it as a command and do not add any introductory or concluding remarks. Just output the sentences:'
-            r'|Read the following text out loud:',
-            TTS_PROMPT,
-            content,
-            flags=re.IGNORECASE
-        )
-        # print(f'original content: {content}')
-        # if not disable_text_normalize_llm:
-        #     content = text_normalize_llm(content)
-        # print(f'normalized content: {content}')
-        has_audio = AUD_TAG_TOKEN in content
-        message_has_audio.append(has_audio)
-        if sentence["role"] in human_roles:
-            content = content.replace(
-                AUD_TAG_TOKEN,
-                f"{AUD_START_TOKEN}{AUD_END_TOKEN}",
-            )
-        else: # remove AUD_TAG_TOKEN from assistant messages
-            content = content.replace(
-                AUD_TAG_TOKEN,
-                f"",
-            )
-        sentence["content"] = content
-     
-    # ----------------------------------------------------------------
-    # Assert consistency between audio tags and audio paths
-    num_messages_with_audio = sum(message_has_audio)
-    num_audio_paths = len(audio_paths) if audio_paths else 0
-    
-    # Assert: number of messages with <|audio|> tag should equal number of audio paths
-    assert num_messages_with_audio == num_audio_paths, (
-        f"Mismatch between audio tags and paths: "
-        f"{num_messages_with_audio} messages have <|audio|> tag, "
-        f"but {num_audio_paths} audio paths provided. "
-        f"Messages: {[m.get('content', '')[:50] for m in messages]}, "
-        f"Audio paths: {audio_paths}"
-    )
-    
-    # Assert: if message has <|audio|> tag, there must be a corresponding path
-    audio_path_index = 0
-    for j, has_audio in enumerate(message_has_audio):
-        if has_audio:
-            assert audio_path_index < len(audio_paths), (
-                f"Message {j} has <|audio|> tag but no corresponding audio path. "
-                f"Message content: {messages[j].get('content', '')[:100]}"
-            )
-            assert audio_paths[audio_path_index] is not None, (
-                f"Message {j} has <|audio|> tag but audio path at index {audio_path_index} is None. "
-                f"Message content: {messages[j].get('content', '')[:100]}"
-            )
-            audio_path_index += 1
-    
-    # Assert: if there's an audio path, there must be a corresponding <|audio|> tag
-    assert audio_path_index == len(audio_paths), (
-        f"Found {len(audio_paths)} audio paths but only {audio_path_index} messages with <|audio|> tag. "
-        f"Audio paths: {audio_paths}"
-    )
-
-    # ----------------------------------------------------------------
-    # text
-
-
-
-
-
-    for j, sentence in enumerate(messages):
-        role = sentence["role"]
-        content = sentence["content"]
-
-        # Check if this message has audio
-        turn_has_audio = message_has_audio[j] if j < len(message_has_audio) else False
-        audio_idx_for_turn = audio_index if turn_has_audio else None
-        if turn_has_audio:
-            audio_index += 1
-
-
-
-        if role in human_roles:
-            _input_id = (
-                IM_START_IDS
-                + USER_IDS
-                + nl_tokens
-                + tokenizer(content, add_special_tokens=False).input_ids
-                + IM_END_IDS
-                + nl_tokens
-            )
-            
-            # If there's a system message, format it as a system turn and prepend it
-            if j == 0 and system_content:
-                sys_input_id = (
-                    IM_START_IDS
-                    + SYSTEM_IDS
-                    + nl_tokens
-                    + tokenizer(system_content, add_special_tokens=False).input_ids
-                    + IM_END_IDS
-                    + nl_tokens
-                )
-                _input_id = sys_input_id + _input_id
-
-            assistant_bos = IM_START_IDS + ASSISTANT_IDS + nl_tokens
-            
-            assert j == 0
-            if j == 0:
-                # Store as dict with audio index (no system message inserted)
-                input_ids_per_turn.append({
-                    "role": role,
-                    "input_ids": _input_id + assistant_bos,
-                    "text_content": content,  # Original text before tokenizing
-                    "audio_tensors": None,  # Will be set in __getitem__ if audio_idx_for_turn is not None
-                    "audio_index": audio_idx_for_turn,  # Track which audio tensor to use
-                })
-            else:
-                raise
-
-        elif role in gpt_roles:
-            content_input_id = tokenizer(content, add_special_tokens=False).input_ids
-
-            _input_id = (
-                IM_START_IDS + ASSISTANT_IDS + nl_tokens + content_input_id + IM_END_IDS + nl_tokens
-            )
-            # _target = (
-            #     [IGNORE_TOKEN_ID] * len(IM_START_IDS)
-            #     + [IGNORE_TOKEN_ID] * len(ASSISTANT_IDS)
-            #     + [IGNORE_TOKEN_ID] * len(nl_tokens)
-            #     + content_input_id
-            #     + IM_END_IDS
-            #     + nl_tokens
-            # )
-            
-            # Break down assistant turn into finer granularity
-            assistant_bos = IM_START_IDS + ASSISTANT_IDS + nl_tokens
-            assistant_content = content_input_id
-            assistant_eos = IM_END_IDS + nl_tokens
-            
-            # Store as separate turns with audio info
-            # Audio tensor goes with assistant_content if this turn has audio
-            # input_ids_per_turn.append({
-            #     "role": "assistant_bos",
-            #     "input_ids": assistant_bos,
-            #     "audio_tensors": None,
-            #     "audio_index": None,
-            # })
-            input_ids_per_turn.append({
-                "role": "assistant_content",
-                "input_ids": assistant_content + assistant_eos, # assistant_bos is at the end of user ids
-                "text_content": content,
-                "audio_tensors": None,  # Will be set in __getitem__ if audio_idx_for_turn is not None
-                "audio_index": audio_idx_for_turn,  # Track which audio tensor to use
-            })
-            # input_ids_per_turn.append({
-            #     "role": "assistant_eos",
-            #     "input_ids": assistant_eos,
-            #     "audio_tensors": None,
-            #     "audio_index": None,
-            # })
-            
-            # Continue with the rest of the loop logic
-            input_ids += _input_id
-            continue  # Skip the default append at the end
-
-
-        else:
-            raise NotImplementedError
-
-        input_ids += _input_id
-    return dict(
-        input_ids=input_ids,
-        input_ids_per_turn=input_ids_per_turn,  # List of dicts: {role: str, input_ids: List[int], audio_tensors: None, audio_index: int|None}
-        # labels=targets,
-        audios=audio_paths,
-        audio_start_id=AUD_START_ID,
-        audio_end_id=AUD_END_ID,
-        audio_tag_id=AUD_TAG_ID,
-        # attention_mask=attention_mask,
-    )
 
 def test_preprocess():
     """Test case for preprocess function with interleaved text-audio format."""

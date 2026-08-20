@@ -110,15 +110,6 @@ class ModelArguments:
     )
     add_length_embeddings: bool = field(default=True, metadata={"help": ""})
 
-    extend_lm_head: bool = field(
-        default=False,
-        metadata={
-            "help": (
-                "When enabled, add one extra text-vocab entry outside the base LM vocab for alignment padding "
-                "and extend the text LM head accordingly. Only used when no_pad is False."
-            )
-        },
-    )
     no_pad: bool = field(
         default=False,
         metadata={"help": "Use the no-padding text/audio alignment path."},
@@ -144,7 +135,8 @@ class ModelArguments:
         metadata={
             "help": (
                 "Comma-separated top-level model module/parameter names. When set, freeze every parameter "
-                "and then unfreeze only the listed components."
+                "and then unfreeze only the listed components. The virtual component 'llm_lora' selects "
+                "only PEFT adapter parameters inside the wrapped LLM without unfreezing the backbone."
             )
         },
     )
@@ -227,7 +219,7 @@ class ModelArguments:
         metadata={"help": "Number of null tokens to delay speech generation"}
     )
     talker_concat_lm_text_output: bool = field(
-        default=False,
+        default=True,
         metadata={
             "help": (
                 "When enabled, concatenate the LM's embedding output (hidden_states[0]) into the talker conditioning "
@@ -458,35 +450,15 @@ class ModelArguments:
     )
     qwen25omni_encoder_path: Optional[str] = field(
         default=None,
-        metadata={"help": "Path to Qwen2.5 Omni checkpoint. Required when use_qwen25omni_feature=True."}
+        metadata={"help": "Path to Qwen2.5-Omni audio encoder checkpoint directory. Required when use_qwen25omni_feature=True."}
     )
     qwen25omni_encoder_config_path: Optional[str] = field(
         default=None,
-        metadata={"help": "Path to Qwen2.5 Omni config .json. Required when use_qwen25omni_feature=True."}
+        metadata={"help": "Path to Qwen2.5-Omni audio encoder config .json. Required when use_qwen25omni_feature=True."}
     )
     thinker_concat_user_speech: bool = field(
         default=False,
         metadata={"help": "If True (v5), thinker input applies concat+proj conditioning to user-speech positions as well."}
-    )
-    thinker_duplex_use_both_streams: bool = field(
-        default=True,
-        metadata={"help": "If True (v5), thinker fuses both user and assistant audio streams for both turns via query-attention."}
-    )
-    thinker_duplex_query_num_heads: int = field(
-        default=8,
-        metadata={"help": "Number of heads for thinker duplex query-attention fusion."}
-    )
-    thinker_duplex_supervision_warmup_steps: int = field(
-        default=1000,
-        metadata={"help": "Warmup steps for duplex stream-selection supervision (user turn->user stream, assistant turn->assistant stream)."}
-    )
-    thinker_duplex_supervision_weight: float = field(
-        default=0.1,
-        metadata={"help": "Loss weight for duplex stream-selection supervision during warmup."}
-    )
-    assistant_text_start_after_speech: bool = field(
-        default=True,
-        metadata={"help": "If True, assistant text labels are masked for initial delay steps and generation text output is suppressed until speech starts."}
     )
     assistant_text_start_delay_tokens: int = field(
         default=-1,
@@ -632,37 +604,21 @@ class ModelArguments:
 @dataclass
 class DataTrainingArguments:
     """
-    Arguments pertaining to what data we are going to input our model for training and eval.
+    Arguments pertaining to the data used for training.
     """
 
     dataset_name: Optional[str] = field(
         default="dataset/sts_finetune_stage1.yaml", metadata={"help": "The name of the dataset to use (via the datasets library)."}
     )
-    dataset_name_eval: Optional[str] = field(
-        default="dataset/sts_finetune_stage1_eval.yaml", metadata={"help": "The name of the eval dataset to use (via the datasets library)."}
-    )
     dataset_config_name: Optional[str] = field(
         default=None, metadata={"help": "The configuration name of the dataset to use (via the datasets library)."}
     )
     train_file: Optional[str] = field(default=None, metadata={"help": "The input training data file (a text file)."})
-    validation_file: Optional[str] = field(
-        default=None,
-        metadata={"help": "An optional input evaluation data file to evaluate the perplexity on (a text file)."},
-    )
     max_train_samples: Optional[int] = field(
         default=None,
         metadata={
             "help": (
                 "For debugging purposes or quicker training, truncate the number of training examples to this "
-                "value if set."
-            )
-        },
-    )
-    max_eval_samples: Optional[int] = field(
-        default=None,
-        metadata={
-            "help": (
-                "For debugging purposes or quicker training, truncate the number of evaluation examples to this "
                 "value if set."
             )
         },
@@ -679,7 +635,7 @@ class DataTrainingArguments:
         },
     )
     overwrite_cache: bool = field(
-        default=False, metadata={"help": "Overwrite the cached training and evaluation sets"}
+        default=False, metadata={"help": "Overwrite the cached training datasets"}
     )
     validation_split_percentage: Optional[int] = field(
         default=5,
@@ -724,15 +680,12 @@ class DataTrainingArguments:
         if self.streaming:
             require_version("datasets>=2.0.0", "The streaming feature requires `datasets>=2.0.0`")
 
-        if self.dataset_name is None and self.train_file is None and self.validation_file is None:
-            raise ValueError("Need either a dataset name or a training/validation file.")
+        if self.dataset_name is None and self.train_file is None:
+            raise ValueError("Need either a dataset name or a training file.")
         else:
             if self.train_file is not None:
                 extension = self.train_file.split(".")[-1]
                 assert extension in ["csv", "json", "txt"], "`train_file` should be a csv, a json or a txt file."
-            if self.validation_file is not None:
-                extension = self.validation_file.split(".")[-1]
-                assert extension in ["csv", "json", "txt"], "`validation_file` should be a csv, a json or a txt file."
 
 
 @dataclass
@@ -748,6 +701,25 @@ class TrainingArguments(transformers.TrainingArguments):
                 "Optional learning rate for the whole talker stack. When set, parameters whose "
                 "names contain 'talker' or 'input_merging_transformer' use this LR, including "
                 "the talker transformer and the v1/v2 input merging transformer."
+            )
+        },
+    )
+    checkpoint_load_mode: str = field(
+        default="weights_only",
+        metadata={
+            "help": (
+                "How to load resume_from_checkpoint: 'resume' restores the complete Trainer "
+                "state (model, optimizer, scheduler, global step, RNG, and dataloader cursor); "
+                "'weights_only' loads only model weights and starts a new training state."
+            )
+        },
+    )
+    reinitialize_input_merging_transformer: bool = field(
+        default=False,
+        metadata={
+            "help": (
+                "Keep the freshly initialized input_merging_transformer after a weights_only "
+                "checkpoint load instead of restoring that component's checkpoint weights."
             )
         },
     )
@@ -784,8 +756,18 @@ class TrainingArguments(transformers.TrainingArguments):
             "help": (
                 "Max total tokens per batch. When set, enables dynamic batching + sequence packing: "
                 "short-audio batches get more samples, long-audio batches get fewer. "
-                "Overrides per_device_train_batch_size for batch formation."
+                "Overrides dataset YAML batching.max_cost for native WebDataset streams. "
+                "per_device_train_batch_size likewise overrides dataset YAML batching.max_samples."
             )
         },
     )
-    
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.checkpoint_load_mode = str(self.checkpoint_load_mode).strip().lower()
+        if self.checkpoint_load_mode not in {"resume", "weights_only"}:
+            raise ValueError(
+                "checkpoint_load_mode must be 'resume' or 'weights_only', got "
+                f"{self.checkpoint_load_mode!r}"
+            )
+

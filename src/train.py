@@ -6,7 +6,6 @@
 import argparse
 import json
 import logging
-import math
 import os
 import sys
 import time
@@ -49,6 +48,11 @@ except ImportError:
 from src.arguments import ModelArguments, DataTrainingArguments, TrainingArguments
 from src.dataset.collator import collate_fn_deepspeed, get_collator
 from src.dataset.interleaved import Qwen2Dataset
+from src.dataset.interleaved_collator import InterleavedDataCollator
+from src.dataset.webdataset.native import (
+    build_qwen2_webdataset,
+    is_webdataset_stream_config,
+)
 from src.trainer.self_trainer import ATrainer
 # from sampler.TokenBatchSampler import TokenBatchSampler
 import loguru
@@ -113,343 +117,179 @@ def _load_state_dict_from_checkpoint(checkpoint: str) -> dict:
     )
 
 
-class InterleavedDataCollator:
-    def __init__(self, tokenizer, use_omni_token: bool = False):
-        self.tokenizer = tokenizer
-        self.use_omni_token = use_omni_token
+_REQUIRED_TRANSFER_COMPONENTS = {
+    "talker_model": ("talker_model.",),
+    "input_merging_transformer": ("input_merging_transformer.",),
+    "audio_boundaries": ("audio_start_embedding", "audio_end_embedding"),
+}
 
-    def __call__(self, batch):
-        tokenizer = self.tokenizer  # Keep the original tokenizer reference behavior.
-        
-        # Group by user and assistant messages (assuming one user turn and one assistant turn per sample)
-        batch = [x for x in batch if x is not None]
-        if len(batch) == 0:
-            return {}
 
-        # Get BOS and EOS token IDs
-        bos_token_id = tokenizer.bos_token_id if tokenizer.bos_token_id is not None else tokenizer.pad_token_id
-        eos_token_id = tokenizer.eos_token_id if tokenizer.eos_token_id is not None else tokenizer.pad_token_id
+def _keys_with_prefixes(keys, prefixes):
+    return {key for key in keys if any(key.startswith(prefix) for prefix in prefixes)}
 
-        # Fallback: if BOS/EOS not available, use pad_token_id
-        if bos_token_id is None:
-            bos_token_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else 0
-        if eos_token_id is None:
-            eos_token_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else 0
 
-        # Collect user and assistant turns separately
-        user_input_ids = []
-        user_audio_tensors = []
-        user_turns = []  # Store user turns for later feature extraction
-        user_has_audio_list = []
-        assistant_input_ids = []
-        assistant_audio_tensors = []
-        assistant_turns = []  # Store assistant turns for later feature extraction
-        assistant_has_audio_list = []
+def _drop_incompatible_state_dict_tensors(model, state_dict: dict) -> list:
+    """Drop checkpoint tensors whose shapes do not match the current model.
 
-        for batch_idx, sample in enumerate(batch):
-            turns = sample["input_ids_per_turn"]
+    ``load_state_dict(..., strict=False)`` still raises on size mismatches. Architecture
+    flags such as ``talker_embed_v2`` change ``combined_embed_proj``. Keep the freshly
+    initialized tensors when the checkpoint layout cannot transfer.
+    """
+    current = model.state_dict()
+    dropped = []
+    for key, tensor in list(state_dict.items()):
+        if key not in current:
+            continue
+        current_shape = tuple(current[key].shape)
+        incoming_shape = tuple(tensor.shape)
+        if current_shape != incoming_shape:
+            dropped.append((key, incoming_shape, current_shape))
+            del state_dict[key]
+    return dropped
 
-            # Find user and assistant turns
-            user_turn = None
-            assistant_turn = None
-            if len(turns) > 2:
-                turns = turns[:2]
-                # print(f"Warning: Sample {batch_idx} has more than 2 turns, only using the first 2 turns")
-            for turn_dict in turns:
-                role = turn_dict.get("role", "")
-                assert role in ["user", "human", "assistant_content"], f"Invalid role: {role}"
-                # Match user/human roles
-                if role in ["user", "human"]:
-                    user_turn = turn_dict
-                # Match assistant_content (the actual assistant response with audio)
-                elif role == "assistant_content":
-                    assistant_turn = turn_dict
 
-            # Process user turn
-            if user_turn is not None:
-                user_input_ids.append(torch.tensor(user_turn["input_ids"], dtype=torch.long))
-                user_turns.append(user_turn)  # Store turn for later feature extraction
+def _validate_weights_only_transfer_components(
+    model,
+    state_dict: dict,
+    *,
+    reinitialize_input_merging_transformer: bool = False,
+) -> dict:
+    """Require complete Stage 1 components while allowing a separately initialized backbone.
 
-                audio_tensor = user_turn.get("audio_tensors")
-                has_audio = audio_tensor is not None
-                user_has_audio_list.append(has_audio)
+    Talker transfer is optional and may be partial. Missing ``talker_model`` tensors keep
+    the constructed values, which is required when transferring a 7B Talker onto a 0.5B
+    backbone (LLM-width projections do not match). Extra Talker keys are still rejected.
+    """
+    target_keys = set(model.state_dict())
+    source_keys = set(state_dict)
+    counts = {}
 
-                if has_audio:
-                    # Convert audio_tensor to 1D if needed: [channels, samples] -> [samples]
-                    if len(audio_tensor.shape) == 2:
-                        if audio_tensor.shape[0] > 1:
-                            audio_tensor = audio_tensor[0]  # Take first channel
-                        else:
-                            audio_tensor = audio_tensor.squeeze(0)
-                    user_audio_tensors.append(audio_tensor)
-                else:
-                    user_audio_tensors.append(None)
-            else:
-                # No user turn found - this shouldn't happen but handle gracefully
-                raise ValueError(f"Sample {batch_idx} has no user turn")
+    for component, prefixes in _REQUIRED_TRANSFER_COMPONENTS.items():
+        if component == "input_merging_transformer" and reinitialize_input_merging_transformer:
+            continue
+        expected = _keys_with_prefixes(target_keys, prefixes)
+        provided = _keys_with_prefixes(source_keys, prefixes)
+        if component == "talker_model":
+            unexpected = sorted(provided - expected)
+            if unexpected:
+                raise RuntimeError(
+                    f"Incomplete weights_only checkpoint component {component!r}: "
+                    f"target_count={len(expected)}, checkpoint_count={len(provided)}, "
+                    f"missing=[], unexpected={unexpected[:20]}"
+                )
+            if not provided:
+                logger.info(
+                    "Checkpoint has no talker_model tensors; keeping the constructed Talker"
+                )
+                continue
+            missing = sorted(expected - provided)
+            if missing:
+                logger.warning(
+                    "Checkpoint is missing {} talker_model tensors; keeping constructed "
+                    "values: {}",
+                    len(missing),
+                    missing,
+                )
+            counts[component] = len(provided)
+            continue
+        missing = sorted(expected - provided)
+        unexpected = sorted(provided - expected)
+        if not expected or missing or unexpected:
+            raise RuntimeError(
+                f"Incomplete weights_only checkpoint component {component!r}: "
+                f"target_count={len(expected)}, checkpoint_count={len(provided)}, "
+                f"missing={missing[:20]}, unexpected={unexpected[:20]}"
+            )
+        counts[component] = len(provided)
 
-            # Process assistant turn
-            if assistant_turn is not None:
-                assistant_input_ids.append(torch.tensor(assistant_turn["input_ids"], dtype=torch.long))
-                assistant_turns.append(assistant_turn)  # Store turn for later feature extraction
+    return counts
 
-                audio_tensor = assistant_turn.get("audio_tensors")
-                has_audio = audio_tensor is not None
-                assistant_has_audio_list.append(has_audio)
 
-                if has_audio:
-                    # Convert audio_tensor to 1D if needed: [channels, samples] -> [samples]
-                    if len(audio_tensor.shape) == 2:
-                        if audio_tensor.shape[0] > 1:
-                            audio_tensor = audio_tensor[0]  # Take first channel
-                        else:
-                            audio_tensor = audio_tensor.squeeze(0)
-                    assistant_audio_tensors.append(audio_tensor)
-                else:
-                    assistant_audio_tensors.append(None)
-            else:
-                # No assistant turn found - this shouldn't happen but handle gracefully
-                raise ValueError(f"Sample {batch_idx} has no assistant turn")
-        from src.processor.constants import (
-            AUD_START_TOKEN,
-            AUD_END_TOKEN,
-            AUD_START_TOKEN_OMNI,
-            AUD_END_TOKEN_OMNI,
-            AUD_TAG_TOKEN,
+def _validate_ignored_frozen_checkpoint_weights(
+    checkpoint: str,
+    unexpected_keys,
+) -> dict:
+    """Allow ignored Stage 1 Thinker weights; still reject a finetuned Omni encoder."""
+    ignored = {
+        "thinker": _keys_with_prefixes(unexpected_keys, ("model.",)),
+        "qwen25o_encoder": _keys_with_prefixes(
+            unexpected_keys, ("_qwen25o_encoder.",)
+        ),
+    }
+    ignored = {name: keys for name, keys in ignored.items() if keys}
+    if not ignored or not os.path.isdir(checkpoint):
+        return {name: len(keys) for name, keys in ignored.items()}
+
+    config_path = os.path.join(checkpoint, "config.json")
+    if not os.path.isfile(config_path):
+        logger.warning(
+            "Cannot verify whether ignored checkpoint backbone weights were frozen: "
+            "missing {}",
+            config_path,
+        )
+        return {name: len(keys) for name, keys in ignored.items()}
+
+    with open(config_path, "r", encoding="utf-8") as stream:
+        checkpoint_config = json.load(stream)
+
+    if "thinker" in ignored:
+        logger.info(
+            "Ignoring {} checkpoint Thinker tensors and keeping the initialized "
+            "backbone. Stage 1 does not train the Thinker; LoRA Stage 2 does not "
+            "remap model.* onto PEFT keys.",
+            len(ignored["thinker"]),
+        )
+    if "qwen25o_encoder" in ignored and checkpoint_config.get(
+        "finetune_speech_encoder", False
+    ):
+        raise RuntimeError(
+            "weights_only loading would ignore a finetuned Qwen2.5-Omni encoder. "
+            "Materialize and load the encoder before continuing."
         )
 
-        if self.use_omni_token:
-            aud_s, aud_e = AUD_START_TOKEN_OMNI, AUD_END_TOKEN_OMNI
-        else:
-            aud_s, aud_e = AUD_START_TOKEN, AUD_END_TOKEN
-        # Get the audio special token ids from the tokenizer to ensure consistency
-        audio_start_id = tokenizer(aud_s, add_special_tokens=False).input_ids[0]
-        audio_end_id = tokenizer(aud_e, add_special_tokens=False).input_ids[0]
-        audio_tag_id = tokenizer(AUD_TAG_TOKEN, add_special_tokens=False).input_ids[0]
+    return {name: len(keys) for name, keys in ignored.items()}
 
-        for i, x in enumerate(batch[1:], start=1):
-            if x.get("audio_start_id") != audio_start_id or x.get("audio_end_id") != audio_end_id or x.get("audio_tag_id") != audio_tag_id:
-                raise ValueError(f"Inconsistent audio special token ids within batch at index {i}")
 
-        # Pad user input_ids with LEFT padding using BOS token
-        max_user_len = max(ids.shape[0] for ids in user_input_ids)
-        user_padded_input_ids = []
-        user_attention_masks = []
+def _validate_resume_batch_settings(training_args, checkpoint: str) -> None:
+    """Reject full-state resume when batch boundaries would change."""
+    saved_args_path = os.path.join(checkpoint, "training_args.bin")
+    if not os.path.isfile(saved_args_path):
+        raise ValueError(
+            "Cannot verify resume batch settings because the checkpoint is missing "
+            f"training_args.bin: {checkpoint}"
+        )
 
-        for ids in user_input_ids:
-            seq_len = ids.shape[0]
-            pad_len = max_user_len - seq_len
-            if pad_len > 0:
-                # Left pad with BOS token
-                pad_tokens = torch.full((pad_len,), bos_token_id, dtype=torch.long)
-                padded_ids = torch.cat([pad_tokens, ids], dim=0)
-            else:
-                padded_ids = ids
-            user_padded_input_ids.append(padded_ids)
+    try:
+        saved_args = torch.load(
+            saved_args_path,
+            map_location="cpu",
+            weights_only=False,
+        )
+    except TypeError:
+        saved_args = torch.load(saved_args_path, map_location="cpu")
 
-            # Create attention mask: 0 for padding (BOS tokens), 1 for real tokens
-            attn_mask = torch.zeros(max_user_len, dtype=torch.bool)
-            attn_mask[pad_len:] = True  # Real tokens
-            user_attention_masks.append(attn_mask)
+    batch_fields = (
+        "per_device_train_batch_size",
+        "gradient_accumulation_steps",
+        "max_tokens_per_batch",
+    )
+    mismatches = []
+    for name in batch_fields:
+        saved_value = getattr(saved_args, name, None)
+        current_value = getattr(training_args, name, None)
+        if saved_value != current_value:
+            mismatches.append(
+                f"{name}: checkpoint={saved_value!r}, current={current_value!r}"
+            )
 
-        user_padded_input_ids = torch.stack(user_padded_input_ids, dim=0)  # [B, L_user_max]
-        user_attention_mask = torch.stack(user_attention_masks, dim=0)  # [B, L_user_max]
+    if mismatches:
+        raise ValueError(
+            "Batch settings changed since the checkpoint; checkpoint_load_mode='resume' "
+            "requires identical batch boundaries. Restore the checkpoint values or use "
+            "checkpoint_load_mode='weights_only' for a new training state. Mismatches: "
+            + "; ".join(mismatches)
+        )
 
-        # Pad assistant input_ids with RIGHT padding using EOS token
-        max_assistant_len = max(ids.shape[0] for ids in assistant_input_ids)
-        assistant_padded_input_ids = []
-        assistant_attention_masks = []
-
-        for ids in assistant_input_ids:
-            seq_len = ids.shape[0]
-            pad_len = max_assistant_len - seq_len
-            if pad_len > 0:
-                # Right pad with EOS token
-                pad_tokens = torch.full((pad_len,), eos_token_id, dtype=torch.long)
-                padded_ids = torch.cat([ids, pad_tokens], dim=0)
-            else:
-                padded_ids = ids
-            assistant_padded_input_ids.append(padded_ids)
-
-            # Create attention mask: 1 for real tokens, 0 for padding (EOS tokens)
-            attn_mask = torch.ones(max_assistant_len, dtype=torch.bool)
-            attn_mask[seq_len:] = False  # Padding tokens
-            assistant_attention_masks.append(attn_mask)
-
-        assistant_padded_input_ids = torch.stack(assistant_padded_input_ids, dim=0)  # [B, L_assistant_max]
-        assistant_attention_mask = torch.stack(assistant_attention_masks, dim=0)  # [B, L_assistant_max]
-
-        user_audio_tensors_list = [t for t in user_audio_tensors if t is not None]
-        user_has_audio = torch.tensor(user_has_audio_list, dtype=torch.bool)  # [B]
-
-        # Get audio_features directly from turn dictionaries
-        user_audio_features_list = []
-        user_audio_features_lengths = []
-        for i, turn in enumerate(user_turns):
-            features = turn.get("audio_features")
-            if features is not None:
-                assert len(features.shape) == 2, f"Features shape should be [T, D], but got {features.shape}"
-                user_audio_features_list.append(features)
-                user_audio_features_lengths.append(features.shape[0])
-            else:
-                # No audio features for this sample
-                user_audio_features_list.append(None)
-                user_audio_features_lengths.append(0)
-
-        # Pad fbank features to the same length
-        valid_features = [f for f in user_audio_features_list if f is not None]
-        if len(valid_features) > 0:
-            max_feat_len = max(f.shape[0] for f in valid_features)
-            feat_dim = valid_features[0].shape[1] if len(valid_features[0].shape) > 1 else 1
-
-            padded_user_audio_features = []
-            for features in user_audio_features_list:
-                if features is not None:
-                    feat_len = features.shape[0]
-                    pad_len = max_feat_len - feat_len
-                    if pad_len > 0:
-                        # Pad along time dimension: [T_feat, D] -> [T_feat_max, D]
-                        if features.dim() == 2:
-                            features = torch.nn.functional.pad(features, (0, 0, 0, pad_len), mode='constant', value=0.0)
-                        else:
-                            features = torch.nn.functional.pad(features, (0, pad_len), mode='constant', value=0.0)
-                    padded_user_audio_features.append(features)
-                else:
-                    # Create zero features for samples without audio
-                    if feat_dim > 1:
-                        padded_user_audio_features.append(torch.zeros(max_feat_len, feat_dim, dtype=torch.float32))
-                    else:
-                        padded_user_audio_features.append(torch.zeros(max_feat_len, dtype=torch.float32))
-
-            user_padded_audio_features = torch.stack(padded_user_audio_features, dim=0)  # [B, T_feat_max, D]
-            user_audio_features_lens = torch.tensor(user_audio_features_lengths, dtype=torch.long)  # [B]
-        else:
-            user_padded_audio_features = None
-            user_audio_features_lens = None
-
-        if len(user_audio_tensors_list) > 0:
-
-            # Pad user audio_tensors to the same length
-            max_user_audio_len = max(t.shape[0] for t in user_audio_tensors_list)
-            padded_user_audio_tensors = []
-            user_audio_lengths = []
-
-            for i, audio_tensor in enumerate(user_audio_tensors):
-                if audio_tensor is not None:
-                    actual_len = audio_tensor.shape[0]
-                    pad_len = max_user_audio_len - actual_len
-                    if pad_len > 0:
-                        audio_tensor = torch.nn.functional.pad(audio_tensor, (0, pad_len), mode='constant', value=0.0)
-                    padded_user_audio_tensors.append(audio_tensor)
-                    user_audio_lengths.append(actual_len)
-                else:
-                    padded_user_audio_tensors.append(torch.zeros(max_user_audio_len, dtype=torch.float32))
-                    user_audio_lengths.append(0)
-
-            user_padded_audio_tensors = torch.stack(padded_user_audio_tensors, dim=0)  # [B, T_user_audio_max]
-            user_audio_tensors_lens = torch.tensor(user_audio_lengths, dtype=torch.long)  # [B]
-
-        else:
-            user_padded_audio_tensors = None
-            user_padded_audio_features = None
-            user_audio_tensors_lens = None
-            user_audio_features_lens = None
-
-        # Get audio_features directly from turn dictionaries for assistant audio
-        assistant_audio_tensors_list = [t for t in assistant_audio_tensors if t is not None]
-        assistant_has_audio = torch.tensor(assistant_has_audio_list, dtype=torch.bool)  # [B]
-
-        assistant_audio_features_list = []
-        assistant_audio_features_lengths = []
-        for i, turn in enumerate(assistant_turns):
-            features = turn.get("audio_features")
-            if features is not None:
-                assert len(features.shape) == 2, f"Features shape should be [T, D], but got {features.shape}"
-                assistant_audio_features_list.append(features)
-                assistant_audio_features_lengths.append(features.shape[0])
-            else:
-                # No audio features for this sample
-                assistant_audio_features_list.append(None)
-                assistant_audio_features_lengths.append(0)
-
-        # Pad fbank features to the same length
-        valid_features = [f for f in assistant_audio_features_list if f is not None]
-        if len(valid_features) > 0:
-            max_feat_len = max(f.shape[0] for f in valid_features)
-            feat_dim = valid_features[0].shape[1] if len(valid_features[0].shape) > 1 else 1
-
-            padded_assistant_audio_features = []
-            for features in assistant_audio_features_list:
-                if features is not None:
-                    feat_len = features.shape[0]
-                    pad_len = max_feat_len - feat_len
-                    if pad_len > 0:
-                        # Pad along time dimension: [T_feat, D] -> [T_feat_max, D]
-                        if features.dim() == 2:
-                            features = torch.nn.functional.pad(features, (0, 0, 0, pad_len), mode='constant', value=0.0)
-                        else:
-                            features = torch.nn.functional.pad(features, (0, pad_len), mode='constant', value=0.0)
-                    padded_assistant_audio_features.append(features)
-                else:
-                    # Create zero features for samples without audio
-                    if feat_dim > 1:
-                        padded_assistant_audio_features.append(torch.zeros(max_feat_len, feat_dim, dtype=torch.float32))
-                    else:
-                        padded_assistant_audio_features.append(torch.zeros(max_feat_len, dtype=torch.float32))
-
-            assistant_padded_audio_features = torch.stack(padded_assistant_audio_features, dim=0)  # [B, T_feat_max, D]
-            assistant_audio_features_lens = torch.tensor(assistant_audio_features_lengths, dtype=torch.long)  # [B]
-        else:
-            assistant_padded_audio_features = None
-            assistant_audio_features_lens = None
-
-        if len(assistant_audio_tensors_list) > 0:
-
-            # Pad assistant audio_tensors to the same length
-            max_assistant_audio_len = max(t.shape[0] for t in assistant_audio_tensors_list)
-            padded_assistant_audio_tensors = []
-            assistant_audio_lengths = []
-
-            for i, audio_tensor in enumerate(assistant_audio_tensors):
-                if audio_tensor is not None:
-                    actual_len = audio_tensor.shape[0]
-                    pad_len = max_assistant_audio_len - actual_len
-                    if pad_len > 0:
-                        audio_tensor = torch.nn.functional.pad(audio_tensor, (0, pad_len), mode='constant', value=0.0)
-                    padded_assistant_audio_tensors.append(audio_tensor)
-                    assistant_audio_lengths.append(actual_len)
-                else:
-                    padded_assistant_audio_tensors.append(torch.zeros(max_assistant_audio_len, dtype=torch.float32))
-                    assistant_audio_lengths.append(0)
-
-            assistant_padded_audio_tensors = torch.stack(padded_assistant_audio_tensors, dim=0)  # [B, T_assistant_audio_max]
-            assistant_audio_tensors_lens = torch.tensor(assistant_audio_lengths, dtype=torch.long)  # [B]
-
-        else:
-            assistant_padded_audio_tensors = None
-            assistant_padded_audio_features = None
-            assistant_audio_tensors_lens = None
-            assistant_audio_features_lens = None
-        
-        return {
-            "user_input_ids": user_padded_input_ids,
-            "user_attention_mask": user_attention_mask,
-            "user_audio_tensors": user_padded_audio_tensors,
-            "user_audio_tensors_lens": user_audio_tensors_lens,
-            "user_audio_features": user_padded_audio_features,
-            "user_audio_features_lens": user_audio_features_lens,
-            "user_has_audio": user_has_audio,
-            "assistant_input_ids": assistant_padded_input_ids,
-            "assistant_attention_mask": assistant_attention_mask,
-            "assistant_audio_tensors": assistant_padded_audio_tensors,
-            "assistant_audio_tensors_lens": assistant_audio_tensors_lens,
-            "assistant_audio_features": assistant_padded_audio_features,
-            "assistant_audio_features_lens": assistant_audio_features_lens,
-            "assistant_has_audio": assistant_has_audio,
-            "audio_start_id": audio_start_id,
-            "audio_end_id": audio_end_id,
-            "audio_tag_id": audio_tag_id,
-        }
 
 def make_inputs_require_grad(module, input, output):
     output.requires_grad_(True)
@@ -501,6 +341,13 @@ def parse_training_args(argv=None):
 def main():
     model_args, data_args, training_args = parse_training_args()
 
+    if training_args.do_eval and not is_webdataset_stream_config(data_args.dataset_name):
+        raise ValueError(
+            "src/train.py only supports in-training validation for native "
+            "WebDataset configs with a 'validation' section; run evaluation "
+            "through src.eval or inference through src.infer instead of setting do_eval"
+        )
+
     # Setup logging
     logging.basicConfig(
         format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
@@ -529,7 +376,7 @@ def main():
         f"Process rank: {training_args.local_rank}, device: {training_args.device}, n_gpu: {training_args.n_gpu}, "
         + f"distributed training: {training_args.parallel_mode.value == 'distributed'}, 16-bits training: {training_args.fp16}"
     )
-    logger.info(f"Training/evaluation parameters {training_args}")
+    logger.info(f"Training parameters {training_args}")
 
 
     # Detecting last checkpoint.
@@ -565,6 +412,18 @@ def main():
                         f"Output directory ({training_args.output_dir}) already exists and is not empty, "
                         "but no checkpoints found. Overwriting existing files."
                     )
+
+    if (
+        str(getattr(training_args, "checkpoint_load_mode", "weights_only"))
+        .strip()
+        .lower()
+        == "resume"
+    ):
+        resume_checkpoint = resume_from_checkpoint_value
+        if resume_checkpoint in (None, False, "auto"):
+            resume_checkpoint = last_checkpoint
+        if isinstance(resume_checkpoint, str) and os.path.isdir(resume_checkpoint):
+            _validate_resume_batch_settings(training_args, resume_checkpoint)
 
     # Set seed before initializing model.
     set_seed(training_args.seed)
@@ -657,7 +516,7 @@ def main():
             param.requires_grad = True
 
     # -----------------------------------------------------------------------------
-    # freeze_talker: freeze talker modules (talker_model, speech_delay_embeddings)
+    # freeze_talker: freeze talker modules (talker_model)
     # -----------------------------------------------------------------------------
     def freeze_the_talker(model):
         """Freeze talker-related parameters. Keeps LLM (and LoRA if present) trainable."""
@@ -671,8 +530,6 @@ def main():
             #     p.requires_grad = True
             # for p in model.talker_model.length_embedding.parameters():
             #     p.requires_grad = True
-        if hasattr(model, "speech_delay_embeddings") and model.speech_delay_embeddings is not None:
-            model.speech_delay_embeddings.requires_grad = False
 
     # -----------------------------------------------------------------------------
     # only_train_llm: freeze everything except main LLM and audio input adapters.
@@ -811,6 +668,16 @@ def main():
             pass
         logger.info("per_sample_frame_rate_embed=True: using per-sample frame rate (code_lens/feature_lens*15, range 0-15 Hz) instead of unified merge threshold embed.")
 
+    if getattr(model_args, "talker_embed_v2", False):
+        try:
+            model.config.talker_embed_v2 = True
+        except Exception:
+            pass
+        logger.info(
+            "talker_embed_v2=True: audio/length/framerate cond stay at talker_hidden_size; "
+            "Thinker hidden states stay at hidden_size until talker_cond_proj."
+        )
+
     if hasattr(model_args, "text_loss_weight"):
         try:
             model.config.text_loss_weight = model_args.text_loss_weight
@@ -841,21 +708,6 @@ def main():
                 param.requires_grad = False
         else:
             logger.info("freeze_llm skipped due to LoRA usage")
-
-    if (
-        not getattr(model_args, "no_pad", False)
-        and getattr(model_args, "extend_lm_head", False)
-    ):
-        logger.info("extend_lm_head=True and no_pad=False: train external alignment_text_pad_embedding/extended_text_lm_head for alignment padding.")
-        if hasattr(model, "model") and hasattr(model.model, "embed_tokens") and model.model.embed_tokens is not None:
-            for p in model.model.embed_tokens.parameters():
-                p.requires_grad = False
-        if hasattr(model, "alignment_text_pad_embedding") and model.alignment_text_pad_embedding is not None:
-            for p in model.alignment_text_pad_embedding.parameters():
-                p.requires_grad = True
-        if hasattr(model, "extended_text_lm_head") and model.extended_text_lm_head is not None:
-            for p in model.extended_text_lm_head.parameters():
-                p.requires_grad = True
 
     if (
         model_args.freeze_adaptor
@@ -891,6 +743,20 @@ def main():
         return names
 
     def component_parameters(component_name):
+        # ``llm_lora`` is a virtual component for selecting only PEFT adapter
+        # parameters without unfreezing the wrapped Qwen backbone.
+        if component_name == "llm_lora":
+            if not model_args.use_lora:
+                raise ValueError("only_train_modules=llm_lora requires use_lora=True")
+            parameters = [
+                param
+                for name, param in model.model.named_parameters()
+                if "lora_" in name or "modules_to_save" in name
+            ]
+            if not parameters:
+                raise ValueError("only_train_modules=llm_lora found no PEFT adapter parameters")
+            return parameters
+
         component = getattr(model, component_name, None)
         if component is None:
             raise ValueError(f"only_train_modules references missing component: {component_name}")
@@ -975,11 +841,10 @@ def main():
 
 
     # breakpoint()
-    # Load data
-    # Keep only the parameters actually required by BaseDataset.
-    train_dataset = Qwen2Dataset(
-        data_args.dataset_name,  # cfg_path
-        tokenizer,               # tokenizer
+    # Native WebDataset streams bypass the map-style training dataset.
+    native_webdataset = is_webdataset_stream_config(data_args.dataset_name)
+    train_dataset_builder = build_qwen2_webdataset if native_webdataset else Qwen2Dataset
+    dataset_kwargs = dict(
         max_padding_length=model_args.model_max_length,
         variable_length=data_args.variable_length,
         output_dir=training_args.output_dir,
@@ -1003,53 +868,34 @@ def main():
         use_omni_token=getattr(model_args, "use_omni_token", False),
         disable_text_normalize_llm=data_args.disable_text_normalize,
     )
-    # eval_dataset = None
-    if training_args.do_eval:
-        eval_dataset = Qwen2Dataset(
-            data_args.dataset_name_eval,  # cfg_path
-            tokenizer,                    # tokenizer
-            max_padding_length=model_args.model_max_length,
-            variable_length=data_args.variable_length,
-            output_dir=training_args.output_dir,
-            training_args=training_args,
-            shift_token=False,
-            create_position_ids=True,
-            create_attention_mask=False,
-            create_attention_mask_2d=False,
-            create_loss_mask=False,
-            max_num_frame=model_args.max_num_frame,
-            max_fps=model_args.max_fps,
-            reset_position_ids=data_args.reset_position_ids,
-            reset_attention_mask=data_args.reset_attention_mask,
-            seed=training_args.seed,
-            cross_dataset_joint=data_args.cross_dataset_joint,
-            dataset_joint=data_args.dataset_joint,
-            use_megatron=False,
-            use_qwen3_feature=getattr(model_args, "use_qwen3_feature", False),
-            use_qwen25o_feature=getattr(model_args, "use_qwen25omni_feature", False),
-            use_whisper_fetaure=getattr(model_args, "use_whisper_fetaure", False),
-            use_omni_token=getattr(model_args, "use_omni_token", False),
-            disable_text_normalize_llm=data_args.disable_text_normalize,
+    train_dataset = train_dataset_builder(
+        data_args.dataset_name,
+        tokenizer,
+        **dataset_kwargs,
+    )
+    eval_dataset = None
+    if native_webdataset:
+        eval_dataset = build_qwen2_webdataset(
+            data_args.dataset_name,
+            tokenizer,
+            split="validation",
+            **dataset_kwargs,
         )
-
-
+    if training_args.do_eval and eval_dataset is None:
+        raise ValueError(
+            "do_eval/eval_strategy requires a 'validation' section in the "
+            f"dataset YAML: {data_args.dataset_name}"
+        )
+    if eval_dataset is not None and not training_args.do_eval:
+        logger.warning(
+            "Dataset YAML defines a validation split but eval_strategy is 'no'; "
+            "set eval_strategy=steps and eval_steps to run validation."
+        )
     if training_args.do_train:
         if data_args.max_train_samples is not None:
             max_train_samples = min(len(train_dataset), data_args.max_train_samples)
             # train_dataset = train_dataset.select(range(max_train_samples))
             train_dataset = train_dataset[:max_train_samples]
-
-    if training_args.do_eval:
-        if data_args.max_eval_samples is not None:
-            original_eval_samples = len(eval_dataset)
-            max_eval_samples = min(original_eval_samples, data_args.max_eval_samples)
-            if original_eval_samples > max_eval_samples:
-                from torch.utils.data import Subset
-                eval_dataset = Subset(eval_dataset, list(range(max_eval_samples)))
-                            
-            print(f"Using first {len(eval_dataset)} of {original_eval_samples} samples for evaluation")
-            # eval_dataset = eval_dataset[:max_eval_samples]
-   
 
 
     # Training
@@ -1074,8 +920,76 @@ def main():
             elif last_checkpoint is not None:
                 checkpoint = last_checkpoint
 
-        # Instead of passing checkpoint to trainer, load checkpoint weights directly
-        if checkpoint is not None:
+        checkpoint_load_mode = str(
+            getattr(training_args, "checkpoint_load_mode", "weights_only")
+        ).strip().lower()
+        if checkpoint_load_mode not in {"resume", "weights_only"}:
+            raise ValueError(
+                "checkpoint_load_mode must be 'resume' or 'weights_only', got "
+                f"{checkpoint_load_mode!r}"
+            )
+        if convert_from_lora and checkpoint_load_mode == "resume":
+            raise ValueError(
+                "convert_from_lora is incompatible with checkpoint_load_mode='resume'; "
+                "use checkpoint_load_mode='weights_only'"
+            )
+
+        trainer_resume_checkpoint = None
+        if checkpoint is not None and checkpoint_load_mode == "resume":
+            if not os.path.isdir(checkpoint):
+                raise ValueError(
+                    "checkpoint_load_mode='resume' requires a checkpoint directory, got "
+                    f"{checkpoint}"
+                )
+            required_state_files = ["trainer_state.json", "optimizer.pt", "scheduler.pt"]
+            missing_state_files = [
+                name
+                for name in required_state_files
+                if not os.path.isfile(os.path.join(checkpoint, name))
+            ]
+            rank = training_args.process_index
+            rank_rng = os.path.join(checkpoint, f"rng_state_{rank}.pth")
+            shared_rng = os.path.join(checkpoint, "rng_state.pth")
+            if not os.path.isfile(rank_rng) and not os.path.isfile(shared_rng):
+                missing_state_files.append(os.path.basename(rank_rng))
+            if getattr(train_dataset, "is_native_webdataset", False):
+                native_state = f"native_dataloader_state_rank{rank}.json"
+                if not os.path.isfile(os.path.join(checkpoint, native_state)):
+                    missing_state_files.append(native_state)
+            if missing_state_files:
+                raise ValueError(
+                    "checkpoint_load_mode='resume' requires complete Trainer state; "
+                    f"missing from {checkpoint}: {', '.join(missing_state_files)}"
+                )
+            trainer_resume_checkpoint = checkpoint
+            logger.info(
+                "Checkpoint load mode 'resume': restoring complete Trainer state from %s",
+                checkpoint,
+            )
+        elif checkpoint is not None:
+            logger.info(
+                "Checkpoint load mode 'weights_only': loading model weights from %s and "
+                "starting optimizer, scheduler, step, RNG, and dataloader state from scratch",
+                checkpoint,
+            )
+
+        if checkpoint is not None and checkpoint_load_mode == "weights_only":
+            initial_merging_state = None
+            should_reinitialize_merging = bool(
+                getattr(training_args, "reinitialize_input_merging_transformer", False)
+            )
+            if should_reinitialize_merging:
+                merging_module = getattr(model, "input_merging_transformer", None)
+                if merging_module is None:
+                    raise ValueError(
+                        "reinitialize_input_merging_transformer=True requires "
+                        "model.input_merging_transformer"
+                    )
+                initial_merging_state = {
+                    name: tensor.detach().cpu().clone()
+                    for name, tensor in merging_module.state_dict().items()
+                }
+
             # Support single-file and sharded Hugging Face checkpoints
             if os.path.isdir(checkpoint):
                 state_dict = _load_state_dict_from_checkpoint(checkpoint)
@@ -1094,26 +1008,86 @@ def main():
                     raise FileNotFoundError(f"Checkpoint file {checkpoint} does not have a supported extension.")
             else:
                 raise FileNotFoundError(f"Checkpoint path {checkpoint} does not exist.")
-            logger.info(f"{checkpoint = } state_dict keys: {state_dict.keys()}")
+            incompatible_tensors = _drop_incompatible_state_dict_tensors(model, state_dict)
+            if incompatible_tensors:
+                logger.warning(
+                    "Dropped {} checkpoint tensors with incompatible shapes (keeping freshly "
+                    "initialized values): {}",
+                    len(incompatible_tensors),
+                    ", ".join(
+                        f"{key} {src}->{dst}"
+                        for key, src, dst in incompatible_tensors[:20]
+                    ),
+                )
+            transfer_counts = _validate_weights_only_transfer_components(
+                model,
+                state_dict,
+                reinitialize_input_merging_transformer=should_reinitialize_merging,
+            )
+            logger.info(
+                "Validated weights_only transfer components from {}: {}",
+                checkpoint,
+                ", ".join(
+                    f"{name}={count}" for name, count in transfer_counts.items()
+                ),
+            )
             load_result = model.load_state_dict(state_dict, strict=False, assign=True)
-            missing_keys = load_result.missing_keys
-            unexpected_keys = load_result.unexpected_keys
-            logger.info(f"Loaded checkpoint weights from {checkpoint}")
-            if missing_keys:
-                logger.info(f"Parameters NOT loaded (missing in checkpoint): {len(missing_keys)} keys")
-                for k in missing_keys[:20]:  # show first 20
-                    logger.info(f"  - {k}")
-                if len(missing_keys) > 20:
-                    logger.info(f"  ... and {len(missing_keys) - 20} more")
-            else:
-                logger.info("All model parameters were loaded from checkpoint.")
-            if unexpected_keys:
-                print(f"Parameters in checkpoint NOT loaded (unexpected): {len(unexpected_keys)} keys")
-                for k in unexpected_keys[:20]:  # show first 20
-                    print(f"  - {k}")
-                if len(unexpected_keys) > 20:
-                    print(f"  ... and {len(unexpected_keys) - 20} more")
-                # raise RuntimeError(f"Parameters in checkpoint NOT loaded (unexpected): {len(unexpected_keys)} keys")
+            if initial_merging_state is not None:
+                model.input_merging_transformer.load_state_dict(
+                    initial_merging_state, strict=True, assign=True
+                )
+                logger.info(
+                    "Restored fresh Stage 2 input_merging_transformer initialization "
+                    "after loading exported model checkpoint %s",
+                    checkpoint,
+                )
+                initial_merging_state = None
+
+            missing_keys = set(load_result.missing_keys)
+            unexpected_keys = set(load_result.unexpected_keys)
+            ignored_counts = _validate_ignored_frozen_checkpoint_weights(
+                checkpoint,
+                unexpected_keys,
+            )
+
+            expected_missing_prefixes = [
+                "model.base_model.model.",
+                # no_talker checkpoints omit these; keep the constructed Talker.
+                "talker_model.",
+            ]
+            expected_missing = _keys_with_prefixes(
+                missing_keys,
+                expected_missing_prefixes,
+            )
+            expected_missing |= {key for key, _, _ in incompatible_tensors}
+            expected_unexpected = _keys_with_prefixes(
+                unexpected_keys,
+                ("model.", "_qwen25o_encoder.", "speech_delay_embeddings"),
+            )
+            remaining_missing = sorted(missing_keys - expected_missing)
+            remaining_unexpected = sorted(unexpected_keys - expected_unexpected)
+
+            logger.info(
+                "Loaded checkpoint weights from {}; kept {} initialized PEFT Thinker/LoRA "
+                "parameters and ignored frozen checkpoint weights: {}",
+                checkpoint,
+                len(expected_missing),
+                ", ".join(
+                    f"{name}={count}" for name, count in ignored_counts.items()
+                ) or "none",
+            )
+            if remaining_missing:
+                logger.warning(
+                    "Checkpoint is missing {} non-backbone parameters: {}",
+                    len(remaining_missing),
+                    remaining_missing[:20],
+                )
+            if remaining_unexpected:
+                logger.warning(
+                    "Checkpoint contains {} additional non-backbone parameters: {}",
+                    len(remaining_unexpected),
+                    remaining_unexpected[:20],
+                )
 
             # convert_from_lora: merge LoRA into base, then switch to full-parameter training
             if convert_from_lora:
@@ -1175,7 +1149,9 @@ def main():
             ),
         )
         assert trainer.model is model, "Trainer must use the same model object; model_init would re-initialize weights"
-        train_result = trainer.train(resume_from_checkpoint=None)
+        train_result = trainer.train(
+            resume_from_checkpoint=trainer_resume_checkpoint
+        )
 
         if trainer.is_fsdp_enabled:
             trainer.accelerator.state.fsdp_plugin.set_state_dict_type("FULL_STATE_DICT")
@@ -1201,24 +1177,6 @@ def main():
         trainer.log_metrics("train", metrics)
         trainer.save_metrics("train", metrics)
         trainer.save_state()
-
-
-    # Evaluation
-    # if training_args.do_eval:
-    #     logger.info("*** Evaluate ***")
-
-    #     metrics = trainer.evaluate()
-
-    #     max_eval_samples = data_args.max_eval_samples if data_args.max_eval_samples is not None else len(eval_dataset)
-    #     metrics["eval_samples"] = min(max_eval_samples, len(eval_dataset))
-    #     try:
-    #         perplexity = math.exp(metrics["eval_loss"])
-    #     except OverflowError:
-    #         perplexity = float("inf")
-    #     metrics["perplexity"] = perplexity
-
-    #     trainer.log_metrics("eval", metrics)
-    #     trainer.save_metrics("eval", metrics)
 
 
 

@@ -1,0 +1,3 @@
+[submodule "Kimi-Audio-Evalkit"]
+	path = Kimi-Audio-Evalkit
+	url = https://github.com/petrichor20211/Kimi-Audio-Evalkit.git

@@ -4,6 +4,7 @@
 [![demo page](https://img.shields.io/badge/Demo_Page-Github.io-blue)](https://flexislm.github.io)
 [![dataset](https://img.shields.io/badge/Data-2M_speech2speech-yellow?logo=huggingface&logoColor=white)](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-2M-s2s-compact)
 [![dataset](https://img.shields.io/badge/Data-4M_speech2speech-yellow?logo=huggingface&logoColor=white)](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-4M-s2s)
+[![model](https://img.shields.io/badge/Model-FlexiSLM-7B-Stage2-green?logo=huggingface&logoColor=white)](https://huggingface.co/FlexiSLM/FlexiSLM-7B-Stage2)
 
 ## Overview
 

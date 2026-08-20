@@ -39,6 +39,7 @@ import logging
 import random
 from typing import Dict, List, Optional, Tuple, Union
 from dataclasses import dataclass, field
+from pathlib import Path
 from tqdm import tqdm
 from accelerate import init_empty_weights
 import time
@@ -139,6 +140,141 @@ except:
 import loguru
 
 logger = loguru.logger
+
+DEFAULT_INFERENCE_DOWNLOAD_DIR = "models"
+DEFAULT_INFERENCE_REPOS = {
+    "model": {
+        "repo_id": "FlexiSLM/FlexiSLM-7B-Stage2",
+        "local_name": "FlexiSLM-7B-Stage2",
+    },
+    "qwen25o_encoder": {
+        "repo_id": "FlexiSLM/Qwen2_5-Omni-Audio_Encoder",
+        "local_name": "Qwen2_5-Omni-Audio_Encoder",
+    },
+    "sensevoice": {
+        "repo_id": "FunAudioLLM/SenseVoiceSmall",
+        "local_name": "SenseVoiceSmall",
+    },
+    "flexicodec": {
+        "repo_id": "jiaqili3/flexicodec",
+        "local_name": "FlexiCodec",
+        "allow_patterns": [
+            "12hz_v1_half_config.yaml",
+            "nartts_flexicodec_only.safetensors",
+        ],
+    },
+}
+
+
+def _has_model_weights(path: Path) -> bool:
+    return any(
+        (path / name).is_file()
+        for name in (
+            "model.safetensors",
+            "model.safetensors.index.json",
+            "pytorch_model.bin",
+            "pytorch_model.bin.index.json",
+        )
+    )
+
+
+def _checkpoint_dir_ready(path: Path) -> bool:
+    return path.is_dir() and (path / "config.json").is_file() and _has_model_weights(path)
+
+
+def _snapshot_download(
+    repo_id: str,
+    local_dir: Path,
+    *,
+    allow_patterns: Optional[List[str]] = None,
+    token: Optional[str] = None,
+    revision: str = "main",
+) -> str:
+    from huggingface_hub import snapshot_download
+
+    local_dir.mkdir(parents=True, exist_ok=True)
+    logger.info(f"Downloading {repo_id} to {local_dir}")
+    return snapshot_download(
+        repo_id=repo_id,
+        local_dir=str(local_dir),
+        allow_patterns=allow_patterns,
+        token=token,
+        revision=revision,
+    )
+
+
+def download_inference_checkpoints(
+    download_dir: Union[str, os.PathLike] = DEFAULT_INFERENCE_DOWNLOAD_DIR,
+    *,
+    token: Optional[str] = None,
+    revision: str = "main",
+    download_model: bool = True,
+    download_encoder: bool = True,
+    download_flexicodec: bool = True,
+    download_sensevoice: bool = True,
+) -> Dict[str, str]:
+    """Download default Python-API inference checkpoints with ``snapshot_download``.
+
+    Existing complete local directories are reused. Returns local paths suitable
+    for :class:`InterleavedInferenceConfig`.
+    """
+    root = Path(download_dir)
+    paths: Dict[str, str] = {}
+
+    if download_model:
+        spec = DEFAULT_INFERENCE_REPOS["model"]
+        local_dir = root / spec["local_name"]
+        if not _checkpoint_dir_ready(local_dir):
+            _snapshot_download(
+                spec["repo_id"],
+                local_dir,
+                token=token,
+                revision=revision,
+            )
+        paths["model_path"] = str(local_dir)
+
+    if download_encoder:
+        spec = DEFAULT_INFERENCE_REPOS["qwen25o_encoder"]
+        local_dir = root / spec["local_name"]
+        if not _checkpoint_dir_ready(local_dir):
+            _snapshot_download(
+                spec["repo_id"],
+                local_dir,
+                token=token,
+                revision=revision,
+            )
+        paths["qwen25o_encoder_path"] = str(local_dir)
+        paths["qwen25o_encoder_config_path"] = str(local_dir / "config.json")
+
+    if download_sensevoice:
+        spec = DEFAULT_INFERENCE_REPOS["sensevoice"]
+        local_dir = root / spec["local_name"]
+        if not _checkpoint_dir_ready(local_dir):
+            _snapshot_download(
+                spec["repo_id"],
+                local_dir,
+                token=token,
+                revision=revision,
+            )
+        paths["sensevoice_path"] = str(local_dir)
+
+    if download_flexicodec:
+        spec = DEFAULT_INFERENCE_REPOS["flexicodec"]
+        local_dir = root / spec["local_name"]
+        ckpt_path = local_dir / "nartts_flexicodec_only.safetensors"
+        config_path = local_dir / "12hz_v1_half_config.yaml"
+        if not ckpt_path.is_file() or not config_path.is_file():
+            _snapshot_download(
+                spec["repo_id"],
+                local_dir,
+                allow_patterns=spec["allow_patterns"],
+                token=token,
+                revision=revision,
+            )
+        paths["flexicodec_ckpt_path"] = str(ckpt_path)
+        paths["flexicodec_config_path"] = str(config_path)
+
+    return paths
 
 
 def _load_state_dict_from_checkpoint(model_path: str) -> dict:
@@ -261,6 +397,9 @@ class InterleavedInferenceConfig:
     flexicodec_ckpt_path: Optional[str] = None
     flexicodec_config_path: Optional[str] = None
     sensevoice_path: Optional[str] = None
+    # When True, missing paths are filled with huggingface_hub.snapshot_download.
+    auto_download: bool = False
+    download_dir: str = DEFAULT_INFERENCE_DOWNLOAD_DIR
     
     # Flow matching decoder configuration
     use_flow_matching_decoder: bool = False
@@ -324,6 +463,38 @@ class InterleavedInferenceConfig:
     model_revision: str = "main"
     token: Optional[str] = None
     use_fast_tokenizer: bool = True
+
+    def __post_init__(self):
+        if self.auto_download:
+            downloaded = download_inference_checkpoints(
+                self.download_dir,
+                token=self.token,
+                revision=self.model_revision,
+                download_model=not self.model_path,
+                download_encoder=not self.qwen25o_encoder_path,
+                download_flexicodec=not (
+                    self.flexicodec_ckpt_path and self.flexicodec_config_path
+                ),
+                download_sensevoice=not self.sensevoice_path,
+            )
+            if not self.model_path:
+                self.model_path = downloaded["model_path"]
+            if not self.qwen25o_encoder_path:
+                self.qwen25o_encoder_path = downloaded["qwen25o_encoder_path"]
+            if not self.qwen25o_encoder_config_path:
+                self.qwen25o_encoder_config_path = downloaded[
+                    "qwen25o_encoder_config_path"
+                ]
+            if not self.flexicodec_ckpt_path:
+                self.flexicodec_ckpt_path = downloaded["flexicodec_ckpt_path"]
+            if not self.flexicodec_config_path:
+                self.flexicodec_config_path = downloaded["flexicodec_config_path"]
+            if not self.sensevoice_path:
+                self.sensevoice_path = downloaded["sensevoice_path"]
+        if self.qwen25o_encoder_path and not self.qwen25o_encoder_config_path:
+            self.qwen25o_encoder_config_path = os.path.join(
+                self.qwen25o_encoder_path, "config.json"
+            )
 
 
 class ModelArgsAdapter:
@@ -432,6 +603,11 @@ class InterleavedS2SInference:
         """
         logger.info(f"Loading InterleavedS2S model from {self.config.model_path}")
         model_path = self.config.model_path
+        if not model_path:
+            raise ValueError(
+                "model_path is required. Set auto_download=True to fetch the default "
+                "FlexiSLM-7B-Stage2 checkpoint with snapshot_download, or pass a local path."
+            )
 
         # ------------------------------------------------------------------
         # Step 1: read config to determine whether LoRA was used

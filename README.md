@@ -7,7 +7,7 @@
 
 ## Table of Contents
 
-- [Inference](#inference)
+- [Inference Guide](#inference)
 - [Data Details](#data)
 - [Training Guide](#training-guide)
 - [Evaluation](#evaluation)
@@ -39,9 +39,31 @@ pip install -r requirements.txt
 
 ## Inference
 
-### Download Models
+### 1. Python API (with Automatic downloading)
 
-Download the models used by the repository:
+Set `auto_download=True` to download the default FlexiSLM-7B Stage 2 checkpoint, Qwen2.5-Omni audio encoder, SenseVoice, and FlexiCodec files into `models/` on first run. Later runs reuse the local copies.
+
+```python
+from src.inference_flexislm import (
+    InterleavedInferenceConfig,
+    InterleavedS2SInference,
+)
+
+config = InterleavedInferenceConfig(
+    auto_download=True,
+    use_flow_matching_decoder=False,
+    enable_flexible_framerate=True,
+    input_framerate=8.0,
+    input_base_rate=12.5,
+    default_framerate=8.0,
+    decode_audio=True,
+    torch_dtype="bfloat16",
+    attn_implementation="flash_attention_2",
+)
+engine = InterleavedS2SInference(config, device="cuda:0")
+```
+
+#### Python API (Manual downloading)
 
 ```bash
 MODEL_ROOT="$PWD/models"
@@ -52,15 +74,10 @@ hf download FunAudioLLM/SenseVoiceSmall --local-dir "$MODEL_ROOT/SenseVoiceSmall
 hf download jiaqili3/flexicodec 12hz_v1_half_config.yaml nartts_flexicodec_only.safetensors --local-dir "$MODEL_ROOT/FlexiCodec"
 ```
 
-### 1. Python API
-
-For a single request or interactive use, call the inference engine directly without creating a JSONL file:
+Then point the config at those directories:
 
 ```python
 from pathlib import Path
-
-import soundfile as sf
-import torch
 
 from src.inference_flexislm import (
     InterleavedInferenceConfig,
@@ -89,6 +106,15 @@ config = InterleavedInferenceConfig(
     attn_implementation="flash_attention_2",
 )
 engine = InterleavedS2SInference(config, device="cuda:0")
+```
+
+After `engine` is constructed with either method:
+
+```python
+from pathlib import Path
+
+import soundfile as sf
+import torch
 
 
 def save_audio(result, output_path):
@@ -203,24 +229,11 @@ We open-source the data produced by the following pipeline:
 1. **Prompt collection and response generation.** Text prompts are collected from public QA, instruction-following, and dialogue datasets. Responses are generated with Qwen3-Omni-30B-A3B. The resulting text pairs are released as [FlexiSLM-Data-5M-t2t](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-5M-t2t).
 2. **Speech synthesis.** Responses are synthesized with Qwen3-TTS, while prompts are synthesized with Fish-Audio using randomly sampled speaker prompts. The resulting 4.2M samples and approximately 26K hours of audio are released as [FlexiSLM-Data-4M-s2s](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-4M-s2s).
 3. **Quality filtering and compression.** Stricter filtering is applied and all audio is converted to MP3. The compact release contains 2.43M samples and approximately 14.8K hours of audio in about 385 GB: [FlexiSLM-Data-2M-s2s-compact](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-2M-s2s-compact).
-
-The compact training set downloaded above uses native WebDataset shards. Each sample contains a question, a response, and JSON metadata:
-
-```text
-00000001.question.mp3
-00000001.response.mp3
-00000001.json
-```
-
-Training shards follow this pattern:
-
-```text
-data/training/FlexiSLM-Data-2M-s2s-compact/data/train-{00000..00242}-of-00243.tar
-```
+For more details, please refer to the dataset READMEs on huggingface.
 
 ## Training Guide
 
-### Project Structure
+### Understanding Project Structure
 
 ```text
 FlexiSLM/
@@ -412,6 +425,7 @@ If you find our work useful, please consider citing:
 
 - Our work uses Qwen 2.5 as the backbone and [Qwen2.5-Omni](https://github.com/QwenLM/Qwen2.5-Omni) as the audio encoder.
 - Our training framework is largely based on [Transformers](https://github.com/huggingface/transformers).
+- Our evaluation uses [Kimi-Audio-Evalkit](https://github.com/MoonshotAI/Kimi-Audio-Evalkit)
 - Our previous open-source works [FlexiCodec](https://github.com/AmphionTeam/FlexiCodec) and [DualCodec](https://github.com/jiaqili3/DualCodec) are foundational to this work.
 
 ## License

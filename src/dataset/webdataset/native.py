@@ -38,8 +38,6 @@ class WorkerContextFactory:
     def __call__(self) -> WorkerContext:
         # Keep heavyweight feature extractor imports and construction inside the
         # DataLoader worker while leaving the factory itself spawn-pickleable.
-        from src.models._local_flexicodec import ensure_local_flexicodec
-        ensure_local_flexicodec()
         from flexicodec.feature_extractors import FBankGen
         from src.dataset.interleaved import Qwen3FbankExtractor
 

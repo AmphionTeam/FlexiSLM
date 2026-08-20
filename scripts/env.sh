@@ -10,9 +10,9 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-# Set Python path. src/models is included so `import flexicodec` uses
-# the in-repo package at src/models/flexicodec (not a pip install).
-export PYTHONPATH="${REPO_ROOT}:${REPO_ROOT}/src/models:${PYTHONPATH:-}"
+# Set Python path to the repository root so `src.*` imports resolve.
+# FlexiCodec is the installed Python package, not src/models/flexicodec.
+export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
 
 # Prefer conda's libstdc++ over the system one before training starts.
 # Required for torchcodec + conda-forge FFmpeg/OpenVINO (CXXABI_1.3.15).

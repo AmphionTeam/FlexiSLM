@@ -32,8 +32,6 @@ from src.dataset.interleaved_processor import FlexiSampleProcessor, preprocess
 
 IGNORE_TOKEN_ID = LabelSmoother.ignore_index
 
-from src.models._local_flexicodec import ensure_local_flexicodec
-ensure_local_flexicodec()
 from flexicodec.feature_extractors import FBankGen
 
 from transformers.models.whisper import WhisperFeatureExtractor

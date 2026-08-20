@@ -41,11 +41,9 @@ import os
 from src.models.configuration_flexislm import MultimodalQwen2Config
 from src.models.generation_alignment import DelayedAudioLengthBuffer
 from accelerate import init_empty_weights
-from src.models._local_flexicodec import ensure_local_flexicodec
 import loguru
 logger = loguru.logger
 
-ensure_local_flexicodec()
 from flexicodec.infer import prepare_model, encode_flexicodec
 import flexicodec
 import flexicodec.model_blocks.mimi.transformer as Stransformer

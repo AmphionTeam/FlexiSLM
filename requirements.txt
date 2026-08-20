@@ -1,6 +1,6 @@
 # Copyright (c) 2025 ByteDance Ltd. and/or its affiliates
 # SPDX-License-Identifier: MIT
-# FlexiSLM Python dependencies (PyPI-installable only).
+# FlexiSLM Python dependencies.
 # This file is derived from imports used in the current codebase.
 #
 # Notes:
@@ -8,15 +8,16 @@
 #    must be installed from source or provided via PYTHONPATH, e.g.:
 #    - zero_shot_tts_training
 #    - qwen_asr
-# 2) FlexiCodec Python sources are vendored at src/models/flexicodec.
-#    Do not install the PyPI/GitHub flexicodec package; checkpoints stay
-#    configured separately (flexicodec_ckpt_path / flexicodec_config_path).
+# 2) FlexiCodec is installed from AmphionTeam/FlexiCodec (pinned Git commit).
+#    Checkpoints stay configured separately
+#    (flexicodec_ckpt_path / flexicodec_config_path).
 # 3) `flash-attn` is optional and environment-specific; install it manually
 #    when your CUDA/PyTorch toolchain supports it.
 
 accelerate>=0.30.0
 datasets>=2.18.0
 deepspeed>=0.14.0
+flexicodec @ git+https://github.com/AmphionTeam/FlexiCodec.git@f52415cc043cf8bd6bcd65921edb8bb4241cf54a
 huggingface_hub>=0.23.0
 inflect>=7.0.0
 librosa>=0.10.0

@@ -216,7 +216,7 @@ def download_inference_checkpoints(
     """Download default Python-API inference checkpoints with ``snapshot_download``.
 
     Existing complete local directories are reused. Returns local paths suitable
-    for :class:`InterleavedInferenceConfig`.
+    for :class:`FlexiSLMInferenceConfig`.
     """
     root = Path(download_dir)
     paths: Dict[str, str] = {}
@@ -388,7 +388,7 @@ def _load_finetuned_sensevoice_weights_if_needed(model: "ParallelS2SForCausalLM"
 
 
 @dataclass
-class InterleavedInferenceConfig:
+class FlexiSLMInferenceConfig:
     """Configuration for Interleaved S2S inference."""
     # Model paths
     model_path: Optional[str] = None
@@ -416,7 +416,7 @@ class InterleavedInferenceConfig:
     # Model configuration
     audio_vocab_size: int = 32768
     max_length_classes: int = 32
-    use_omni_token: bool = False  # Set from checkpoint in InterleavedS2SInference.__init__
+    use_omni_token: bool = False  # Set from checkpoint in FlexiSLMInference.__init__
     use_sensevoice_feature: Optional[bool] = None  # Will be read from model config
     use_whisper_fetaure: Optional[bool] = None  # Will be read from model config
     # Audio input mode (determined from model config):
@@ -499,7 +499,7 @@ class InterleavedInferenceConfig:
 
 class ModelArgsAdapter:
     """Adapter to make config compatible with load_interleaved_s2s_model_and_tokenizer."""
-    def __init__(self, config: InterleavedInferenceConfig):
+    def __init__(self, config: FlexiSLMInferenceConfig):
         self.cache_dir = config.cache_dir
         self.use_fast_tokenizer = config.use_fast_tokenizer
         self.model_revision = config.model_revision
@@ -511,7 +511,7 @@ class ModelArgsAdapter:
         self.low_cpu_mem_usage = config.low_cpu_mem_usage
 
 
-class InterleavedS2SInference:
+class FlexiSLMInference:
     """
     Interleaved Speech-to-Speech inference engine.
     
@@ -521,7 +521,7 @@ class InterleavedS2SInference:
     - Multi-round conversation with history
     """
     
-    def __init__(self, config: InterleavedInferenceConfig, device: str = "cuda"):
+    def __init__(self, config: FlexiSLMInferenceConfig, device: str = "cuda"):
         self.config = config
         self.device = device
         global AUD_START_TOKEN, AUD_END_TOKEN
@@ -2082,7 +2082,7 @@ class InterleavedS2SInference:
         return out
 
 
-def run_interactive_mode(engine: InterleavedS2SInference, args):
+def run_interactive_mode(engine: FlexiSLMInference, args):
     """Run interactive inference mode."""
     print("\n" + "=" * 60)
     print("Interleaved S2S Interactive Mode")
@@ -2569,7 +2569,7 @@ def run_interactive_mode(engine: InterleavedS2SInference, args):
             traceback.print_exc()
 
 
-def run_batch_mode(engine: InterleavedS2SInference, args):
+def run_batch_mode(engine: FlexiSLMInference, args):
     """Run batch inference mode from JSONL file."""
     logger.info(f"Running batch inference from: {args.input_file}")
     
@@ -2850,7 +2850,7 @@ def main():
     logger.info(f"System prompt: {system_prompt}")
     
     # Create config
-    config = InterleavedInferenceConfig(
+    config = FlexiSLMInferenceConfig(
         model_path=args.model_path,
         flexicodec_ckpt_path=args.flexicodec_ckpt,
         flexicodec_config_path=args.flexicodec_config,
@@ -2889,7 +2889,7 @@ def main():
     
     try:
         # Initialize inference engine
-        engine = InterleavedS2SInference(config, device=args.device)
+        engine = FlexiSLMInference(config, device=args.device)
         
         # Run appropriate mode
         if args.input_file:

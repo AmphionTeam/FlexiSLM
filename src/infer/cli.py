@@ -230,12 +230,12 @@ def _build_engine(engine_config: Mapping[str, Any], device: str) -> Any:
     # Keep the legacy module as the engine implementation only. Batch orchestration
     # belongs to this package and does not modify its legacy CLI.
     from src.inference_flexislm import (
-        InterleavedInferenceConfig,
-        InterleavedS2SInference,
+        FlexiSLMInferenceConfig,
+        FlexiSLMInference,
     )
 
-    config = InterleavedInferenceConfig(**dict(engine_config))
-    return InterleavedS2SInference(config, device=device)
+    config = FlexiSLMInferenceConfig(**dict(engine_config))
+    return FlexiSLMInference(config, device=device)
 
 
 def _initialize_worker(

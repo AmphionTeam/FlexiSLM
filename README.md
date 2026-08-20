@@ -44,12 +44,17 @@ pip install -r requirements.txt
 Set `auto_download=True` to download the default FlexiSLM-7B Stage 2 checkpoint, Qwen2.5-Omni audio encoder, SenseVoice, and FlexiCodec files into `models/` on first run. Later runs reuse the local copies.
 
 ```python
+from pathlib import Path
+
+import soundfile as sf
+import torch
+
 from src.inference_flexislm import (
-    InterleavedInferenceConfig,
-    InterleavedS2SInference,
+    FlexiSLMInferenceConfig,
+    FlexiSLMInference,
 )
 
-config = InterleavedInferenceConfig(
+config = FlexiSLMInferenceConfig(
     auto_download=True,
     use_flow_matching_decoder=False,
     enable_flexible_framerate=True,
@@ -60,7 +65,51 @@ config = InterleavedInferenceConfig(
     torch_dtype="bfloat16",
     attn_implementation="flash_attention_2",
 )
-engine = InterleavedS2SInference(config, device="cuda:0")
+engine = FlexiSLMInference(config, device="cuda:0")
+
+
+def save_audio(result, output_path):
+    waveform = result.get("audio")
+    if waveform is None:
+        raise RuntimeError("The model did not return decoded audio")
+    if torch.is_tensor(waveform):
+        waveform = waveform.detach().float().cpu().numpy()
+    sf.write(Path(output_path), waveform.squeeze(), 16_000)
+
+
+# Text-to-speech
+result = engine.generate_tts(
+    sentence="FlexiSLM supports controllable speech generation.",
+    framerate=8.0,
+)
+save_audio(result, "tts.wav")
+
+# Automatic speech recognition
+result = engine.generate_from_audio(
+    audio_path="examples/input.wav",
+    text_query="Please transcribe the audio.",
+    framerate=8.0,
+    output_text_only=True,
+)
+print(result["text"])
+
+# Audio question answering
+result = engine.generate_from_audio(
+    audio_path="examples/question.wav",
+    text_query="",
+    framerate=8.0,
+    output_text_only=True,
+)
+print(result["text"])
+
+# Speech-to-speech generation
+result = engine.generate_from_audio(
+    audio_path="examples/input.wav",
+    text_query="",
+    framerate=8.0,
+    output_text_only=False,
+)
+save_audio(result, "s2s.wav")
 ```
 
 #### Python API (Manual downloading)
@@ -79,13 +128,16 @@ Then point the config at those directories:
 ```python
 from pathlib import Path
 
+import soundfile as sf
+import torch
+
 from src.inference_flexislm import (
-    InterleavedInferenceConfig,
-    InterleavedS2SInference,
+    FlexiSLMInferenceConfig,
+    FlexiSLMInference,
 )
 
 model_root = Path.cwd() / "models"
-config = InterleavedInferenceConfig(
+config = FlexiSLMInferenceConfig(
     model_path=str(model_root / "FlexiSLM-7B-Stage2"),
     qwen25o_encoder_path=str(model_root / "Qwen2_5-Omni-Audio_Encoder"),
     qwen25o_encoder_config_path=str(
@@ -105,16 +157,7 @@ config = InterleavedInferenceConfig(
     torch_dtype="bfloat16",
     attn_implementation="flash_attention_2",
 )
-engine = InterleavedS2SInference(config, device="cuda:0")
-```
-
-After `engine` is constructed with either method:
-
-```python
-from pathlib import Path
-
-import soundfile as sf
-import torch
+engine = FlexiSLMInference(config, device="cuda:0")
 
 
 def save_audio(result, output_path):

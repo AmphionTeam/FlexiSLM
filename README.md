@@ -2,9 +2,8 @@
 
 [![arXiv Paper](https://img.shields.io/badge/arXiv_Paper-2606.31247-b31b1b)](https://arxiv.org/abs/2606.31247)
 [![demo page](https://img.shields.io/badge/Demo_Page-Github.io-blue)](https://flexislm.github.io)
-[![dataset](https://img.shields.io/badge/Data-5M_text2text-yellow?logo=huggingface&logoColor=white)](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-5M-t2t)
-[![dataset](https://img.shields.io/badge/Data-4M_speech2speech-yellow?logo=huggingface&logoColor=white)](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-4M-s2s)
 [![dataset](https://img.shields.io/badge/Data-2M_speech2speech-yellow?logo=huggingface&logoColor=white)](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-2M-s2s-compact)
+[![dataset](https://img.shields.io/badge/Data-4M_speech2speech-yellow?logo=huggingface&logoColor=white)](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-4M-s2s)
 [![model](https://img.shields.io/badge/Model-7B-green?logo=huggingface&logoColor=white)](https://huggingface.co/FlexiSLM/FlexiSLM-7B-Stage2)
 
 ## Overview
@@ -32,7 +31,7 @@ pip install -r requirements.txt
 ```
 ## Table of Contents
 
-- [Data Details](#data-details)
+- [FlexiSLM-Data Details](#flexislm-data-details)
 - [Inference Guide](#inference)
 - [Training Guide](#training-guide)
 - [Evaluation with Kimi-Audio-Evalkit](#evaluation-with-kimi-audio-evalkit)
@@ -40,7 +39,7 @@ pip install -r requirements.txt
 - [Acknowledgements](#acknowledgements)
 - [Appendix: Project File Structure](#appendix-project-structure)
 
-## Data Details
+## FlexiSLM-Data Details
 
 We open-source the data produced by the following pipeline:
 

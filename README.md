@@ -4,7 +4,7 @@
 [![demo page](https://img.shields.io/badge/Demo_Page-Github.io-blue)](https://flexislm.github.io)
 [![dataset](https://img.shields.io/badge/Data-2M_speech2speech-yellow?logo=huggingface&logoColor=white)](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-2M-s2s-compact)
 [![dataset](https://img.shields.io/badge/Data-4M_speech2speech-yellow?logo=huggingface&logoColor=white)](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-4M-s2s)
-[![model](https://img.shields.io/badge/Model-FlexiSLM-7B-Stage2-green?logo=huggingface&logoColor=white)](https://huggingface.co/FlexiSLM/FlexiSLM-7B-Stage2)
+[![model](https://img.shields.io/badge/Model-7B-green?logo=huggingface&logoColor=white)](https://huggingface.co/FlexiSLM/FlexiSLM-7B-Stage2)
 
 ## Overview
 
@@ -34,7 +34,7 @@ pip install -r requirements.txt
 - [Data Details](#data)
 - [Inference Guide](#inference)
 - [Training Guide](#training-guide)
-- [Evaluation](#evaluation)
+- [Evaluation with Kimi-Audio-Evalkit](#evaluation-with-kimi-audio-evalkit)
 - [Citation](#citation)
 - [Acknowledgements](#acknowledgements)
 - [Appendix: Project Structure](#appendix-project-structure)
@@ -366,7 +366,7 @@ bash scripts/train.sh config/train_stage2_7B.yaml
 
 The shared launcher uses Accelerate by default. Stage 3 selects DeepSpeed with `config/ds_config_zero2.json`; set `FLEXISLM_LAUNCHER` and `DEEPSPEED_CONFIG` to override the launcher or ZeRO configuration. GPU and distributed settings are detected by `scripts/env.sh`.
 
-## Evaluation
+## Evaluation with Kimi-Audio-Evalkit
 
 FlexiSLM uses the bundled [Kimi-Audio-Evalkit](https://github.com/petrichor20211/Kimi-Audio-Evalkit) submodule to evaluate VoiceBench, OpenAudioBench, and LibriSpeech. Inference and scoring are separate. Run all commands below from the FlexiSLM repository root.
 

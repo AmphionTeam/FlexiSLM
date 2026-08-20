@@ -124,7 +124,7 @@ result = engine.generate_from_audio(
 save_audio(result, "s2s.wav")
 ```
 
-#### Python API (Manual downloading)
+### 2. Python API (Manual downloading)
 
 ```bash
 MODEL_ROOT="$PWD/models"
@@ -217,7 +217,7 @@ save_audio(result, "s2s.wav")
 
 A minimal notebook is available at `examples/inference.ipynb`.
 
-### 2. Batch Inference
+### 3. Batch Inference
 
 Batch inference reads requests from JSONL and uses a YAML file for model, input, output, and multi-GPU runtime settings. Create `examples/requests.jsonl`:
 
@@ -290,13 +290,26 @@ MODEL_ROOT="$PWD/models"
 TRAIN_DATA_ROOT="$PWD/data/training"
 BENCHMARK_DATA_ROOT="$PWD/data/benchmarks"
 
+# Previously downloaded in inference guide
+hf download FlexiSLM/FlexiSLM-7B-Stage2 --local-dir "$MODEL_ROOT/FlexiSLM-7B-Stage2"
+hf download FlexiSLM/Qwen2_5-Omni-Audio_Encoder --local-dir "$MODEL_ROOT/Qwen2_5-Omni-Audio_Encoder"
+hf download FunAudioLLM/SenseVoiceSmall --local-dir "$MODEL_ROOT/SenseVoiceSmall"
+hf download jiaqili3/flexicodec 12hz_v1_half_config.yaml nartts_flexicodec_only.safetensors --local-dir "$MODEL_ROOT/FlexiCodec"
+
+# Required for training
 hf download Qwen/Qwen2.5-7B-Instruct --local-dir "$MODEL_ROOT/Qwen2.5-7B-Instruct"
 hf download Qwen/Qwen2.5-0.5B-Instruct --local-dir "$MODEL_ROOT/Qwen2.5-0.5B-Instruct"
 hf download openai/whisper-large-v3 --local-dir "$MODEL_ROOT/whisper-large-v3"
 
+# S2S Data for Stage 2 and 3
 hf download FlexiSLM/FlexiSLM-Data-2M-s2s-compact \
   --repo-type dataset \
   --local-dir "$TRAIN_DATA_ROOT/FlexiSLM-Data-2M-s2s-compact"
+
+# ASR+TTS Data for Stage 1, 2, and 3
+hf download FlexiSLM/asrtts_packed_webdataset \
+  --repo-type dataset \
+  --local-dir "$TRAIN_DATA_ROOT/asrtts_packed_webdataset"
 
 ```
 

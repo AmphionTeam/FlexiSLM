@@ -1,15 +1,18 @@
-# Stage 2: initialize from Stage 1, train the Talker and input modules in full,
+# Stage 2 (0.5B): initialize from Stage 1, train the Talker and input modules in full,
 # and adapt the Qwen Thinker with LoRA. Paths are relative to the repository root.
 
 # Model
-model_name_or_path: models/Qwen2.5-7B-Instruct
-config_name: models/Qwen2.5-7B-Instruct
-tokenizer_name: models/Qwen2.5-7B-Instruct
+model_name_or_path: models/Qwen2.5-0.5B-Instruct
+config_name: models/Qwen2.5-0.5B-Instruct
+tokenizer_name: models/Qwen2.5-0.5B-Instruct
 use_joint_text_audio_vocab: false
+# Stage 2 trains the Thinker through LoRA while keeping the base Qwen weights frozen.
+# The Talker and v2 input/frame merging transformer remain fully trainable.
 freeze_llm: false
 freeze_talker: false
 only_train_talker: false
 only_train_modules: "input_merging_transformer,talker_model,llm_lora"
+# Continue training the Stage 1 v2 frame merger instead of reinitializing it.
 reinitialize_input_merging_transformer: false
 
 # Audio encoder and codec
@@ -34,6 +37,7 @@ early_diverge_talker: false
 talker_concat_lm_text_output: true
 talker_hidden_size: 1280
 talker_num_layers: 20
+length_loss_weight: 0.1
 talker_num_attention_heads: 8
 talker_intermediate_size: 5120
 talker_checkpoint_path: ""
@@ -52,24 +56,24 @@ use_learnable_audio_boundary: true
 use_lora: true
 lora_rank: 32
 lora_alpha: 64
-talker_learning_rate: 2.0e-4
+talker_learning_rate: 1.0e-4
 
 # Data and Stage 1 initialization
 dataset_name: config/datasets/train_stage2_3.yaml
 checkpoint_load_mode: weights_only
-resume_from_checkpoint: outputs/train_stage1/exported_model
+resume_from_checkpoint: outputs/train_stage1_0_5B/exported_model
 
 # Training
 do_train: true
-output_dir: outputs/train_stage2
-run_name: train_stage2
-num_train_epochs: 1
-per_device_train_batch_size: 5
-max_tokens_per_batch: 5000
+output_dir: outputs/train_stage2_0_5B
+run_name: train_stage2_0_5B
+num_train_epochs: 2
+per_device_train_batch_size: 48
+max_tokens_per_batch: 18000
 gradient_accumulation_steps: 1
 auto_find_batch_size: false
 save_strategy: steps
-save_steps: 5000
+save_steps: 15000
 save_total_limit: 10
 max_grad_norm: 1.0
 learning_rate: 2.0e-5
@@ -77,7 +81,7 @@ weight_decay: 0.01
 adam_beta1: 0.9
 adam_beta2: 0.95
 adam_epsilon: 1.0e-8
-warmup_ratio: 0.02
+warmup_ratio: 0.005
 lr_scheduler_type: cosine_with_min_lr
 lr_scheduler_kwargs: {min_lr: 2.0e-6}
 logging_steps: 10
@@ -85,7 +89,7 @@ log_level: info
 model_max_length: 1024
 gradient_checkpointing: false
 ddp_timeout: 7200
-dataloader_num_workers: 4
+dataloader_num_workers: 8
 dataloader_pin_memory: true
 bf16: true
 fp16: false
@@ -95,3 +99,5 @@ trust_remote_code: true
 attn_implementation: flash_attention_2
 seed: 42
 data_seed: 42
+# Iterable WebDataset loaders require an explicit optimizer-step limit.
+max_steps: 350000

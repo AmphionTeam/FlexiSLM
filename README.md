@@ -46,19 +46,13 @@ MODEL_ROOT="$PWD/models"
 TRAIN_DATA_ROOT="$PWD/data/training"
 BENCHMARK_DATA_ROOT="$PWD/data/benchmarks"
 
-hf download FlexiSLM/FlexiSLM-7B-Stage2-v1 \
-  --local-dir "$MODEL_ROOT/FlexiSLM-7B-Stage2-v1"
-hf download Qwen/Qwen2.5-7B-Instruct \
-  --local-dir "$MODEL_ROOT/Qwen2.5-7B-Instruct"
-hf download FlexiSLM/Qwen2_5-Omni-Audio_Encoder \
-  --local-dir "$MODEL_ROOT/Qwen2_5-Omni-Audio_Encoder"
-hf download iic/SenseVoiceSmall \
-  --local-dir "$MODEL_ROOT/SenseVoiceSmall"
-hf download openai/whisper-large-v3 \
-  --local-dir "$MODEL_ROOT/whisper-large-v3"
-hf download jiaqili3/flexicodec \
-  12hz_v1_half_config.yaml nartts_flexicodec_only.safetensors \
-  --local-dir "$MODEL_ROOT/FlexiCodec"
+hf download FlexiSLM/FlexiSLM-7B-Stage2 --local-dir "$MODEL_ROOT/FlexiSLM-7B-Stage2"
+hf download Qwen/Qwen2.5-7B-Instruct --local-dir "$MODEL_ROOT/Qwen2.5-7B-Instruct"
+hf download Qwen/Qwen2.5-0.5B-Instruct --local-dir "$MODEL_ROOT/Qwen2.5-0.5B-Instruct"
+hf download FlexiSLM/Qwen2_5-Omni-Audio_Encoder --local-dir "$MODEL_ROOT/Qwen2_5-Omni-Audio_Encoder"
+hf download FunAudioLLM/SenseVoiceSmall --local-dir "$MODEL_ROOT/SenseVoiceSmall"
+hf download openai/whisper-large-v3 --local-dir "$MODEL_ROOT/whisper-large-v3"
+hf download jiaqili3/flexicodec 12hz_v1_half_config.yaml nartts_flexicodec_only.safetensors --local-dir "$MODEL_ROOT/FlexiCodec"
 
 hf download FlexiSLM/FlexiSLM-Data-2M-s2s-compact \
   --repo-type dataset \
@@ -88,7 +82,7 @@ from src.inference_flexislm import (
 
 model_root = Path.cwd() / "models"
 config = InterleavedInferenceConfig(
-    model_path=str(model_root / "FlexiSLM-7B-Stage2-v1"),
+    model_path=str(model_root / "FlexiSLM-7B-Stage2"),
     qwen25o_encoder_path=str(model_root / "Qwen2_5-Omni-Audio_Encoder"),
     qwen25o_encoder_config_path=str(
         model_root / "Qwen2_5-Omni-Audio_Encoder/config.json"
@@ -172,7 +166,7 @@ Create `examples/infer_7b.yaml`:
 ```yaml
 engine:
   config:
-    model_path: models/FlexiSLM-7B-Stage2-v1
+    model_path: models/FlexiSLM-7B-Stage2
     qwen25o_encoder_path: models/Qwen2_5-Omni-Audio_Encoder
     qwen25o_encoder_config_path: models/Qwen2_5-Omni-Audio_Encoder/config.json
     flexicodec_ckpt_path: models/FlexiCodec/nartts_flexicodec_only.safetensors
@@ -196,7 +190,7 @@ output:
   error_path: outputs/inference/errors.jsonl
 
 inference:
-  checkpoint: models/FlexiSLM-7B-Stage2-v1
+  checkpoint: models/FlexiSLM-7B-Stage2
   target_framerate_hz: 8.0
   transcribe_model_path: models/whisper-large-v3
   output_sample_rate: 16000
@@ -264,6 +258,7 @@ FlexiSLM/
 ├── LICENSE
 └── requirements.txt
 ```
+
 FlexiSLM training has three stages:
 
 1. **Talker and input-module pre-training.** Freeze the Qwen backbone and train the Talker, audio embeddings, and input frame-merging module.
@@ -300,31 +295,38 @@ Training arguments are stored in YAML files under `config/`; launchers live unde
 
 | Stage | Configuration | Launcher | Initialization |
 | --- | --- | --- | --- |
-| Stage 1 | `config/train_stage1.yaml` | `scripts/train_stage1.sh` | Qwen2.5-7B base model |
-| Stage 2 | `config/train_stage2.yaml` | `scripts/train_stage2.sh` | exported Stage 1 checkpoint |
-| Stage 3 | `config/train_stage3.yaml` | `scripts/train_stage3.sh` | merged Stage 2 checkpoint |
+| Stage 1 (7B) | `config/train_stage1_7B.yaml` | `scripts/train_stage1_7B.sh` | Qwen2.5-7B base model |
+| Stage 2 (7B) | `config/train_stage2_7B.yaml` | `scripts/train_stage2_7B.sh` | exported Stage 1 checkpoint |
+| Stage 3 (7B) | `config/train_stage3_7B.yaml` | `scripts/train_stage3_7B.sh` | merged Stage 2 checkpoint |
+| Stage 2 (0.5B) | `config/train_stage2_0_5B.yaml` | `scripts/train_stage2_0_5B.sh` | exported 0.5B Stage 1 checkpoint |
 
 Launch each stage after updating its YAML:
 
 ```bash
-bash scripts/train_stage1.sh
-bash scripts/train_stage2.sh
-bash scripts/train_stage3.sh
+bash scripts/train_stage1_7B.sh
+bash scripts/train_stage2_7B.sh
+bash scripts/train_stage3_7B.sh
+```
+
+The 0.5B Stage 2 recipe uses `Qwen2.5-0.5B-Instruct` and a larger per-device batch:
+
+```bash
+bash scripts/train_stage2_0_5B.sh
 ```
 
 YAML values can be overridden on the command line:
 
 ```bash
-bash scripts/train_stage2.sh \
-  --resume_from_checkpoint outputs/train_stage1/exported_model \
-  --output_dir outputs/train_stage2 \
+bash scripts/train_stage2_7B.sh \
+  --resume_from_checkpoint outputs/train_stage1_7B/exported_model \
+  --output_dir outputs/train_stage2_7B \
   --learning_rate 2e-5
 ```
 
 Use the shared launcher for a custom configuration:
 
 ```bash
-bash scripts/train.sh config/train_stage2.yaml
+bash scripts/train.sh config/train_stage2_7B.yaml
 ```
 
 The shared launcher uses Accelerate by default. Stage 3 selects DeepSpeed with `config/ds_config_zero2.json`; set `FLEXISLM_LAUNCHER` and `DEEPSPEED_CONFIG` to override the launcher or ZeRO configuration. GPU and distributed settings are detected by `scripts/env.sh`.

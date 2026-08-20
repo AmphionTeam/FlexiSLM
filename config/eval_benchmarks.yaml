@@ -2,7 +2,7 @@
 # Run from the FlexiSLM repository root after generating the expected traces.
 evalkit_path: Kimi-Audio-Evalkit
 data_root: data/benchmarks
-model_name: FlexiSLM-7B-Stage2-v1
+model_name: FlexiSLM-7B-Stage2
 voicebench_summary_path: outputs/evaluation/results/voicebench_summary.json
 log_dir: logs/evaluation/benchmarks
 

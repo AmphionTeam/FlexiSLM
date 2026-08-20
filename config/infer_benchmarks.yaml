@@ -3,7 +3,7 @@
 x-engine: &engine
   engine:
     config:
-      model_path: ${MODEL_ROOT}/FlexiSLM-7B-Stage2-v1
+      model_path: ${MODEL_ROOT}/FlexiSLM-7B-Stage2
       qwen25o_encoder_path: ${MODEL_ROOT}/Qwen2_5-Omni-Audio_Encoder
       qwen25o_encoder_config_path: ${MODEL_ROOT}/Qwen2_5-Omni-Audio_Encoder/config.json
       flexicodec_ckpt_path: ${MODEL_ROOT}/FlexiCodec/nartts_flexicodec_only.safetensors
@@ -20,7 +20,7 @@ x-engine: &engine
       torch_dtype: bfloat16
       attn_implementation: flash_attention_2
   inference: &inference
-    checkpoint: ${MODEL_ROOT}/FlexiSLM-7B-Stage2-v1
+    checkpoint: ${MODEL_ROOT}/FlexiSLM-7B-Stage2
     target_framerate_hz: 8.0
   runtime: &runtime
     devices: [cuda:0]

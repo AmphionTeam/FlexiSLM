@@ -31,13 +31,13 @@ pip install -r requirements.txt
 ```
 ## Table of Contents
 
-- [Data Details](#data)
+- [Data Details](#data-details)
 - [Inference Guide](#inference)
 - [Training Guide](#training-guide)
 - [Evaluation with Kimi-Audio-Evalkit](#evaluation-with-kimi-audio-evalkit)
 - [Citation](#citation)
 - [Acknowledgements](#acknowledgements)
-- [Appendix: Project Structure](#appendix-project-structure)
+- [Appendix: Project File Structure](#appendix-project-structure)
 
 ## Data Details
 

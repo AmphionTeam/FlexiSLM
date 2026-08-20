@@ -209,7 +209,7 @@ def _validate_ignored_frozen_checkpoint_weights(
     checkpoint: str,
     unexpected_keys,
 ) -> dict:
-    """Reject silently ignored trained backbone weights when checkpoint metadata is available."""
+    """Allow ignored Stage 1 Thinker weights; still reject a finetuned Omni encoder."""
     ignored = {
         "thinker": _keys_with_prefixes(unexpected_keys, ("model.",)),
         "qwen25o_encoder": _keys_with_prefixes(
@@ -232,14 +232,12 @@ def _validate_ignored_frozen_checkpoint_weights(
     with open(config_path, "r", encoding="utf-8") as stream:
         checkpoint_config = json.load(stream)
 
-    if "thinker" in ignored and not (
-        checkpoint_config.get("freeze_llm", False)
-        or checkpoint_config.get("only_train_talker", False)
-    ):
-        raise RuntimeError(
-            "weights_only loading would ignore checkpoint Thinker weights, but the "
-            "checkpoint does not declare freeze_llm=True or only_train_talker=True. "
-            "Load the plain model before applying LoRA or use a compatible checkpoint."
+    if "thinker" in ignored:
+        logger.info(
+            "Ignoring {} checkpoint Thinker tensors and keeping the initialized "
+            "backbone. Stage 1 does not train the Thinker; LoRA Stage 2 does not "
+            "remap model.* onto PEFT keys.",
+            len(ignored["thinker"]),
         )
     if "qwen25o_encoder" in ignored and checkpoint_config.get(
         "finetune_speech_encoder", False

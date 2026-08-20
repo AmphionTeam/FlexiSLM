@@ -36,10 +36,16 @@ from typing import Optional, Tuple, Union, List, Dict
 import random
 import math
 import deepspeed
-import torch.distributed as dist
 import os
 from src.models.configuration_flexislm import MultimodalQwen2Config
 from src.models.generation_alignment import DelayedAudioLengthBuffer
+from src.models.utils import (
+    _load_qwen25o_encoder_state_dict,
+    _patch_qwen3_audio_encoder_forward,
+    _qwen25o_output_dim_from_config,
+    debug_print,
+    get_rank,
+)
 from accelerate import init_empty_weights
 import loguru
 logger = loguru.logger
@@ -51,6 +57,7 @@ import flexicodec.model_blocks.mimi.transformer_windowed as Stransformer_windowe
 logger.info(f"Using FlexiCodec sources from {getattr(flexicodec, '__file__', None)}")
 IGNORE_TOKEN_ID = -100
 # Talker vocab: first 3 tokens are special (AUD_START, AUD_END, AUD_TAG), then audio codes
+AUDIO_TOKEN_OFFSET = 3  # offset for audio codes in talker vocab (indices 0,1,2 = special tokens)
 
 
 def _resolve_text_alignment_pad_loss_weight(config) -> float:
@@ -65,159 +72,7 @@ def _resolve_text_alignment_pad_loss_weight(config) -> float:
     return 0.0 if getattr(config, "freeze_talker", False) else 0.1
 
 
-def _qwen25o_output_dim_from_config(config_path: str) -> int:
-    """Read the retained Qwen2.5-Omni audio projection output dimension."""
-    if not config_path or not os.path.isfile(config_path):
-        raise FileNotFoundError(
-            f"qwen25o_encoder_config_path not found: {config_path}"
-        )
-    import json
-
-    with open(config_path, "r", encoding="utf-8") as stream:
-        config = json.load(stream)
-    if "thinker_config" in config:
-        config = config["thinker_config"]
-    if "audio_config" in config:
-        config = config["audio_config"]
-    output_dim = config.get("output_dim")
-    if not isinstance(output_dim, int) or output_dim <= 0:
-        raise ValueError(
-            "Qwen2.5-Omni audio config requires a positive integer output_dim: "
-            f"{config_path}"
-        )
-    return output_dim
-
-
-# Talker vocab: first 3 tokens are special (AUD_START, AUD_END, AUD_TAG), then audio codes
-AUDIO_TOKEN_OFFSET = 3  # offset for audio codes in talker vocab (indices 0,1,2 = special tokens)
-def _patch_qwen3_audio_encoder_forward(encoder):
-    """Patch Qwen3ASRAudioEncoder.forward so chunking is along time axis (not mel).
-    See AmphionASR/src/qwen3_aut/qwen3_encoder_adapter.py for rationale.
-    Also adds forward_cnn_only and forward_transformer_only for batched transformer encoding.
-    """
-    import types
-    from qwen_asr.core.transformers_backend.modeling_qwen3_asr import _get_feat_extract_output_lengths
-
-    def _forward_cnn_only_single(self, input_features, feature_lens):
-        """Run only the CNN + positional embedding + pack for a single sample.
-        input_features: (H, T) mel, feature_lens: (1,) with value T.
-        Returns (hidden_states (S, D), cu_seqlens (1+num_windows,)).
-        """
-        aftercnn_lens = _get_feat_extract_output_lengths(feature_lens)
-        chunk_num = torch.ceil(feature_lens / (self.n_window * 2)).long()
-        chunk_lengths = torch.tensor(
-            [self.n_window * 2] * int(chunk_num.sum().item()),
-            dtype=torch.long,
-            device=feature_lens.device,
-        )
-        tail_chunk_index = F.pad(chunk_num, (1, 0), value=-1).cumsum(0)[1:]
-        chunk_lengths[tail_chunk_index] = feature_lens % (self.n_window * 2)
-        chunk_lengths[chunk_lengths == 0] = self.n_window * 2
-
-        chunk_list = input_features.T.split(chunk_lengths.tolist(), dim=0)
-        padded_feature = nn.utils.rnn.pad_sequence(chunk_list, batch_first=True).transpose(1, 2)
-        feature_lens_after_cnn = _get_feat_extract_output_lengths(chunk_lengths)
-        padded_mask_after_cnn = nn.utils.rnn.pad_sequence(
-            [torch.ones(length, dtype=torch.bool, device=padded_feature.device) for length in feature_lens_after_cnn],
-            batch_first=True,
-        )
-        padded_feature = padded_feature.unsqueeze(1)
-        padded_embeds = []
-        for chunk in padded_feature.split(self.conv_chunksize, dim=0):
-            padded_embed = F.gelu(self.conv2d1(chunk))
-            padded_embed = F.gelu(self.conv2d2(padded_embed))
-            padded_embed = F.gelu(self.conv2d3(padded_embed))
-            padded_embeds.append(padded_embed)
-        padded_embed = torch.cat(padded_embeds, dim=0)
-        b, c, f, t = padded_embed.size()
-        padded_embed = self.conv_out(padded_embed.permute(0, 3, 1, 2).contiguous().view(b, t, c * f))
-
-        positional_embedding = (
-            self.positional_embedding.positional_embedding[: padded_embed.shape[1], :]
-            .unsqueeze(0)
-            .to(padded_embed.dtype)
-        )
-        padded_embed = padded_embed + positional_embedding
-        hidden_states = padded_embed[padded_mask_after_cnn]
-        cu_chunk_lens = [0]
-        window_aftercnn = padded_mask_after_cnn.shape[-1] * (self.n_window_infer // (self.n_window * 2))
-        for cnn_len in aftercnn_lens:
-            cu_chunk_lens += [window_aftercnn] * (int(cnn_len) // window_aftercnn)
-            remainder = int(cnn_len) % window_aftercnn
-            if remainder != 0:
-                cu_chunk_lens += [remainder]
-        cu_seqlens = torch.tensor(cu_chunk_lens, device=aftercnn_lens.device).cumsum(-1, dtype=torch.int32)
-        return hidden_states, cu_seqlens
-
-    def _forward_transformer_only(self, hidden_states, cu_seqlens):
-        """Run only the encoder layers + ln_post + proj (proj may be Identity) on packed batch."""
-        attention_mask = self._prepare_attention_mask(hidden_states, cu_seqlens)
-        for encoder_layer in self.layers:
-            layer_outputs = encoder_layer(
-                hidden_states,
-                cu_seqlens,
-                attention_mask=attention_mask,
-            )
-            hidden_states = layer_outputs[0]
-        hidden_states = self.ln_post(hidden_states)
-        hidden_states = self.proj1(hidden_states)
-        hidden_states = self.act(hidden_states)
-        hidden_states = self.proj2(hidden_states)
-        return hidden_states
-
-    orig_forward = encoder.forward
-
-    def _patched_forward(
-        self,
-        input_features,
-        feature_lens=None,
-        *args,
-        **kwargs,
-    ):
-        if feature_lens is None:
-            if input_features.ndim == 2:
-                feature_lens = torch.tensor(
-                    [input_features.shape[0]], device=input_features.device, dtype=torch.long
-                )
-            elif input_features.ndim == 3:
-                feature_lens = torch.tensor(
-                    [input_features.shape[1]], device=input_features.device, dtype=torch.long
-                )
-            else:
-                raise ValueError(f"Unexpected input_features shape: {tuple(input_features.shape)}")
-        feature_lens = feature_lens.to(dtype=torch.long)
-        if input_features.ndim != 2:
-            return orig_forward(input_features, feature_lens=feature_lens, *args, **kwargs)
-        t = int(feature_lens[0].item()) if feature_lens.numel() > 0 else input_features.shape[0]
-        if input_features.shape[0] == t:
-            input_features_ft = input_features.transpose(0, 1).contiguous()
-        else:
-            input_features_ft = input_features.contiguous()
-        return orig_forward(input_features_ft, feature_lens=feature_lens, *args, **kwargs)
-
-    encoder.forward = types.MethodType(_patched_forward, encoder)
-    encoder.forward_cnn_only = types.MethodType(_forward_cnn_only_single, encoder)
-    encoder.forward_transformer_only = types.MethodType(_forward_transformer_only, encoder)
-    return encoder
-
-
 num_params = lambda x: f"{sum(p.numel() for p in x.parameters()):,}"
-
-
-def get_rank():
-    """Get the current process rank in distributed training, or 0 if not distributed."""
-    if dist.is_initialized():
-        return dist.get_rank()
-    else:
-        return 0
-
-
-def get_world_size():
-    """Get the world size in distributed training, or 1 if not distributed."""
-    if dist.is_initialized():
-        return dist.get_world_size()
-    else:
-        return 1
 
 
 def choose_rank_shifted_option(options):
@@ -233,25 +88,6 @@ def choose_rank_shifted_option(options):
     base_index = random.randrange(len(options))
 
     return options[(base_index + get_rank()) % len(options)]
-
-
-def debug_print(message, rank=None, force=False):
-    """Print debug message with rank information.
-    
-    Args:
-        message: Message to print
-        rank: Optional rank to include (if None, will get current rank)
-        force: If True, print even if not rank 0 (useful for debugging all ranks)
-    """
-    return
-    if rank is None:
-        rank = get_rank()
-    world_size = get_world_size()
-    
-    if force or rank == 0:
-        logger.info(f"[Rank {rank}/{world_size}] {message}")
-    elif rank < 4:  # Print for first 4 ranks to avoid too much output
-        logger.info(f"[Rank {rank}/{world_size}] {message}")
 
 
 class Mlp(nn.Module):
@@ -1602,7 +1438,9 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
         Notes:
         - Unlike Qwen3 path, we DO keep encoder.proj.
         - Therefore encoder output dim is config.output_dim, not d_model.
-        - qwen25o_encoder_path is expected to be a sharded checkpoint directory.
+        - qwen25o_encoder_path may be either:
+            (1) an encoder-only directory (model.safetensors), or
+            (2) a full Qwen2.5-Omni-7B sharded checkpoint directory.
         - qwen25o_encoder_config_path should point to either:
             (1) audio encoder config json, or
             (2) full omni config json containing "audio_config".
@@ -1629,7 +1467,6 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
                 )
 
             import json as _json
-            from safetensors.torch import load_file
             from transformers.models.qwen2_5_omni.modeling_qwen2_5_omni import (
                 Qwen2_5OmniAudioEncoder,
             )
@@ -1658,59 +1495,9 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
 
             config = Qwen2_5OmniAudioEncoderConfig(**_cfg_dict)
             encoder = Qwen2_5OmniAudioEncoder(config)
-
-            index_file = os.path.join(path, "model.safetensors.index.json")
-            with open(index_file, "r") as f:
-                index_data = _json.load(f)
-
-            weight_map = index_data.get("weight_map", {})
-            if not weight_map:
-                raise ValueError(f"Checkpoint index has no weight_map entries: {index_file}")
-
-            expected_keys = set(encoder.state_dict())
-            checkpoint_keys = set(weight_map)
-            longest_key_length = max(map(len, expected_keys))
-            anchor_keys = {
-                key for key in expected_keys if len(key) == longest_key_length
-            }
-            candidate_prefixes = {
-                checkpoint_key[:-len(anchor_key)]
-                for checkpoint_key in checkpoint_keys
-                for anchor_key in anchor_keys
-                if checkpoint_key.endswith(anchor_key)
-            }
-            matching_prefixes = []
-            for prefix in candidate_prefixes:
-                remapped_keys = {
-                    key[len(prefix):]
-                    for key in checkpoint_keys
-                    if key.startswith(prefix)
-                }
-                if remapped_keys == expected_keys:
-                    matching_prefixes.append(prefix)
-
-            if len(matching_prefixes) != 1:
-                raise ValueError(
-                    "Could not uniquely infer the Qwen2.5-Omni audio encoder "
-                    "weight prefix from the checkpoint index: "
-                    f"found {len(matching_prefixes)} complete matches "
-                    f"({sorted(matching_prefixes)!r})."
-                )
-            weight_prefix = matching_prefixes[0]
-
-            # Load on demand: only open shards containing audio encoder weights.
-            required_shards = {
-                shard for key, shard in weight_map.items()
-                if key.startswith(weight_prefix)
-            }
-            remapped_dict = {}
-            for shard in sorted(required_shards):
-                shard_path = os.path.join(path, shard)
-                part = load_file(shard_path, device="cpu")
-                for key, value in part.items():
-                    if key.startswith(weight_prefix):
-                        remapped_key = key[len(weight_prefix):]
-                        remapped_dict[remapped_key] = value
+            remapped_dict = _load_qwen25o_encoder_state_dict(
+                path, encoder.state_dict().keys()
+            )
 
             # IMPORTANT: keep proj weights, so do NOT filter out "proj.*"
             missing, unexpected = encoder.load_state_dict(remapped_dict, strict=False)

@@ -450,11 +450,11 @@ class ModelArguments:
     )
     qwen25omni_encoder_path: Optional[str] = field(
         default=None,
-        metadata={"help": "Path to Qwen2.5 Omni checkpoint. Required when use_qwen25omni_feature=True."}
+        metadata={"help": "Path to Qwen2.5-Omni audio encoder checkpoint directory. Required when use_qwen25omni_feature=True."}
     )
     qwen25omni_encoder_config_path: Optional[str] = field(
         default=None,
-        metadata={"help": "Path to Qwen2.5 Omni config .json. Required when use_qwen25omni_feature=True."}
+        metadata={"help": "Path to Qwen2.5-Omni audio encoder config .json. Required when use_qwen25omni_feature=True."}
     )
     thinker_concat_user_speech: bool = field(
         default=False,

@@ -14,8 +14,8 @@ only_train_modules: "talker_model,audio_embed_transform,input_merging_transforme
 # Audio encoder and codec
 use_sensevoice_feature: false
 use_qwen25omni_feature: true
-qwen25omni_encoder_path: /path/to/models/Qwen2.5-Omni-7B
-qwen25omni_encoder_config_path: /path/to/models/Qwen2.5-Omni-7B/config.json
+qwen25omni_encoder_path: path/to/models/Qwen2.5-Omni-Audio-Encoder
+qwen25omni_encoder_config_path: path/to/models/Qwen2.5-Omni-Audio-Encoder/config.json
 flexicodec_config_path: /path/to/models/FlexiCodec/12hz_v1_half_config.yaml
 flexicodec_ckpt_path: /path/to/models/FlexiCodec/nartts_flexicodec_only.safetensors
 sensevoice_small_path: /path/to/models/SenseVoiceSmall

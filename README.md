@@ -5,16 +5,6 @@
 [![dataset](https://img.shields.io/badge/Data-2M_speech2speech-yellow?logo=huggingface&logoColor=white)](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-2M-s2s-compact)
 [![dataset](https://img.shields.io/badge/Data-4M_speech2speech-yellow?logo=huggingface&logoColor=white)](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-4M-s2s)
 
-## Table of Contents
-
-- [Inference Guide](#inference)
-- [Data Details](#data)
-- [Training Guide](#training-guide)
-- [Evaluation](#evaluation)
-- [Citation](#citation)
-- [Acknowledgements](#acknowledgements)
-- [Appendix: Project Structure](#appendix-project-structure)
-
 ## Overview
 
 This repository contains the code for our paper, "FlexiSLM: A Spoken Language Model with Dynamic and Controllable Frame Rates."
@@ -29,7 +19,6 @@ FlexiSLM is the first spoken language model that supports *dynamic* and *control
 - **August 6, 2026: Data release.** We released [FlexiSLM-Data-4M-s2s](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-4M-s2s), [FlexiSLM-Data-2M-s2s-compact](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-2M-s2s-compact), and [FlexiSLM-Data-5M-t2t](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-5M-t2t).
 - **August 2, 2026: Code release.** We released the FlexiSLM-7B training and inference code.
 
-
 ## Installation
 
 ```bash
@@ -37,6 +26,26 @@ git clone --recurse-submodules https://github.com/AmphionTeam/FlexiSLM.git
 cd FlexiSLM
 pip install -r requirements.txt
 ```
+## Table of Contents
+
+- [Data Details](#data)
+- [Inference Guide](#inference)
+- [Training Guide](#training-guide)
+- [Evaluation](#evaluation)
+- [Citation](#citation)
+- [Acknowledgements](#acknowledgements)
+- [Appendix: Project Structure](#appendix-project-structure)
+
+## Data Details
+
+We open-source the data produced by the following pipeline:
+
+1. **Prompt collection and response generation.** Text prompts are collected from public QA, instruction-following, and dialogue datasets. Responses are generated with Qwen3-Omni-30B-A3B. The resulting text pairs are released as [FlexiSLM-Data-5M-t2t](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-5M-t2t).
+2. **Speech synthesis.** Responses are synthesized with Qwen3-TTS, while prompts are synthesized with Fish-Audio using randomly sampled speaker prompts. The resulting 4.2M samples and approximately 26K hours of audio are released as [FlexiSLM-Data-4M-s2s](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-4M-s2s).
+3. **Quality filtering and compression.** Stricter filtering is applied and all audio is converted to MP3. The compact release contains 2.43M samples and approximately 14.8K hours of audio in about 385 GB: [FlexiSLM-Data-2M-s2s-compact](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-2M-s2s-compact).
+
+We believe this is one of the largest open-source datasets for spoken language model training, and we hope this will especiall benefit new researchers in this area. For more details, please refer to the dataset READMEs by following the links above.
+
 
 ## Inference
 
@@ -263,14 +272,6 @@ python -m src.infer examples/infer_7b.yaml
 
 The runner writes one unified JSONL trace and stores generated speech under `output.audio_dir`.
 
-## Data
-
-We open-source the data produced by the following pipeline:
-
-1. **Prompt collection and response generation.** Text prompts are collected from public QA, instruction-following, and dialogue datasets. Responses are generated with Qwen3-Omni-30B-A3B. The resulting text pairs are released as [FlexiSLM-Data-5M-t2t](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-5M-t2t).
-2. **Speech synthesis.** Responses are synthesized with Qwen3-TTS, while prompts are synthesized with Fish-Audio using randomly sampled speaker prompts. The resulting 4.2M samples and approximately 26K hours of audio are released as [FlexiSLM-Data-4M-s2s](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-4M-s2s).
-3. **Quality filtering and compression.** Stricter filtering is applied and all audio is converted to MP3. The compact release contains 2.43M samples and approximately 14.8K hours of audio in about 385 GB: [FlexiSLM-Data-2M-s2s-compact](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-2M-s2s-compact).
-For more details, please refer to the dataset READMEs on huggingface.
 
 ## Training Guide
 

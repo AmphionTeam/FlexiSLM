@@ -40,11 +40,7 @@ FlexiSLM/
 └── requirements.txt
 ```
 
-## Inference
-
-The released 7B checkpoint supports TTS, ASR, audio question answering, and speech-to-speech generation.
-
-### 1. Installation
+## Installation
 
 ```bash
 git clone https://github.com/AmphionTeam/FlexiSLM.git
@@ -52,7 +48,9 @@ cd FlexiSLM
 pip install -r requirements.txt
 ```
 
-### 2. Model Download
+## Inference
+
+### 1. Model Download
 
 ```bash
 MODEL_ROOT=/path/to/models
@@ -71,7 +69,7 @@ hf download jiaqili3/flexicodec \
   --local-dir "$MODEL_ROOT/FlexiCodec"
 ```
 
-### 3. Python API
+### 2. Python API
 
 For a single request or interactive use, call the inference engine directly without creating a JSONL file:
 
@@ -151,7 +149,7 @@ save_audio(result, "s2s.wav")
 
 A minimal notebook is available at `examples/inference.ipynb`.
 
-### 4. Batch Inference
+### 3. Batch Inference
 
 Batch inference reads requests from JSONL and uses a YAML file for model, input, output, and multi-GPU runtime settings. Create `/path/to/requests.jsonl`:
 
@@ -208,7 +206,7 @@ Run the batch inference entrypoint:
 python -m src.infer /path/to/infer_7b.yaml
 ```
 
-The runner writes one unified JSONL trace and stores generated speech under `output.audio_dir`. `inference.transcribe_model_path` is a batch-level setting used to transcribe generated `s2s` audio for evaluation. It can be omitted when transcription is not needed.
+The runner writes one unified JSONL trace and stores generated speech under `output.audio_dir`.
 
 ## Data
 
@@ -227,7 +225,7 @@ hf download FlexiSLM/FlexiSLM-Data-2M-s2s-compact \
   --local-dir "$DATA_ROOT/FlexiSLM-Data-2M-s2s-compact"
 ```
 
-The compact release uses native WebDataset shards. Each sample contains a question MP3, a response MP3, and JSON metadata:
+The compact release uses native WebDataset shards. Each sample contains a question, a response, and JSON metadata:
 
 ```text
 00000001.question.mp3
@@ -249,13 +247,9 @@ FlexiSLM training has three stages:
 2. **Multi-task LoRA fine-tuning.** Train the Talker and input modules while adapting the Thinker with LoRA.
 3. **Full fine-tuning.** Merge the Stage 2 LoRA weights into the Thinker, enable the Talker-to-Thinker connection, and train all model components.
 
-### 1. Installation
+### 1. Model Download
 
 ```bash
-git clone https://github.com/AmphionTeam/FlexiSLM.git
-cd FlexiSLM
-pip install -r requirements.txt
-
 MODEL_ROOT=/path/to/models
 mkdir -p "$MODEL_ROOT/FlexiCodec"
 hf download Qwen/Qwen2.5-7B-Instruct \
@@ -337,8 +331,6 @@ bash scripts/train.sh /path/to/train.yaml
 
 The shared launcher uses Accelerate by default. Stage 3 selects DeepSpeed with `config/ds_config_zero2.json`; set `FLEXISLM_LAUNCHER` and `DEEPSPEED_CONFIG` to override the launcher or ZeRO configuration. GPU and distributed settings are detected by `scripts/env.sh`.
 
-Training does not construct an evaluation dataset. Run inference with `src.infer`, then evaluate its traces with `src.eval`.
-
 ## Evaluation
 
 FlexiSLM uses [Kimi-Audio-Evalkit](https://github.com/MoonshotAI/Kimi-Audio-Evalkit) to evaluate VoiceBench, OpenAudioBench, LibriSpeech, LibriSpeech-PC, and SeedTTS-Eval. Inference and scoring are separate.
@@ -348,7 +340,6 @@ FlexiSLM uses [Kimi-Audio-Evalkit](https://github.com/MoonshotAI/Kimi-Audio-Eval
 ```bash
 git clone https://github.com/MoonshotAI/Kimi-Audio-Evalkit.git
 cd Kimi-Audio-Evalkit
-git submodule update --init --recursive
 pip install -r requirements.txt
 ```
 
@@ -371,7 +362,7 @@ Run each generated request file through `python -m src.infer` using an inference
 
 ### 3. Scoring
 
-Create an evaluation YAML such as `/path/to/eval_voicebench.yaml`:
+Create an evaluation YAML like `/path/to/eval_voicebench.yaml`:
 
 ```yaml
 evalkit_path: /path/to/Kimi-Audio-Evalkit

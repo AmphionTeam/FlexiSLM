@@ -510,9 +510,26 @@ def _decode_tts_audio(engine: Any, result: Mapping[str, Any]) -> Any:
 
 def _audio_duration(path: Path) -> float | None:
     try:
+        import wave
+
+        with wave.open(str(path), "rb") as handle:
+            frame_rate = handle.getframerate()
+            if frame_rate <= 0:
+                return None
+            return float(handle.getnframes() / frame_rate)
+    except (EOFError, OSError, wave.Error):
+        pass
+
+    try:
         import torchaudio
 
-        info = torchaudio.info(str(path))
-        return float(info.num_frames / info.sample_rate)
-    except (ImportError, OSError, RuntimeError, ValueError, ZeroDivisionError):
+        info_fn = getattr(torchaudio, "info", None)
+        if callable(info_fn):
+            info = info_fn(str(path))
+            return float(info.num_frames / info.sample_rate)
+        waveform, sample_rate = torchaudio.load(str(path))
+        if sample_rate <= 0:
+            return None
+        return float(waveform.shape[-1] / sample_rate)
+    except (AttributeError, ImportError, OSError, RuntimeError, ValueError, ZeroDivisionError):
         return None

@@ -156,8 +156,9 @@ def _validate_weights_only_transfer_components(
 ) -> dict:
     """Require complete Stage 1 components while allowing a separately initialized backbone.
 
-    A no-Talker checkpoint is allowed: if the file contains no ``talker_model`` tensors,
-    keep the constructed Talker instead of requiring a full Talker transfer.
+    Talker transfer is optional and may be partial. Missing ``talker_model`` tensors keep
+    the constructed values, which is required when transferring a 7B Talker onto a 0.5B
+    backbone (LLM-width projections do not match). Extra Talker keys are still rejected.
     """
     target_keys = set(model.state_dict())
     source_keys = set(state_dict)
@@ -168,10 +169,28 @@ def _validate_weights_only_transfer_components(
             continue
         expected = _keys_with_prefixes(target_keys, prefixes)
         provided = _keys_with_prefixes(source_keys, prefixes)
-        if component == "talker_model" and not provided:
-            logger.info(
-                "Checkpoint has no talker_model tensors; keeping the constructed Talker"
-            )
+        if component == "talker_model":
+            unexpected = sorted(provided - expected)
+            if unexpected:
+                raise RuntimeError(
+                    f"Incomplete weights_only checkpoint component {component!r}: "
+                    f"target_count={len(expected)}, checkpoint_count={len(provided)}, "
+                    f"missing=[], unexpected={unexpected[:20]}"
+                )
+            if not provided:
+                logger.info(
+                    "Checkpoint has no talker_model tensors; keeping the constructed Talker"
+                )
+                continue
+            missing = sorted(expected - provided)
+            if missing:
+                logger.warning(
+                    "Checkpoint is missing {} talker_model tensors; keeping constructed "
+                    "values: {}",
+                    len(missing),
+                    missing,
+                )
+            counts[component] = len(provided)
             continue
         missing = sorted(expected - provided)
         unexpected = sorted(provided - expected)

@@ -196,7 +196,9 @@ A minimal notebook is available at `examples/inference.ipynb`.
 
 ### 3. Batch Inference
 
-Batch inference reads requests from JSONL and uses a YAML file for model, input, output, and multi-GPU runtime settings. Create `examples/requests.jsonl`:
+Batch inference reads requests from JSONL and uses a YAML file for model, input, output, and multi-GPU runtime settings. Committed examples are `examples/requests.jsonl` and `examples/infer_7b.yaml`.
+
+`examples/requests.jsonl`:
 
 ```jsonl
 {"index": 0, "task": "tts", "input": {"text": "FlexiSLM supports controllable speech generation."}, "metadata": {"sample_id": "tts-demo"}}
@@ -205,7 +207,7 @@ Batch inference reads requests from JSONL and uses a YAML file for model, input,
 {"index": 3, "task": "s2s", "input": {"audio_path": "examples/input.wav"}, "metadata": {"sample_id": "s2s-demo"}}
 ```
 
-Create `examples/infer_7b.yaml`:
+`examples/infer_7b.yaml` (abbreviated; see the file for the full config):
 
 ```yaml
 engine:
@@ -213,10 +215,7 @@ engine:
     checkpoint: stage2_7B  # or stage2_0.5B
     model_path: models/FlexiSLM-7B-Stage2  # or models/FlexiSLM-0_5B-Stage2
     qwen25o_encoder_path: models/Qwen2_5-Omni-Audio_Encoder
-    qwen25o_encoder_config_path: models/Qwen2_5-Omni-Audio_Encoder/config.json
-    flexicodec_ckpt_path: models/FlexiCodec/nartts_flexicodec_only.safetensors
-    flexicodec_config_path: models/FlexiCodec/12hz_v1_half_config.yaml
-    sensevoice_path: models/SenseVoiceSmall
+    # ... encoder / FlexiCodec / SenseVoice paths ...
     use_flow_matching_decoder: false
     enable_flexible_framerate: true
     input_framerate: 8.0
@@ -225,18 +224,18 @@ engine:
     torch_dtype: bfloat16
     attn_implementation: flash_attention_2
 
+# input/output paths are resolved relative to this YAML file
 input:
-  path: examples/requests.jsonl
+  path: requests.jsonl
 
 output:
-  trace_path: outputs/inference/traces.jsonl
-  audio_dir: outputs/inference/audio
-  error_path: outputs/inference/errors.jsonl
+  trace_path: ../outputs/inference/traces.jsonl
+  audio_dir: ../outputs/inference/audio
+  error_path: ../outputs/inference/errors.jsonl
 
 inference:
   checkpoint: models/FlexiSLM-7B-Stage2  # or models/FlexiSLM-0_5B-Stage2
   target_framerate_hz: 8.0
-  transcribe_model_path: models/whisper-large-v3
   output_sample_rate: 16000
 
 runtime:
@@ -245,13 +244,13 @@ runtime:
   fail_fast: false
 ```
 
-Run the batch inference entrypoint:
+Run from the repository root after downloading the Stage 2 checkpoint and shared encoder/codec files (see [Section 2](#2-python-api-manual-downloading)):
 
 ```bash
 python -m src.infer examples/infer_7b.yaml
 ```
 
-`engine.config.checkpoint` selects `stage2_7B` or `stage2_0.5B`. `inference.checkpoint` is the local weights path recorded in traces. To fetch weights automatically instead of setting `model_path`, use `engine.config.auto_download: true` with `engine.config.checkpoint: stage2_7B` or `stage2_0.5B`.
+`engine.config` model paths and JSONL `audio_path` values are relative to the working directory. `engine.config.checkpoint` selects `stage2_7B` or `stage2_0.5B`. `inference.checkpoint` is the local weights path recorded in traces. To fetch weights automatically instead of setting `model_path`, use `engine.config.auto_download: true` with `engine.config.checkpoint: stage2_7B` or `stage2_0.5B`. Optional `inference.transcribe_model_path` (for example `models/whisper-large-v3`) ASR-transcribes generated s2s audio; download Whisper first if you enable it.
 
 The runner writes one unified JSONL trace and stores generated speech under `output.audio_dir`.
 
@@ -266,7 +265,7 @@ FlexiSLM training has three stages:
 
 Our released checkpoints are trained with the same settings using 8 A100 GPUs. The configs here are also adapted for 8 A100 GPUs.
 
-### Download additional checkpoints and dataset
+### 1. Download additional checkpoints and dataset
 ```bash
 MODEL_ROOT="$PWD/models"
 TRAIN_DATA_ROOT="$PWD/data/training"
@@ -296,74 +295,15 @@ hf download FlexiSLM/asrtts_packed_webdataset \
 
 ```
 
-### 1. Data Configuration
+### 2. Data Configuration
 
-The committed recipes use the datasets downloaded in [Section: Download additional checkpoints and dataset](#download-additional-checkpoints-and-dataset):
+The committed recipes use the datasets downloaded in [Section: Download additional checkpoints and dataset](#1-download-additional-checkpoints-and-dataset):
 
 - `config/datasets/train_stage1.yaml` for Stage 1 (ASR+TTS only)
-- `config/datasets/train_stage2_3.yaml` for Stages 2 and 3 (ASR+TTS + S2S + WebQ/Trivia)
-
-Stage 1:
-
-```yaml
-dataset_backend: webdataset_stream
-
-dataset:
-  asr_tts:
-    ratio: 1.0
-    data_format: webdataset_stream
-    data_paths:
-      - data/training/asrtts_packed_webdataset/data/train-{00000..00354}-of-00356.tar
-    webdataset:
-      layout: shared_audio_tasks
-      tasks: [asr, tts]
-      task_policy: all
-```
-
-Stages 2 and 3 (shard retention ratios: TTS 0.5, ASR 0.5, S2S 1.0, WebQ/Trivia 3.0).
-`data_part2_webq_trivia` is included in the same [FlexiSLM-Data-2M-s2s-compact](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-2M-s2s-compact/tree/main/data_part2_webq_trivia) download:
-
-```yaml
-dataset_backend: webdataset_stream
-
-dataset:
-  tts:
-    ratio: 0.5
-    data_format: webdataset_stream
-    data_paths:
-      - data/training/asrtts_packed_webdataset/data/train-{00000..00355}-of-00356.tar
-    webdataset:
-      layout: shared_audio_tasks
-      tasks: [tts]
-      task_policy: subset
-  asr:
-    ratio: 0.5
-    data_format: webdataset_stream
-    data_paths:
-      - data/training/asrtts_packed_webdataset/data/train-{00000..00355}-of-00356.tar
-    webdataset:
-      layout: shared_audio_tasks
-      tasks: [asr]
-      task_policy: subset
-  speech2speech:
-    ratio: 1.0
-    data_format: webdataset_stream
-    data_paths:
-      - data/training/FlexiSLM-Data-2M-s2s-compact/data/train-{00000..00242}-of-00243.tar
-    webdataset:
-      layout: s2s_pair
-  webq_trivia:
-    ratio: 3.0
-    data_format: webdataset_stream
-    data_paths:
-      - data/training/FlexiSLM-Data-2M-s2s-compact/data_part2_webq_trivia/train-{00000..00008}-of-00009.tar
-    webdataset:
-      layout: s2s_pair
-```
+- `config/datasets/train_stage2_3.yaml` for Stages 2 and 3 (ASR+TTS + S2S + WebQ/Trivia; shard retention ratios TTS 0.5, ASR 0.5, S2S 1.0, WebQ/Trivia 3.0). `data_part2_webq_trivia` is included in the same [FlexiSLM-Data-2M-s2s-compact](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-2M-s2s-compact/tree/main/data_part2_webq_trivia) download.
 
 Adjust `webdataset_runtime.sampling.steps_per_epoch` when changing the GPU count or per-device batch size.
-
-### 2. Launch Training
+### 3. Launch Training
 
 Training arguments are stored in YAML files under `config/`; launchers live under `scripts/`:
 

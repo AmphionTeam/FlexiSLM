@@ -80,7 +80,7 @@ config = FlexiSLMInferenceConfig(
     checkpoint="stage2_7B",  # or "stage2_0.5B"
     use_flow_matching_decoder=True,
     flow_matching_prompt_audio_path=str(
-        Path("assets/flexislm_demo_response_audio.wav").resolve()
+        Path("examples/input.wav").resolve()
     ),
     enable_flexible_framerate=True,
     input_framerate=8.0,
@@ -155,7 +155,8 @@ hf download jiaqili3/flexicodec \
   12hz_v1_half_config.yaml \
   nartts_flexicodec_only.safetensors \
   nartts.safetensors \
-  vocos_emilia.safetensors \
+  --local-dir "$MODEL_ROOT/FlexiCodec"
+hf download amphion/dualcodec-tts vocos_emilia.safetensors \
   --local-dir "$MODEL_ROOT/FlexiCodec"
 ```
 
@@ -181,7 +182,7 @@ config = FlexiSLMInferenceConfig(
         model_root / "FlexiCodec/vocos_emilia.safetensors"
     ),
     flow_matching_prompt_audio_path=str(
-        Path("assets/flexislm_demo_response_audio.wav").resolve()
+        Path("examples/input.wav").resolve()
     ),
     enable_flexible_framerate=True,
     input_framerate=8.0,
@@ -224,14 +225,14 @@ engine:
     torch_dtype: bfloat16
     attn_implementation: flash_attention_2
 
-# input/output paths are resolved relative to this YAML file
+# input/output paths are resolved relative to the repository root
 input:
-  path: requests.jsonl
+  path: examples/requests.jsonl
 
 output:
-  trace_path: ../outputs/inference/traces.jsonl
-  audio_dir: ../outputs/inference/audio
-  error_path: ../outputs/inference/errors.jsonl
+  trace_path: outputs/inference/traces.jsonl
+  audio_dir: outputs/inference/audio
+  error_path: outputs/inference/errors.jsonl
 
 inference:
   checkpoint: models/FlexiSLM-7B-Stage2  # or models/FlexiSLM-0_5B-Stage2
@@ -244,13 +245,13 @@ runtime:
   fail_fast: false
 ```
 
-Run from the repository root after downloading the Stage 2 checkpoint and shared encoder/codec files (see [Section 2](#2-python-api-manual-downloading)):
+Run after downloading the Stage 2 checkpoint and shared encoder/codec files (see [Section 2](#2-python-api-manual-downloading)):
 
 ```bash
 python -m src.infer examples/infer_7b.yaml
 ```
 
-`engine.config` model paths and JSONL `audio_path` values are relative to the working directory. `engine.config.checkpoint` selects `stage2_7B` or `stage2_0.5B`. `inference.checkpoint` is the local weights path recorded in traces. To fetch weights automatically instead of setting `model_path`, use `engine.config.auto_download: true` with `engine.config.checkpoint: stage2_7B` or `stage2_0.5B`. Optional `inference.transcribe_model_path` (for example `models/whisper-large-v3`) ASR-transcribes generated s2s audio; download Whisper first if you enable it.
+`input`/`output` paths are resolved relative to the repository root. `engine.config` model paths and JSONL `audio_path` values are relative to the working directory (run from the repo root). `engine.config.checkpoint` selects `stage2_7B` or `stage2_0.5B`. `inference.checkpoint` is the local weights path recorded in traces. To fetch weights automatically instead of setting `model_path`, use `engine.config.auto_download: true` with `engine.config.checkpoint: stage2_7B` or `stage2_0.5B`. Optional `inference.transcribe_model_path` (for example `models/whisper-large-v3`) ASR-transcribes generated s2s audio; download Whisper first if you enable it.
 
 The runner writes one unified JSONL trace and stores generated speech under `output.audio_dir`.
 
@@ -310,13 +311,13 @@ Training arguments are stored in YAML files under `config/`; launchers live unde
 | Stage | Configuration | Launcher | Initialization |
 | --- | --- | --- | --- |
 | Stage 1 (7B) | `config/train_stage1_7B.yaml` | `scripts/train_stage1_7B.sh` | Qwen2.5-7B base model |
-| Stage 2 (7B) | `config/train_stage2_7B.yaml` | `scripts/train_stage2_7B.sh` | exported Stage 1 checkpoint |
+| Stage 2 (7B) | `config/train_stage2_7B.yaml` | `scripts/train_stage2_7B.sh` | released Stage 1 ([Hub](https://huggingface.co/FlexiSLM/FlexiSLM-7B-Stage1)) |
 | Stage 3 (7B) | `config/train_stage3_7B.yaml` | `scripts/train_stage3_7B.sh` | merged Stage 2 checkpoint |
 | Stage 1 (0.5B) | `config/train_stage1_0_5B.yaml` | `scripts/train_stage1_0_5B.sh` | Qwen2.5-0.5B base model |
-| Stage 2 (0.5B) | `config/train_stage2_0_5B.yaml` | `scripts/train_stage2_0_5B.sh` | exported 0.5B Stage 1 checkpoint |
+| Stage 2 (0.5B) | `config/train_stage2_0_5B.yaml` | `scripts/train_stage2_0_5B.sh` | released Stage 1 ([Hub](https://huggingface.co/FlexiSLM/FlexiSLM-0_5B-Stage1)) |
 | Stage 3 (0.5B) | `config/train_stage3_0_5B.yaml` | `scripts/train_stage3_0_5B.sh` | merged 0.5B Stage 2 checkpoint |
 
-Launch each stage after updating its YAML:
+Stage 2 sets `resume_from_checkpoint` to the released Stage 1 Hub repo (downloaded into `models/` if missing). Launch each stage after updating its YAML:
 
 ```bash
 bash scripts/train_stage1_7B.sh
@@ -336,7 +337,7 @@ YAML values can be overridden on the command line:
 
 ```bash
 bash scripts/train_stage2_7B.sh \
-  --resume_from_checkpoint outputs/train_stage1_7B/exported_model \
+  --resume_from_checkpoint FlexiSLM/FlexiSLM-7B-Stage1 \
   --output_dir outputs/train_stage2_7B \
   --learning_rate 2e-5
 ```

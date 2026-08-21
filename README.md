@@ -5,7 +5,7 @@
 [![dataset](https://img.shields.io/badge/Data-yellow?logo=huggingface&logoColor=white)](https://huggingface.co/FlexiSLM/datasets)
 [![model](https://img.shields.io/badge/Models-green?logo=huggingface&logoColor=white)](https://huggingface.co/FlexiSLM/models)
 [![WeChat Blog](https://img.shields.io/badge/WeChat-Blog-07C160?logo=wechat&logoColor=white)](https://mp.weixin.qq.com/s/pno08CK1dXinIfbvt-v5dg)
-[![Presentation Video](https://img.shields.io/badge/Presentation-Video-8A2BE2)](https://jiaqili3.github.io/assets/videos/showcase_video.mov)
+[![Presentation Video](https://img.shields.io/badge/Presentation-Video-8A2BE2)](https://jiaqili3.github.io/assets/videos/showcase_video.mp4)
 
 ## Overview
 
@@ -63,7 +63,7 @@ Select a released Stage 2 checkpoint with the `checkpoint` flag. The default is 
 
 ### 1. Python API (with Automatic downloading)
 
-Set `auto_download=True` to download the selected Stage 2 checkpoint (`stage2_7B` by default, or `stage2_0.5B`), plus the Qwen2.5-Omni audio encoder, SenseVoice, FlexiCodec, flow-matching decoder, and vocoder files into `models/` on first run. Later runs reuse the local copies. Flow-matching decoding is enabled by default and uses `assets/flexislm_demo_response_audio.wav` as its prompt audio.
+Set `auto_download=True` to download the selected Stage 2 checkpoint (`stage2_7B` by default, or `stage2_0.5B`), plus the Qwen2.5-Omni audio encoder, SenseVoice, FlexiCodec, flow-matching decoder, and vocoder files into `models/` on first run. Later runs reuse the local copies. 
 
 ```python
 from pathlib import Path
@@ -149,6 +149,7 @@ hf download FlexiSLM/FlexiSLM-7B-Stage2 --local-dir "$MODEL_ROOT/FlexiSLM-7B-Sta
 # if you want to run stage2_0.5B
 hf download FlexiSLM/FlexiSLM-0_5B-Stage2 --local-dir "$MODEL_ROOT/FlexiSLM-0_5B-Stage2"
 
+# these files are shared by both sizes
 hf download FlexiSLM/Qwen2_5-Omni-Audio_Encoder --local-dir "$MODEL_ROOT/Qwen2_5-Omni-Audio_Encoder"
 hf download FunAudioLLM/SenseVoiceSmall --local-dir "$MODEL_ROOT/SenseVoiceSmall"
 hf download jiaqili3/flexicodec \

@@ -9,11 +9,10 @@
 
 ## Overview
 
-This repository contains the code for our paper, "FlexiSLM: A Spoken Language Model with Dynamic and Controllable Frame Rates."
+This repository contains the code and data for our paper, "FlexiSLM: A Spoken Language Model with Dynamic and Controllable Frame Rates."
 
 FlexiSLM is the first spoken language model that supports *dynamic* and *controllable* frame rates on both speech input and output. A single trained model can be steered between 12.5 Hz and 4.0 Hz without retraining, while its dynamic frame-rate mechanism adapts to the varying complexity of speech. FlexiSLM matches state-of-the-art 7B models even in reduced 6.25Hz frame rates. It also supports controllable frame rate generation.
 
-This codebase contains links to our released training data, and full training and inference code.
 
 <!-- ![FlexiSLM architecture](assets/flexislm_architecture.png) -->
 

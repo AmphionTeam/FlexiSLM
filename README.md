@@ -159,19 +159,9 @@ hf download jiaqili3/flexicodec \
   --local-dir "$MODEL_ROOT/FlexiCodec"
 ```
 
-Then point the config at those directories. Set `checkpoint` to match the weights you downloaded, or pass `model_path` directly.
+Then reuse the Python API example from [Section 1](#1-python-api-with-automatic-downloading), replacing only the `config = FlexiSLMInferenceConfig(...)` block. Set `checkpoint` to match the weights you downloaded, or pass `model_path` directly:
 
 ```python
-from pathlib import Path
-
-import soundfile as sf
-import torch
-
-from src.inference_flexislm import (
-    FlexiSLMInferenceConfig,
-    FlexiSLMInference,
-)
-
 model_root = Path.cwd() / "models"
 config = FlexiSLMInferenceConfig(
     checkpoint="stage2_7B",  # or "stage2_0.5B" → models/FlexiSLM-0_5B-Stage2
@@ -200,51 +190,6 @@ config = FlexiSLMInferenceConfig(
     torch_dtype="bfloat16",
     attn_implementation="flash_attention_2",
 )
-engine = FlexiSLMInference(config, device="cuda:0")
-
-
-def save_audio(result, output_path):
-    waveform = result.get("audio")
-    if waveform is None:
-        raise RuntimeError("The model did not return decoded audio")
-    if torch.is_tensor(waveform):
-        waveform = waveform.detach().float().cpu().numpy()
-    sf.write(Path(output_path), waveform.squeeze(), 16_000)
-
-
-# Text-to-speech
-result = engine.generate_tts(
-    sentence="FlexiSLM supports controllable speech generation.",
-    framerate=8.0,
-)
-save_audio(result, "tts.wav")
-
-# Automatic speech recognition
-result = engine.generate_from_audio(
-    audio_path="examples/input.wav",
-    text_query="Please transcribe the audio.",
-    framerate=8.0,
-    output_text_only=True,
-)
-print(result["text"])
-
-# Audio question answering
-result = engine.generate_from_audio(
-    audio_path="examples/question.wav",
-    text_query="",
-    framerate=8.0,
-    output_text_only=True,
-)
-print(result["text"])
-
-# Speech-to-speech generation
-result = engine.generate_from_audio(
-    audio_path="examples/input.wav",
-    text_query="",
-    framerate=8.0,
-    output_text_only=False,
-)
-save_audio(result, "s2s.wav")
 ```
 
 A minimal notebook is available at `examples/inference.ipynb`. 

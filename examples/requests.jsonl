@@ -1,0 +1,4 @@
+{"index": 0, "task": "tts", "input": {"text": "FlexiSLM supports controllable speech generation."}, "metadata": {"sample_id": "tts-demo"}}
+{"index": 1, "task": "asr", "input": {"audio_path": "examples/input.wav"}, "metadata": {"sample_id": "asr-demo"}}
+{"index": 2, "task": "audio_qa", "input": {"audio_path": "examples/question.wav", "model_prompt": ""}, "metadata": {"sample_id": "qa-demo"}}
+{"index": 3, "task": "s2s", "input": {"audio_path": "examples/input.wav"}, "metadata": {"sample_id": "s2s-demo"}}

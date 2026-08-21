@@ -53,13 +53,7 @@ We believe this is one of the largest open-source datasets for spoken language m
 
 ## Inference
 
-Select a released Stage 2 checkpoint with the `checkpoint` flag. The default is **`stage2_7B`**.
-
-Decoded speech sample rates:
-- **Flow-matching Vocos (default, `use_flow_matching_decoder=True`) → 24 kHz**
-- **FlexiCodec AR decode (`use_flow_matching_decoder=False`) → 16 kHz**
-
-Writing waveforms with the wrong rate changes playback speed. Prefer `result["sample_rate"]` when saving.
+Use the `checkpoint` flag to select an inference checkpoint. The default is **`stage2_7B`**.
 
 | Flag | Hugging Face repo | Manual local directory |
 | --- | --- | --- |

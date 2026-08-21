@@ -58,10 +58,10 @@ lora_rank: 32
 lora_alpha: 64
 talker_learning_rate: 1.0e-4
 
-# Data and Stage 1 initialization
+# Data and Stage 1 initialization (Hub id downloads into models/ on first use)
 dataset_name: config/datasets/train_stage2_3.yaml
 checkpoint_load_mode: weights_only
-resume_from_checkpoint: outputs/train_stage1_0_5B/exported_model
+resume_from_checkpoint: FlexiSLM/FlexiSLM-0_5B-Stage1
 
 # Training
 do_train: true

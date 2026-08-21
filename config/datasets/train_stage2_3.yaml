@@ -59,14 +59,9 @@ dataset:
 
 webdataset_runtime:
   sampling:
-    # Distributed training requires resampled mode with a fixed step budget.
+    # Distributed training requires resampled mode with a fixed step budget
+    # from each recipe's webdataset_steps_per_epoch.
     mode: resampled
-    # Fallback only. Each training recipe should set webdataset_steps_per_epoch
-    # for its GPU count and per_device_train_batch_size.
-    # ~0.5 ASR + ~0.5 TTS from asrtts, full S2S compact, plus webq_trivia at 3x
-    # ≈ 5,865,000 logical samples.
-    # ceil(5,865,000 / (8 GPUs * 5 samples per GPU))
-    steps_per_epoch: 146625
     seed: 42
     shuffle: true
   shuffle:

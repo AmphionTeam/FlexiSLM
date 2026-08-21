@@ -98,14 +98,12 @@ def save_audio(result, output_path):
         raise RuntimeError("The model did not return decoded audio")
     if torch.is_tensor(waveform):
         waveform = waveform.detach().float().cpu().numpy()
-    # Flow-matching Vocos is 24 kHz; FlexiCodec AR decode is 16 kHz.
-    sample_rate = int(result.get("sample_rate") or 24_000)
-    sf.write(Path(output_path), waveform.squeeze(), sample_rate)
+    sf.write(Path(output_path), waveform.squeeze(), 24_000)
 
 
 # Text-to-speech
 result = engine.generate_tts(
-    sentence="FlexiSLM supports controllable speech generation.",
+    sentence="This is a test sentence.",
     framerate=8.0,
 )
 save_audio(result, "tts.wav")
@@ -224,7 +222,7 @@ engine:
     input_framerate: 8.0
     default_framerate: 8.0
     decode_audio: true
-    output_sample_rate: 24000  # Vocos native; use 16000 only for FlexiCodec AR
+    output_sample_rate: 24000
     torch_dtype: bfloat16
     attn_implementation: flash_attention_2
 

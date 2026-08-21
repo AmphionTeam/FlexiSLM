@@ -28,6 +28,7 @@ from src.dataset.webdataset.layouts import (  # noqa: E402
     UnknownLayoutError,
 )
 from src.dataset.webdataset.manifest import load_shard_manifest  # noqa: E402
+from src.dataset.webdataset.types import SHARED_AUDIO_TASKS  # noqa: E402
 
 _BASE_PLUS_EXT = re.compile(r"^((?:.*/|)[^.]+)[.]([^/]*)$")
 _AUDIO_MEMBER = re.compile(r"^(question|response|audio)\.(wav|flac|mp3|m4a|ogg)$", re.I)
@@ -64,7 +65,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     )
     parser.add_argument("--source-name", default="inspection")
     parser.add_argument(
-        "--tasks", nargs="+", choices=("asr", "tts"), default=("asr", "tts")
+        "--tasks", nargs="+", choices=SHARED_AUDIO_TASKS, default=SHARED_AUDIO_TASKS
     )
     parser.add_argument("--max-error-examples", type=int, default=100)
     parser.add_argument(
@@ -162,9 +163,9 @@ class Inspector:
         s2s_clue = "json" in keys or any(
             key.startswith(("question.", "response.")) for key in keys
         )
-        shared_clue = bool({"asr.json", "tts.json"} & keys) or any(
-            key.startswith("audio.") for key in keys
-        )
+        shared_clue = bool(
+            {f"{task}.json" for task in SHARED_AUDIO_TASKS} & keys
+        ) or any(key.startswith("audio.") for key in keys)
         if s2s_clue and shared_clue:
             raise AmbiguousLayoutError(
                 "members contain both s2s_pair and shared_audio_tasks clues"

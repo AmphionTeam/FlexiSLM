@@ -2,33 +2,27 @@
 
 [![arXiv Paper](https://img.shields.io/badge/arXiv_Paper-2606.31247-b31b1b)](https://arxiv.org/abs/2606.31247)
 [![demo page](https://img.shields.io/badge/Demo_Page-Github.io-blue)](https://flexislm.github.io)
-[![dataset](https://img.shields.io/badge/Data-2M_speech2speech-yellow?logo=huggingface&logoColor=white)](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-2M-s2s-compact)
-[![dataset](https://img.shields.io/badge/Data-4M_speech2speech-yellow?logo=huggingface&logoColor=white)](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-4M-s2s)
-
-## Table of Contents
-
-- [Inference Guide](#inference)
-- [Data Details](#data)
-- [Training Guide](#training-guide)
-- [Evaluation](#evaluation)
-- [Citation](#citation)
-- [Acknowledgements](#acknowledgements)
-- [Appendix: Project Structure](#appendix-project-structure)
+[![dataset](https://img.shields.io/badge/Data-yellow?logo=huggingface&logoColor=white)](https://huggingface.co/FlexiSLM/datasets)
+[![model](https://img.shields.io/badge/Models-green?logo=huggingface&logoColor=white)](https://huggingface.co/FlexiSLM/models)
+[![WeChat Blog](https://img.shields.io/badge/WeChat-Blog-07C160?logo=wechat&logoColor=white)](https://mp.weixin.qq.com/s/pno08CK1dXinIfbvt-v5dg)
+[![Presentation Video](https://img.shields.io/badge/Presentation-Video-8A2BE2)](https://jiaqili3.github.io/assets/videos/showcase_video.mp4)
 
 ## Overview
 
 This repository contains the code for our paper, "FlexiSLM: A Spoken Language Model with Dynamic and Controllable Frame Rates."
 
-FlexiSLM is the first spoken language model that supports *dynamic* and *controllable* frame rates on both speech input and output. A single trained model can be steered between 12.5 Hz and 4.0 Hz without retraining, while its dynamic frame-rate mechanism adapts to the varying complexity of speech. FlexiSLM uses a Thinker-Talker architecture with dynamic frame-rate compression on speech input and controllable frame-rate generation on speech output.
+FlexiSLM is the first spoken language model that supports *dynamic* and *controllable* frame rates on both speech input and output. A single trained model can be steered between 12.5 Hz and 4.0 Hz without retraining, while its dynamic frame-rate mechanism adapts to the varying complexity of speech. FlexiSLM matches state-of-the-art 7B models even in reduced 6.25Hz frame rates. It also supports controllable frame rate generation.
+
+This codebase contains links to our released training data, and full training and inference code.
 
 <!-- ![FlexiSLM architecture](assets/flexislm_architecture.png) -->
 
 ## News
 
-- **August 20, 2026: Checkpoint release.** We released the reproduced [FlexiSLM-7B Stage 2 checkpoint](https://huggingface.co/FlexiSLM/FlexiSLM-7B-Stage2).
+- **August 21, 2026:** FlexiSLM is accepted to EMNLP 2026 Main Conference!
+- **August 20, 2026: Checkpoint release.** We released the [FlexiSLM-7B Stage 2](https://huggingface.co/FlexiSLM/FlexiSLM-7B-Stage2) checkpoint and [FlexiSLM-0.5B Stage 2](https://huggingface.co/FlexiSLM/FlexiSLM-0_5B-Stage2) checkpoint reproduced with this codebase. Please note that this project is in active development. We expect these checkpoints will be overwritten in the coming days as we train for more steps.
 - **August 6, 2026: Data release.** We released [FlexiSLM-Data-4M-s2s](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-4M-s2s), [FlexiSLM-Data-2M-s2s-compact](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-2M-s2s-compact), and [FlexiSLM-Data-5M-t2t](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-5M-t2t).
 - **August 2, 2026: Code release.** We released the FlexiSLM-7B training and inference code.
-
 
 ## Installation
 
@@ -37,12 +31,39 @@ git clone --recurse-submodules https://github.com/AmphionTeam/FlexiSLM.git
 cd FlexiSLM
 pip install -r requirements.txt
 ```
+## Table of Contents
+
+- [FlexiSLM-Data Details](#flexislm-data-details)
+- [Inference Guide](#inference)
+- [Training Guide](#training-guide)
+- [Evaluation with Kimi-Audio-Evalkit](#evaluation-with-kimi-audio-evalkit)
+- [Citation](#citation)
+- [Acknowledgements](#acknowledgements)
+- [Appendix: Project File Structure](#appendix-project-structure)
+
+## FlexiSLM-Data Details
+
+We open-source the data produced by the following pipeline:
+
+1. **Prompt collection and response generation.** Text prompts are collected from public QA, instruction-following, and dialogue datasets. Responses are generated with Qwen3-Omni-30B-A3B. The resulting text pairs are released as [![dataset](https://img.shields.io/badge/Data-5M_text2text-yellow?logo=huggingface&logoColor=white)](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-5M-t2t).
+2. **Speech synthesis.** Responses are synthesized with Qwen3-TTS, while prompts are synthesized with Fish-Audio using randomly sampled speaker prompts. The resulting 4.2M samples and approximately 26K hours of audio are released as [![dataset](https://img.shields.io/badge/Data-4M_speech2speech-yellow?logo=huggingface&logoColor=white)](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-4M-s2s). Download size is about 2.8TB.
+3. **Quality filtering and compression.** Stricter filtering is applied and all audio is converted to MP3. The compact release contains 2.43M samples and approximately 14.8K hours of audio in about 385 GB: [![dataset](https://img.shields.io/badge/Data-2M_speech2speech-yellow?logo=huggingface&logoColor=white)](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-2M-s2s-compact) **We use this compact dataset for training**.
+
+We believe this is one of the largest open-source datasets for spoken language model training, and we hope this will especially benefit new researchers in this area. For data preview and statistics, please refer to the links above.
+
 
 ## Inference
 
+Select a released Stage 2 checkpoint with the `checkpoint` flag. The default is **`stage2_7B`**.
+
+| Flag | Hugging Face repo | Manual local directory |
+| --- | --- | --- |
+| `stage2_7B` (default) | [FlexiSLM/FlexiSLM-7B-Stage2](https://huggingface.co/FlexiSLM/FlexiSLM-7B-Stage2) | `models/FlexiSLM-7B-Stage2` |
+| `stage2_0.5B` | [FlexiSLM/FlexiSLM-0_5B-Stage2](https://huggingface.co/FlexiSLM/FlexiSLM-0_5B-Stage2) | `models/FlexiSLM-0_5B-Stage2` |
+
 ### 1. Python API (with Automatic downloading)
 
-Set `auto_download=True` to download the default FlexiSLM-7B Stage 2 checkpoint, Qwen2.5-Omni audio encoder, SenseVoice, and FlexiCodec files into `models/` on first run. Later runs reuse the local copies.
+Set `auto_download=True` to download the selected Stage 2 checkpoint (`stage2_7B` by default, or `stage2_0.5B`), plus the Qwen2.5-Omni audio encoder, SenseVoice, FlexiCodec, flow-matching decoder, and vocoder files into `models/` on first run. Later runs reuse the local copies. 
 
 ```python
 from pathlib import Path
@@ -57,7 +78,11 @@ from src.inference_flexislm import (
 
 config = FlexiSLMInferenceConfig(
     auto_download=True,
-    use_flow_matching_decoder=False,
+    checkpoint="stage2_7B",  # or "stage2_0.5B"
+    use_flow_matching_decoder=True,
+    flow_matching_prompt_audio_path=str(
+        Path("assets/flexislm_demo_response_audio.wav").resolve()
+    ),
     enable_flexible_framerate=True,
     input_framerate=8.0,
     default_framerate=8.0,
@@ -112,18 +137,30 @@ result = engine.generate_from_audio(
 save_audio(result, "s2s.wav")
 ```
 
-#### Python API (Manual downloading)
+### 2. Python API (Manual downloading)
+
+Download the checkpoint you want to run. Auxiliary encoder and codec files are shared by both sizes.
 
 ```bash
 MODEL_ROOT="$PWD/models"
 
+# if you want to run stage2_7B
 hf download FlexiSLM/FlexiSLM-7B-Stage2 --local-dir "$MODEL_ROOT/FlexiSLM-7B-Stage2"
+# if you want to run stage2_0.5B
+hf download FlexiSLM/FlexiSLM-0_5B-Stage2 --local-dir "$MODEL_ROOT/FlexiSLM-0_5B-Stage2"
+
+# these files are shared by both sizes
 hf download FlexiSLM/Qwen2_5-Omni-Audio_Encoder --local-dir "$MODEL_ROOT/Qwen2_5-Omni-Audio_Encoder"
 hf download FunAudioLLM/SenseVoiceSmall --local-dir "$MODEL_ROOT/SenseVoiceSmall"
-hf download jiaqili3/flexicodec 12hz_v1_half_config.yaml nartts_flexicodec_only.safetensors --local-dir "$MODEL_ROOT/FlexiCodec"
+hf download jiaqili3/flexicodec \
+  12hz_v1_half_config.yaml \
+  nartts_flexicodec_only.safetensors \
+  nartts.safetensors \
+  vocos_emilia.safetensors \
+  --local-dir "$MODEL_ROOT/FlexiCodec"
 ```
 
-Then point the config at those directories:
+Then point the config at those directories. Set `checkpoint` to match the weights you downloaded, or pass `model_path` directly.
 
 ```python
 from pathlib import Path
@@ -138,7 +175,8 @@ from src.inference_flexislm import (
 
 model_root = Path.cwd() / "models"
 config = FlexiSLMInferenceConfig(
-    model_path=str(model_root / "FlexiSLM-7B-Stage2"),
+    checkpoint="stage2_7B",  # or "stage2_0.5B" → models/FlexiSLM-0_5B-Stage2
+    model_path=str(model_root / "FlexiSLM-7B-Stage2"),  # or model_root / "FlexiSLM-0_5B-Stage2"
     qwen25o_encoder_path=str(model_root / "Qwen2_5-Omni-Audio_Encoder"),
     qwen25o_encoder_config_path=str(
         model_root / "Qwen2_5-Omni-Audio_Encoder/config.json"
@@ -148,7 +186,14 @@ config = FlexiSLMInferenceConfig(
     ),
     flexicodec_config_path=str(model_root / "FlexiCodec/12hz_v1_half_config.yaml"),
     sensevoice_path=str(model_root / "SenseVoiceSmall"),
-    use_flow_matching_decoder=False,
+    use_flow_matching_decoder=True,
+    flow_matching_ckpt_path=str(model_root / "FlexiCodec/nartts.safetensors"),
+    flow_matching_vocoder_path=str(
+        model_root / "FlexiCodec/vocos_emilia.safetensors"
+    ),
+    flow_matching_prompt_audio_path=str(
+        Path("assets/flexislm_demo_response_audio.wav").resolve()
+    ),
     enable_flexible_framerate=True,
     input_framerate=8.0,
     default_framerate=8.0,
@@ -203,9 +248,9 @@ result = engine.generate_from_audio(
 save_audio(result, "s2s.wav")
 ```
 
-A minimal notebook is available at `examples/inference.ipynb`.
+A minimal notebook is available at `examples/inference.ipynb`. 
 
-### 2. Batch Inference
+### 3. Batch Inference
 
 Batch inference reads requests from JSONL and uses a YAML file for model, input, output, and multi-GPU runtime settings. Create `examples/requests.jsonl`:
 
@@ -221,7 +266,8 @@ Create `examples/infer_7b.yaml`:
 ```yaml
 engine:
   config:
-    model_path: models/FlexiSLM-7B-Stage2
+    checkpoint: stage2_7B  # or stage2_0.5B
+    model_path: models/FlexiSLM-7B-Stage2  # or models/FlexiSLM-0_5B-Stage2
     qwen25o_encoder_path: models/Qwen2_5-Omni-Audio_Encoder
     qwen25o_encoder_config_path: models/Qwen2_5-Omni-Audio_Encoder/config.json
     flexicodec_ckpt_path: models/FlexiCodec/nartts_flexicodec_only.safetensors
@@ -244,7 +290,7 @@ output:
   error_path: outputs/inference/errors.jsonl
 
 inference:
-  checkpoint: models/FlexiSLM-7B-Stage2
+  checkpoint: models/FlexiSLM-7B-Stage2  # or models/FlexiSLM-0_5B-Stage2
   target_framerate_hz: 8.0
   transcribe_model_path: models/whisper-large-v3
   output_sample_rate: 16000
@@ -261,16 +307,10 @@ Run the batch inference entrypoint:
 python -m src.infer examples/infer_7b.yaml
 ```
 
+`engine.config.checkpoint` selects `stage2_7B` or `stage2_0.5B`. `inference.checkpoint` is the local weights path recorded in traces. To fetch weights automatically instead of setting `model_path`, use `engine.config.auto_download: true` with `engine.config.checkpoint: stage2_7B` or `stage2_0.5B`.
+
 The runner writes one unified JSONL trace and stores generated speech under `output.audio_dir`.
 
-## Data
-
-We open-source the data produced by the following pipeline:
-
-1. **Prompt collection and response generation.** Text prompts are collected from public QA, instruction-following, and dialogue datasets. Responses are generated with Qwen3-Omni-30B-A3B. The resulting text pairs are released as [FlexiSLM-Data-5M-t2t](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-5M-t2t).
-2. **Speech synthesis.** Responses are synthesized with Qwen3-TTS, while prompts are synthesized with Fish-Audio using randomly sampled speaker prompts. The resulting 4.2M samples and approximately 26K hours of audio are released as [FlexiSLM-Data-4M-s2s](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-4M-s2s).
-3. **Quality filtering and compression.** Stricter filtering is applied and all audio is converted to MP3. The compact release contains 2.43M samples and approximately 14.8K hours of audio in about 385 GB: [FlexiSLM-Data-2M-s2s-compact](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-2M-s2s-compact).
-For more details, please refer to the dataset READMEs on huggingface.
 
 ## Training Guide
 
@@ -286,13 +326,27 @@ MODEL_ROOT="$PWD/models"
 TRAIN_DATA_ROOT="$PWD/data/training"
 BENCHMARK_DATA_ROOT="$PWD/data/benchmarks"
 
+# Previously downloaded in inference guide
+hf download FlexiSLM/FlexiSLM-7B-Stage2 --local-dir "$MODEL_ROOT/FlexiSLM-7B-Stage2"
+hf download FlexiSLM/FlexiSLM-0_5B-Stage2 --local-dir "$MODEL_ROOT/FlexiSLM-0_5B-Stage2"
+hf download FlexiSLM/Qwen2_5-Omni-Audio_Encoder --local-dir "$MODEL_ROOT/Qwen2_5-Omni-Audio_Encoder"
+hf download FunAudioLLM/SenseVoiceSmall --local-dir "$MODEL_ROOT/SenseVoiceSmall"
+hf download jiaqili3/flexicodec 12hz_v1_half_config.yaml nartts_flexicodec_only.safetensors --local-dir "$MODEL_ROOT/FlexiCodec"
+
+# Required for training
 hf download Qwen/Qwen2.5-7B-Instruct --local-dir "$MODEL_ROOT/Qwen2.5-7B-Instruct"
 hf download Qwen/Qwen2.5-0.5B-Instruct --local-dir "$MODEL_ROOT/Qwen2.5-0.5B-Instruct"
 hf download openai/whisper-large-v3 --local-dir "$MODEL_ROOT/whisper-large-v3"
 
+# S2S Data for Stage 2 and 3
 hf download FlexiSLM/FlexiSLM-Data-2M-s2s-compact \
   --repo-type dataset \
   --local-dir "$TRAIN_DATA_ROOT/FlexiSLM-Data-2M-s2s-compact"
+
+# ASR+TTS Data for Stage 1, 2, and 3
+hf download FlexiSLM/asrtts_packed_webdataset \
+  --repo-type dataset \
+  --local-dir "$TRAIN_DATA_ROOT/asrtts_packed_webdataset"
 
 ```
 
@@ -362,7 +416,7 @@ bash scripts/train.sh config/train_stage2_7B.yaml
 
 The shared launcher uses Accelerate by default. Stage 3 selects DeepSpeed with `config/ds_config_zero2.json`; set `FLEXISLM_LAUNCHER` and `DEEPSPEED_CONFIG` to override the launcher or ZeRO configuration. GPU and distributed settings are detected by `scripts/env.sh`.
 
-## Evaluation
+## Evaluation with Kimi-Audio-Evalkit
 
 FlexiSLM uses the bundled [Kimi-Audio-Evalkit](https://github.com/petrichor20211/Kimi-Audio-Evalkit) submodule to evaluate VoiceBench, OpenAudioBench, and LibriSpeech. Inference and scoring are separate. Run all commands below from the FlexiSLM repository root.
 

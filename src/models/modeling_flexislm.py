@@ -39,6 +39,7 @@ import deepspeed
 import os
 from src.models.configuration_flexislm import MultimodalQwen2Config
 from src.models.generation_alignment import DelayedAudioLengthBuffer
+from src.task_types import NUM_TASKS
 from src.models.utils import (
     _load_qwen25o_encoder_state_dict,
     _patch_qwen3_audio_encoder_forward,
@@ -530,13 +531,33 @@ def _task_ids_from_audio_masks(
     return task_ids
 
 
+def _task_ids_for_metrics(
+    user_has_audio: torch.Tensor,
+    assistant_has_audio: torch.Tensor,
+    semantic_task_ids: Optional[torch.Tensor] = None,
+) -> torch.Tensor:
+    """Prefer semantic IDs while retaining modality fallback for legacy data."""
+    modality_task_ids = _task_ids_from_audio_masks(user_has_audio, assistant_has_audio)
+    if semantic_task_ids is None:
+        return modality_task_ids
+
+    semantic_task_ids = semantic_task_ids.to(
+        device=modality_task_ids.device, dtype=torch.long
+    ).view(-1)
+    if semantic_task_ids.numel() != modality_task_ids.numel():
+        raise ValueError("semantic_task_ids must contain one ID per sample")
+    if ((semantic_task_ids < -1) | (semantic_task_ids >= NUM_TASKS)).any():
+        raise ValueError("semantic_task_ids contains an unknown task ID")
+    return torch.where(semantic_task_ids.ge(0), semantic_task_ids, modality_task_ids)
+
+
 def _task_component_stats(
     token_losses: torch.Tensor,
     token_weights: torch.Tensor,
     task_ids: torch.Tensor,
     sample_lengths: Optional[List[int]] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    """Partition shifted causal-token sums/counts into ASR, TTS, and S2S."""
+    """Partition shifted causal-token sums/counts by semantic task ID."""
     task_ids = task_ids.to(device=token_losses.device, dtype=torch.long).view(-1)
     if sample_lengths is None:
         owners = task_ids[:, None].expand_as(token_losses)
@@ -546,9 +567,9 @@ def _task_component_stats(
             torch.as_tensor(sample_lengths, device=task_ids.device),
         )[1:].view_as(token_losses)
 
-    sums = token_losses.new_zeros(3)
-    counts = token_weights.new_zeros(3)
-    for task_id in range(3):
+    sums = token_losses.new_zeros(NUM_TASKS)
+    counts = token_weights.new_zeros(NUM_TASKS)
+    for task_id in range(NUM_TASKS):
         mask = owners.eq(task_id)
         sums[task_id] = (token_losses * token_weights * mask).sum()
         counts[task_id] = (token_weights * mask).sum()
@@ -571,7 +592,7 @@ class InterleavedS2SOutputWithPast(CausalLMOutputWithPast):
     length_loss_sum: Optional[torch.FloatTensor] = None
     length_token_count: Optional[torch.FloatTensor] = None
     auxiliary_loss: Optional[torch.FloatTensor] = None
-    # Rows are ASR/TTS/S2S; columns are text/audio/length.
+    # Rows are ASR/TTS/S2S/S2TT/SER/ASC; columns are text/audio/length.
     task_component_loss_sums: Optional[torch.FloatTensor] = None
     task_component_token_counts: Optional[torch.FloatTensor] = None
     task_sample_counts: Optional[torch.FloatTensor] = None
@@ -2200,6 +2221,7 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
         assistant_audio_features: Optional[torch.Tensor],  # [B, T_assistant_feat_max, D]
         assistant_audio_features_lens: Optional[torch.Tensor],  # [B] - actual lengths of audio features
         assistant_has_audio: Optional[torch.Tensor],  # [B] boolean
+        semantic_task_ids: Optional[torch.Tensor],  # [B], -1 falls back to modality
         audio_start_id: int,
         audio_end_id: int,
         text_audio_interval_ratio: Optional[List[int]] = None,
@@ -3127,14 +3149,19 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
             debug_print(f"  - Computing losses", rank=rank)
             debug_print(f"    - logits shape: {logits.shape}, labels shape: {labels.shape}", rank=rank)
             
-            task_ids = _task_ids_from_audio_masks(
+            task_ids = _task_ids_for_metrics(
                 user_has_audio.to(device=logits.device),
                 assistant_has_audio.to(device=logits.device),
+                semantic_task_ids,
             )
-            task_component_loss_sums = logits.new_zeros((3, 3), dtype=torch.float32)
-            task_component_token_counts = logits.new_zeros((3, 3), dtype=torch.float32)
+            task_component_loss_sums = logits.new_zeros(
+                (NUM_TASKS, 3), dtype=torch.float32
+            )
+            task_component_token_counts = logits.new_zeros(
+                (NUM_TASKS, 3), dtype=torch.float32
+            )
             task_sample_counts = torch.stack(
-                [task_ids.eq(task_id).sum() for task_id in range(3)]
+                [task_ids.eq(task_id).sum() for task_id in range(NUM_TASKS)]
             ).to(dtype=torch.float32)
 
             # Compute text CE once, then partition the same token losses by task.
@@ -3389,6 +3416,7 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
         assistant_audio_features: Optional[torch.Tensor] = None,  # [B, T_assistant_feat_max, D]
         assistant_audio_features_lens: Optional[torch.Tensor] = None,  # [B] - actual lengths of audio features
         assistant_has_audio: Optional[torch.Tensor] = None,  # [B] boolean
+        semantic_task_ids: Optional[torch.Tensor] = None,  # [B], semantic metric task
         # Optional: encode target audio on-the-fly
         use_cache: Optional[bool] = None,
         output_attentions: Optional[bool] = None,
@@ -3438,6 +3466,7 @@ class ParallelS2SForCausalLM(Qwen2ForCausalLM):
                 assistant_audio_features=assistant_audio_features,
                 assistant_audio_features_lens=assistant_audio_features_lens,
                 assistant_has_audio=assistant_has_audio,
+                semantic_task_ids=semantic_task_ids,
                 audio_start_id=audio_start_id_int,
                 audio_end_id=audio_end_id_int,
                 text_audio_interval_ratio=text_audio_interval_ratio,

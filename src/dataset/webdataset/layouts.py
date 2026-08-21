@@ -15,7 +15,13 @@ import warnings
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Protocol, Sequence, Tuple
 
-from .types import AudioAsset, AudioBinding, CanonicalSample
+from .types import (
+    AUDIO_INPUT_TEXT_TASKS,
+    SHARED_AUDIO_TASKS,
+    AudioAsset,
+    AudioBinding,
+    CanonicalSample,
+)
 
 AUDIO_EXTENSIONS = ("wav", "flac", "mp3", "m4a", "ogg")
 AUDIO_TAG = "<|audio|>"
@@ -76,10 +82,10 @@ class ListErrorReporter:
 @dataclass
 class AdapterContext:
     source_name: str = "webdataset"
-    tasks: Sequence[str] = ("asr", "tts")
+    tasks: Sequence[str] = SHARED_AUDIO_TASKS
     task_policy: str = "all"
     task_weights: Mapping[str, float] = field(
-        default_factory=lambda: {"asr": 1.0, "tts": 1.0}
+        default_factory=lambda: {task: 1.0 for task in SHARED_AUDIO_TASKS}
     )
     seed: int = 0
     epoch: int = 0
@@ -159,7 +165,15 @@ def _fallback_messages(metadata: Mapping[str, Any], task: str, context: AdapterC
             {"role": "user", "content": context.tts_prompt_template.format(text=text)},
             {"role": "assistant", "content": f"{text}{AUDIO_TAG}"},
         ]
-    raise MetadataDecodeError("s2s metadata must contain messages")
+    raise MetadataDecodeError(f"{task} metadata must contain messages")
+
+
+def _validate_metadata_task(metadata: Mapping[str, Any], task: str) -> None:
+    metadata_task = metadata.get("task")
+    if metadata_task is not None and metadata_task != task:
+        raise MetadataDecodeError(
+            f"metadata task {metadata_task!r} does not match sidecar task {task!r}"
+        )
 
 
 def _normalize_messages(
@@ -185,11 +199,14 @@ def _normalize_messages(
 
 
 def _bindings(messages: Sequence[Mapping[str, str]], task: str, asset_ids: Mapping[str, str]):
-    expected = {
-        "s2s": {"user": 1, "assistant": 1},
-        "asr": {"user": 1, "assistant": 0},
-        "tts": {"user": 0, "assistant": 1},
-    }[task]
+    if task == "s2s":
+        expected = {"user": 1, "assistant": 1}
+    elif task in AUDIO_INPUT_TEXT_TASKS:
+        expected = {"user": 1, "assistant": 0}
+    elif task == "tts":
+        expected = {"user": 0, "assistant": 1}
+    else:
+        raise MetadataDecodeError(f"unsupported task {task!r}")
     found = {"user": [], "assistant": []}
     for message_index, message in enumerate(messages):
         role = message["role"]
@@ -299,7 +316,9 @@ class SharedAudioTasksAdapter:
 
     def match(self, sample: Mapping[str, Any]) -> MatchResult:
         audio = _audio_candidates(sample, "audio")
-        task_members = [member for member in ("asr.json", "tts.json") if member in sample]
+        task_members = [
+            f"{task}.json" for task in SHARED_AUDIO_TASKS if f"{task}.json" in sample
+        ]
         return MatchResult(
             len(audio) == 1 and bool(task_members),
             {"audio": audio, "task_members": task_members},
@@ -307,16 +326,18 @@ class SharedAudioTasksAdapter:
 
     def expand(self, sample: Mapping[str, Any], context: AdapterContext):
         audio_key = _single_audio(sample, "audio", context)
-        requested = [task for task in ("asr", "tts") if task in context.tasks]
+        requested = [task for task in SHARED_AUDIO_TASKS if task in context.tasks]
         present = [task for task in requested if f"{task}.json" in sample]
         if not present:
-            raise MissingMemberError(f"{_location(sample)}: missing requested asr.json/tts.json")
+            members = "/".join(f"{task}.json" for task in requested)
+            raise MissingMemberError(f"{_location(sample)}: missing requested {members}")
         prepared_by_task: Dict[str, Tuple[Dict[str, Any], List[Dict[str, str]], List[AudioBinding]]] = {}
         errors: List[Exception] = []
         for task in present:
             member = f"{task}.json"
             try:
                 metadata = _parse_json(sample[member], sample, member)
+                _validate_metadata_task(metadata, task)
                 messages = _normalize_messages(metadata, task, context)
                 bindings = _bindings(
                     messages, task, {"user": "audio", "assistant": "audio"}
@@ -331,9 +352,8 @@ class SharedAudioTasksAdapter:
         assets_by_audio_metadata = {}
         for task in selected:
             metadata, messages, bindings = prepared_by_task[task]
-            # ASR and TTS sidecars carry duration/token metadata independently.
-            # Preserve it for early rejection, while sharing the immutable asset
-            # when both task sidecars describe the same physical audio.
+            # Task sidecars carry duration/token metadata independently. Preserve
+            # it for early rejection while sharing an equivalent immutable asset.
             candidate = _asset("audio", audio_key, sample[audio_key], metadata)
             asset_key = (candidate.duration, candidate.sample_rate, candidate.num_frames)
             asset = assets_by_audio_metadata.setdefault(asset_key, candidate)

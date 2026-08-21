@@ -16,7 +16,6 @@ Features:
 - Frame rate control for output speech (0.8-1.0)
 """
 
-MODEL_PATH = "/F00120260003/flexislm_project/jiaqi/outputs/train_stage_2_0814/checkpoint-110000"
 FLEXICODEC_CKPT_PATH = "/F00120260003/flexislm_project/model/FlexiCodec/nartts_flexicodec_only.safetensors"
 FLEXICODEC_CONFIG_PATH = "/F00120260003/flexislm_project/model/FlexiCodec/12hz_v1_half_config.yaml"
 SENSEVOICE_PATH = "/F00120260003/flexislm_project/model/SenseVoiceSmall"
@@ -129,6 +128,7 @@ from flexicodec.infer import (
 FLEXICODEC_AVAILABLE = True
 
 try:
+    from flexicodec.nar_tts import modeling_voicebox as flexicodec_voicebox
     from flexicodec.nar_tts.modeling_voicebox import VoiceboxWrapper
     from flexicodec.feature_extractors import FBankGen
     FLOW_MATCHING_AVAILABLE = True
@@ -141,12 +141,37 @@ import loguru
 
 logger = loguru.logger
 
-DEFAULT_INFERENCE_DOWNLOAD_DIR = "models"
-DEFAULT_INFERENCE_REPOS = {
-    "model": {
+# Same directory as the README manual `hf download --local-dir "$PWD/models/..."` flow.
+DEFAULT_INFERENCE_DOWNLOAD_DIR = os.path.join(_REPO_ROOT, "models")
+DEFAULT_FLOW_MATCHING_PROMPT_AUDIO_PATH = os.path.join(
+    _REPO_ROOT, "assets", "flexislm_demo_response_audio.wav"
+)
+DEFAULT_CHECKPOINT = "stage2_7B"
+STAGE2_CHECKPOINTS = {
+    "stage2_7B": {
         "repo_id": "FlexiSLM/FlexiSLM-7B-Stage2",
         "local_name": "FlexiSLM-7B-Stage2",
     },
+    "stage2_0.5B": {
+        "repo_id": "FlexiSLM/FlexiSLM-0_5B-Stage2",
+        "local_name": "FlexiSLM-0_5B-Stage2",
+    },
+}
+CHECKPOINT_ALIASES = {
+    "stage2_7B": "stage2_7B",
+    "stage2_7b": "stage2_7B",
+    "7B": "stage2_7B",
+    "7b": "stage2_7B",
+    "stage2_0.5B": "stage2_0.5B",
+    "stage2_0.5b": "stage2_0.5B",
+    "stage2_0_5B": "stage2_0.5B",
+    "stage2_0_5b": "stage2_0.5B",
+    "0.5B": "stage2_0.5B",
+    "0.5b": "stage2_0.5B",
+    "0_5B": "stage2_0.5B",
+}
+DEFAULT_INFERENCE_REPOS = {
+    "model": STAGE2_CHECKPOINTS[DEFAULT_CHECKPOINT],
     "qwen25o_encoder": {
         "repo_id": "FlexiSLM/Qwen2_5-Omni-Audio_Encoder",
         "local_name": "Qwen2_5-Omni-Audio_Encoder",
@@ -161,6 +186,8 @@ DEFAULT_INFERENCE_REPOS = {
         "allow_patterns": [
             "12hz_v1_half_config.yaml",
             "nartts_flexicodec_only.safetensors",
+            "nartts.safetensors",
+            "vocos_emilia.safetensors",
         ],
     },
 }
@@ -180,6 +207,23 @@ def _has_model_weights(path: Path) -> bool:
 
 def _checkpoint_dir_ready(path: Path) -> bool:
     return path.is_dir() and (path / "config.json").is_file() and _has_model_weights(path)
+
+
+def normalize_checkpoint_name(checkpoint: str) -> str:
+    """Map a checkpoint flag to the canonical ``stage2_7B`` / ``stage2_0.5B`` name."""
+    key = str(checkpoint).strip()
+    canonical = CHECKPOINT_ALIASES.get(key)
+    if canonical is None:
+        known = ", ".join(STAGE2_CHECKPOINTS)
+        raise ValueError(
+            f"Unknown checkpoint {checkpoint!r}. Expected one of: {known} "
+            "(aliases: stage2_0_5B, 7B, 0.5B)."
+        )
+    return canonical
+
+
+def get_stage2_checkpoint_spec(checkpoint: str = DEFAULT_CHECKPOINT) -> Dict[str, str]:
+    return STAGE2_CHECKPOINTS[normalize_checkpoint_name(checkpoint)]
 
 
 def _snapshot_download(
@@ -203,26 +247,39 @@ def _snapshot_download(
     )
 
 
+def _resolve_inference_download_dir(download_dir: Union[str, os.PathLike]) -> Path:
+    """Resolve download_dir to the repo ``models/`` folder when a relative path is given."""
+    path = Path(download_dir)
+    if not path.is_absolute():
+        path = Path(_REPO_ROOT) / path
+    return path
+
+
 def download_inference_checkpoints(
     download_dir: Union[str, os.PathLike] = DEFAULT_INFERENCE_DOWNLOAD_DIR,
     *,
     token: Optional[str] = None,
     revision: str = "main",
+    checkpoint: str = DEFAULT_CHECKPOINT,
     download_model: bool = True,
     download_encoder: bool = True,
     download_flexicodec: bool = True,
     download_sensevoice: bool = True,
 ) -> Dict[str, str]:
-    """Download default Python-API inference checkpoints with ``snapshot_download``.
+    """Download Python-API inference checkpoints with ``snapshot_download``.
 
-    Existing complete local directories are reused. Returns local paths suitable
-    for :class:`FlexiSLMInferenceConfig`.
+    ``checkpoint`` selects the Stage 2 SLM weights (``stage2_7B`` or
+    ``stage2_0.5B``). Auxiliary encoder / codec files are shared. Files are
+    written under the repo ``models/`` directory by default, matching the
+    manual ``hf download --local-dir`` layout. Existing complete local
+    directories are reused. Returns local paths suitable for
+    :class:`FlexiSLMInferenceConfig`.
     """
-    root = Path(download_dir)
+    root = _resolve_inference_download_dir(download_dir)
     paths: Dict[str, str] = {}
 
     if download_model:
-        spec = DEFAULT_INFERENCE_REPOS["model"]
+        spec = get_stage2_checkpoint_spec(checkpoint)
         local_dir = root / spec["local_name"]
         if not _checkpoint_dir_ready(local_dir):
             _snapshot_download(
@@ -263,7 +320,15 @@ def download_inference_checkpoints(
         local_dir = root / spec["local_name"]
         ckpt_path = local_dir / "nartts_flexicodec_only.safetensors"
         config_path = local_dir / "12hz_v1_half_config.yaml"
-        if not ckpt_path.is_file() or not config_path.is_file():
+        flow_matching_ckpt_path = local_dir / "nartts.safetensors"
+        flow_matching_vocoder_path = local_dir / "vocos_emilia.safetensors"
+        required_files = (
+            ckpt_path,
+            config_path,
+            flow_matching_ckpt_path,
+            flow_matching_vocoder_path,
+        )
+        if not all(path.is_file() for path in required_files):
             _snapshot_download(
                 spec["repo_id"],
                 local_dir,
@@ -273,6 +338,8 @@ def download_inference_checkpoints(
             )
         paths["flexicodec_ckpt_path"] = str(ckpt_path)
         paths["flexicodec_config_path"] = str(config_path)
+        paths["flow_matching_ckpt_path"] = str(flow_matching_ckpt_path)
+        paths["flow_matching_vocoder_path"] = str(flow_matching_vocoder_path)
 
     return paths
 
@@ -397,15 +464,17 @@ class FlexiSLMInferenceConfig:
     flexicodec_ckpt_path: Optional[str] = None
     flexicodec_config_path: Optional[str] = None
     sensevoice_path: Optional[str] = None
+    # Released Stage 2 weights: "stage2_7B" (default) or "stage2_0.5B".
+    checkpoint: str = DEFAULT_CHECKPOINT
     # When True, missing paths are filled with huggingface_hub.snapshot_download.
     auto_download: bool = False
     download_dir: str = DEFAULT_INFERENCE_DOWNLOAD_DIR
     
     # Flow matching decoder configuration
-    use_flow_matching_decoder: bool = False
+    use_flow_matching_decoder: bool = True
     flow_matching_ckpt_path: Optional[str] = None
     flow_matching_vocoder_path: Optional[str] = None
-    flow_matching_prompt_audio_path: Optional[str] = None
+    flow_matching_prompt_audio_path: Optional[str] = DEFAULT_FLOW_MATCHING_PROMPT_AUDIO_PATH
     flow_matching_n_timesteps: int = 15
     flow_matching_cfg: float = 2.0
     flow_matching_rescale_cfg: float = 0.75
@@ -466,15 +535,27 @@ class FlexiSLMInferenceConfig:
     use_fast_tokenizer: bool = True
 
     def __post_init__(self):
+        self.checkpoint = normalize_checkpoint_name(self.checkpoint)
+        spec = get_stage2_checkpoint_spec(self.checkpoint)
+        self.download_dir = str(_resolve_inference_download_dir(self.download_dir))
         if self.auto_download:
             downloaded = download_inference_checkpoints(
                 self.download_dir,
                 token=self.token,
                 revision=self.model_revision,
+                checkpoint=self.checkpoint,
                 download_model=not self.model_path,
                 download_encoder=not self.qwen25o_encoder_path,
                 download_flexicodec=not (
-                    self.flexicodec_ckpt_path and self.flexicodec_config_path
+                    self.flexicodec_ckpt_path
+                    and self.flexicodec_config_path
+                    and (
+                        not self.use_flow_matching_decoder
+                        or (
+                            self.flow_matching_ckpt_path
+                            and self.flow_matching_vocoder_path
+                        )
+                    )
                 ),
                 download_sensevoice=not self.sensevoice_path,
             )
@@ -490,8 +571,20 @@ class FlexiSLMInferenceConfig:
                 self.flexicodec_ckpt_path = downloaded["flexicodec_ckpt_path"]
             if not self.flexicodec_config_path:
                 self.flexicodec_config_path = downloaded["flexicodec_config_path"]
+            if not self.flow_matching_ckpt_path:
+                self.flow_matching_ckpt_path = downloaded.get(
+                    "flow_matching_ckpt_path"
+                )
+            if not self.flow_matching_vocoder_path:
+                self.flow_matching_vocoder_path = downloaded.get(
+                    "flow_matching_vocoder_path"
+                )
             if not self.sensevoice_path:
                 self.sensevoice_path = downloaded["sensevoice_path"]
+        elif not self.model_path:
+            candidate = Path(self.download_dir) / spec["local_name"]
+            if _checkpoint_dir_ready(candidate):
+                self.model_path = str(candidate)
         if self.qwen25o_encoder_path and not self.qwen25o_encoder_config_path:
             self.qwen25o_encoder_config_path = os.path.join(
                 self.qwen25o_encoder_path, "config.json"
@@ -605,9 +698,11 @@ class FlexiSLMInference:
         logger.info(f"Loading InterleavedS2S model from {self.config.model_path}")
         model_path = self.config.model_path
         if not model_path:
+            spec = get_stage2_checkpoint_spec(self.config.checkpoint)
             raise ValueError(
-                "model_path is required. Set auto_download=True to fetch the default "
-                "FlexiSLM-7B-Stage2 checkpoint with snapshot_download, or pass a local path."
+                "model_path is required. Set auto_download=True to fetch "
+                f"{spec['repo_id']} (checkpoint={self.config.checkpoint!r}) "
+                f"into models/{spec['local_name']}, or pass that local path."
             )
 
         # ------------------------------------------------------------------
@@ -828,6 +923,10 @@ class FlexiSLMInference:
             raise ValueError(
                 "Flow matching decoder requires --sensevoice_path."
             )
+        if not self.config.flow_matching_ckpt_path:
+            raise ValueError(
+                "Flow matching decoder requires --flow_matching_ckpt."
+            )
         if not self.config.flow_matching_vocoder_path:
             raise ValueError(
                 "Flow matching decoder requires --flow_matching_vocoder."
@@ -850,13 +949,22 @@ class FlexiSLMInference:
             'time_scheduler': "cos"
         }
         
-        # Load VoiceBox wrapper with local FlexiCodec checkpoint/config to avoid download
-        self.flow_matching_model = VoiceboxWrapper(
-            voicebox_config=voicebox_config,
-            flexicodec_ckpt_path=self.config.flexicodec_ckpt_path,
-            flexicodec_config_path=self.config.flexicodec_config_path,
-            sensevoice_path=self.config.sensevoice_path,
+        # VoiceboxWrapper calls its module-level prepare_model() without forwarding
+        # local paths. Override that call while constructing the wrapper so Python API
+        # inference never falls back to Hugging Face downloads.
+        original_prepare_model = flexicodec_voicebox.prepare_model
+        flexicodec_voicebox.prepare_model = lambda *_, **__: prepare_model(
+            sensevoice_small_path=self.config.sensevoice_path,
+            device=self.device,
+            ckpt_path=self.config.flexicodec_ckpt_path,
+            config_path=self.config.flexicodec_config_path,
         )
+        try:
+            self.flow_matching_model = VoiceboxWrapper(
+                voicebox_config=voicebox_config,
+            )
+        finally:
+            flexicodec_voicebox.prepare_model = original_prepare_model
         
         # Load checkpoint if provided
         if self.config.flow_matching_ckpt_path:
@@ -889,13 +997,22 @@ class FlexiSLMInference:
         self.flow_matching_model.eval()
         self.flow_matching_model = self.flow_matching_model.to(self.device)
         
-        # Load vocoder
+        # Load vocoder. The third-party module resolves its default Hugging Face
+        # checkpoint at import time, before our explicit vocoder_path is passed.
+        # Temporarily route that default to the configured local file.
         logger.info("Loading vocoder for flow matching decoder...")
         from functools import partial
-        from flexicodec.nar_tts.vocoder_model import (
-            get_vocos_model_spectrogram,
-            mel_to_wav_vocos,
-        )
+        import cached_path as cached_path_module
+
+        original_cached_path = cached_path_module.cached_path
+        cached_path_module.cached_path = lambda _: self.config.flow_matching_vocoder_path
+        try:
+            from flexicodec.nar_tts.vocoder_model import (
+                get_vocos_model_spectrogram,
+                mel_to_wav_vocos,
+            )
+        finally:
+            cached_path_module.cached_path = original_cached_path
 
         vocos_model, _ = get_vocos_model_spectrogram(
             vocoder_path=self.config.flow_matching_vocoder_path,
@@ -921,13 +1038,8 @@ class FlexiSLMInference:
             return
         try:
             logger.info(f"Loading prompt audio from: {prompt_path}")
-            prompt_audio, sr = torchaudio.load(prompt_path)
-            
-            # Resample to 16kHz if needed
-            if sr != 16000:
-                resampler = T.Resample(sr, 16000)
-                prompt_audio = resampler(prompt_audio)
-            
+            prompt_audio = self._load_audio(prompt_path)
+
             # Convert to mono if needed
             if prompt_audio.shape[0] > 1:
                 prompt_audio = prompt_audio.mean(dim=0, keepdim=True)
@@ -1818,7 +1930,7 @@ class FlexiSLMInference:
         audio_chunks = result['audio_ids']
         # Decode audio if requested
         audio_output = None
-        if self.config.decode_audio:
+        if self.config.decode_audio and not output_text_only:
             # When using forced speech prompt, use that prompt for flow matching; otherwise use config default
             fm_prompt_path = flow_matching_prompt_audio_path or self.config.flow_matching_prompt_audio_path
             fm_prompt_audio = self.prompt_audio_cache if fm_prompt_path == self.config.flow_matching_prompt_audio_path else None
@@ -2727,8 +2839,22 @@ def run_batch_mode(engine: FlexiSLMInference, args):
 def main():
     parser = argparse.ArgumentParser(description="Interleaved S2S Inference")
 
-    parser.add_argument("-m", "--model_path", type=str, default=MODEL_PATH,
-                        help="Path to checkpoint directory (base or LoRA-finetuned ParallelS2S model)")
+    parser.add_argument("-m", "--model_path", type=str, default=None,
+                        help="Path to checkpoint directory (base or LoRA-finetuned ParallelS2S model). "
+                             "Optional when --auto_download is set or models/<local_name> already exists.")
+    parser.add_argument(
+        "--checkpoint",
+        type=str,
+        default=DEFAULT_CHECKPOINT,
+        help="Released Stage 2 checkpoint: 'stage2_7B' (default) or 'stage2_0.5B'. "
+             "Selects which Hugging Face repo auto-download fetches, or which "
+             "models/<local_name> directory to use when --model_path is omitted.",
+    )
+    parser.add_argument(
+        "--auto_download",
+        action="store_true",
+        help="Download the selected --checkpoint and auxiliary models from Hugging Face.",
+    )
     parser.add_argument("--flexicodec_ckpt", type=str, 
                         default=FLEXICODEC_CKPT_PATH,
                         help="Path to FlexiCodec checkpoint")
@@ -2832,8 +2958,13 @@ def main():
                         help="Audio path used by S2S/S2T examples in --debug mode")
     
     args = parser.parse_args()
-    if not args.model_path:
-        parser.error("--model_path is required.")
+    if not args.model_path and not args.auto_download:
+        spec = get_stage2_checkpoint_spec(args.checkpoint)
+        candidate = Path(DEFAULT_INFERENCE_DOWNLOAD_DIR) / spec["local_name"]
+        if _checkpoint_dir_ready(candidate):
+            args.model_path = str(candidate)
+    if not args.model_path and not args.auto_download:
+        parser.error("--model_path is required unless --auto_download is set.")
     
     # Set random seed
     random.seed(args.seed)
@@ -2859,7 +2990,9 @@ def main():
     
     # Create config
     config = FlexiSLMInferenceConfig(
-        model_path=args.model_path,
+        model_path=args.model_path or None,
+        checkpoint=args.checkpoint,
+        auto_download=args.auto_download,
         flexicodec_ckpt_path=args.flexicodec_ckpt,
         flexicodec_config_path=args.flexicodec_config,
         sensevoice_path=args.sensevoice_path,

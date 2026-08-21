@@ -21,6 +21,8 @@ output_checkpoints
 /data/training/
 *.log
 *.wav
+!examples/input.wav
+!examples/question.wav
 *.zip
 *.tar
 *.tar.gz
@@ -100,3 +102,5 @@ config/jiaqi
 /docs/
 
 src/models/flexicodec
+
+check

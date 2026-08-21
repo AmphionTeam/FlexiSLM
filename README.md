@@ -230,7 +230,7 @@ result = engine.generate_from_audio(
 save_audio(result, "s2s.wav")
 ```
 
-A minimal notebook is available at `examples/inference.ipynb`. The repository also includes `examples/input.wav` (a copy of the demo response audio) for ASR/S2S and `examples/question.wav` (VoiceBench OpenBookQA sample 0) for audio question answering.
+A minimal notebook is available at `examples/inference.ipynb`. 
 
 ### 3. Batch Inference
 

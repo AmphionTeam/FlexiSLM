@@ -16,7 +16,6 @@ Features:
 - Frame rate control for output speech (0.8-1.0)
 """
 
-MODEL_PATH = "/F00120260003/flexislm_project/jiaqi/outputs/train_stage_2_0814/checkpoint-110000"
 FLEXICODEC_CKPT_PATH = "/F00120260003/flexislm_project/model/FlexiCodec/nartts_flexicodec_only.safetensors"
 FLEXICODEC_CONFIG_PATH = "/F00120260003/flexislm_project/model/FlexiCodec/12hz_v1_half_config.yaml"
 SENSEVOICE_PATH = "/F00120260003/flexislm_project/model/SenseVoiceSmall"
@@ -954,7 +953,7 @@ class FlexiSLMInference:
         # local paths. Override that call while constructing the wrapper so Python API
         # inference never falls back to Hugging Face downloads.
         original_prepare_model = flexicodec_voicebox.prepare_model
-        flexicodec_voicebox.prepare_model = lambda: prepare_model(
+        flexicodec_voicebox.prepare_model = lambda *_, **__: prepare_model(
             sensevoice_small_path=self.config.sensevoice_path,
             device=self.device,
             ckpt_path=self.config.flexicodec_ckpt_path,
@@ -2960,7 +2959,10 @@ def main():
     
     args = parser.parse_args()
     if not args.model_path and not args.auto_download:
-        args.model_path = MODEL_PATH
+        spec = get_stage2_checkpoint_spec(args.checkpoint)
+        candidate = Path(DEFAULT_INFERENCE_DOWNLOAD_DIR) / spec["local_name"]
+        if _checkpoint_dir_ready(candidate):
+            args.model_path = str(candidate)
     if not args.model_path and not args.auto_download:
         parser.error("--model_path is required unless --auto_download is set.")
     

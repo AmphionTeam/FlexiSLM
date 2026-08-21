@@ -2,9 +2,8 @@
 
 [![arXiv Paper](https://img.shields.io/badge/arXiv_Paper-2606.31247-b31b1b)](https://arxiv.org/abs/2606.31247)
 [![demo page](https://img.shields.io/badge/Demo_Page-Github.io-blue)](https://flexislm.github.io)
-[![dataset](https://img.shields.io/badge/Data-2M_speech2speech-yellow?logo=huggingface&logoColor=white)](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-2M-s2s-compact)
-[![dataset](https://img.shields.io/badge/Data-4M_speech2speech-yellow?logo=huggingface&logoColor=white)](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-4M-s2s)
-[![model](https://img.shields.io/badge/Model-7B-green?logo=huggingface&logoColor=white)](https://huggingface.co/FlexiSLM/FlexiSLM-7B-Stage2)
+[![dataset](https://img.shields.io/badge/Data-yellow?logo=huggingface&logoColor=white)](https://huggingface.co/FlexiSLM/datasets)
+[![model](https://img.shields.io/badge/Models-green?logo=huggingface&logoColor=white)](https://huggingface.co/FlexiSLM/models)
 
 ## Overview
 
@@ -18,7 +17,8 @@ This codebase contains links to our released training data, and full training an
 
 ## News
 
-- **August 20, 2026: Checkpoint release.** We released the [FlexiSLM-7B Stage 2](https://huggingface.co/FlexiSLM/FlexiSLM-7B-Stage2) checkpoint reproduced with this codebase.
+- **August 21, 2026: ** FlexiSLM is accepted to EMNLP 2026 Main Conference!
+- **August 20, 2026: Checkpoint release.** We released the [FlexiSLM-7B Stage 2](https://huggingface.co/FlexiSLM/FlexiSLM-7B-Stage2) checkpoint and [FlexiSLM-0.5B Stage 2](https://huggingface.co/FlexiSLM/FlexiSLM-0_5B-Stage2) checkpoint reproduced with this codebase. Please note that this project is in active development. We expect these checkpoints will be overwritten and updated as we train for more steps.
 - **August 6, 2026: Data release.** We released [FlexiSLM-Data-4M-s2s](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-4M-s2s), [FlexiSLM-Data-2M-s2s-compact](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-2M-s2s-compact), and [FlexiSLM-Data-5M-t2t](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-5M-t2t).
 - **August 2, 2026: Code release.** We released the FlexiSLM-7B training and inference code.
 
@@ -52,9 +52,16 @@ We believe this is one of the largest open-source datasets for spoken language m
 
 ## Inference
 
+Select a released Stage 2 checkpoint with the `checkpoint` flag. The default is **`stage2_7B`**.
+
+| Flag | Hugging Face repo | Manual local directory |
+| --- | --- | --- |
+| `stage2_7B` (default) | [FlexiSLM/FlexiSLM-7B-Stage2](https://huggingface.co/FlexiSLM/FlexiSLM-7B-Stage2) | `models/FlexiSLM-7B-Stage2` |
+| `stage2_0.5B` | [FlexiSLM/FlexiSLM-0_5B-Stage2](https://huggingface.co/FlexiSLM/FlexiSLM-0_5B-Stage2) | `models/FlexiSLM-0_5B-Stage2` |
+
 ### 1. Python API (with Automatic downloading)
 
-Set `auto_download=True` to download the default FlexiSLM-7B Stage 2 checkpoint, Qwen2.5-Omni audio encoder, SenseVoice, FlexiCodec, flow-matching decoder, and vocoder files into `models/` on first run. Later runs reuse the local copies. Flow-matching decoding is enabled by default and uses `assets/flexislm_demo_response_audio.wav` as its prompt audio.
+Set `auto_download=True` to download the selected Stage 2 checkpoint (`stage2_7B` by default, or `stage2_0.5B`), plus the Qwen2.5-Omni audio encoder, SenseVoice, FlexiCodec, flow-matching decoder, and vocoder files into `models/` on first run. Later runs reuse the local copies. Flow-matching decoding is enabled by default and uses `assets/flexislm_demo_response_audio.wav` as its prompt audio.
 
 ```python
 from pathlib import Path
@@ -69,6 +76,7 @@ from src.inference_flexislm import (
 
 config = FlexiSLMInferenceConfig(
     auto_download=True,
+    checkpoint="stage2_7B",  # or "stage2_0.5B"
     use_flow_matching_decoder=True,
     flow_matching_prompt_audio_path=str(
         Path("assets/flexislm_demo_response_audio.wav").resolve()
@@ -129,10 +137,16 @@ save_audio(result, "s2s.wav")
 
 ### 2. Python API (Manual downloading)
 
+Download the checkpoint you want to run. Auxiliary encoder and codec files are shared by both sizes.
+
 ```bash
 MODEL_ROOT="$PWD/models"
 
+# if you want to run stage2_7B
 hf download FlexiSLM/FlexiSLM-7B-Stage2 --local-dir "$MODEL_ROOT/FlexiSLM-7B-Stage2"
+# if you want to run stage2_0.5B
+hf download FlexiSLM/FlexiSLM-0_5B-Stage2 --local-dir "$MODEL_ROOT/FlexiSLM-0_5B-Stage2"
+
 hf download FlexiSLM/Qwen2_5-Omni-Audio_Encoder --local-dir "$MODEL_ROOT/Qwen2_5-Omni-Audio_Encoder"
 hf download FunAudioLLM/SenseVoiceSmall --local-dir "$MODEL_ROOT/SenseVoiceSmall"
 hf download jiaqili3/flexicodec \
@@ -143,7 +157,7 @@ hf download jiaqili3/flexicodec \
   --local-dir "$MODEL_ROOT/FlexiCodec"
 ```
 
-Then point the config at those directories:
+Then point the config at those directories. Set `checkpoint` to match the weights you downloaded, or pass `model_path` directly.
 
 ```python
 from pathlib import Path
@@ -158,7 +172,8 @@ from src.inference_flexislm import (
 
 model_root = Path.cwd() / "models"
 config = FlexiSLMInferenceConfig(
-    model_path=str(model_root / "FlexiSLM-7B-Stage2"),
+    checkpoint="stage2_7B",  # or "stage2_0.5B" → models/FlexiSLM-0_5B-Stage2
+    model_path=str(model_root / "FlexiSLM-7B-Stage2"),  # or model_root / "FlexiSLM-0_5B-Stage2"
     qwen25o_encoder_path=str(model_root / "Qwen2_5-Omni-Audio_Encoder"),
     qwen25o_encoder_config_path=str(
         model_root / "Qwen2_5-Omni-Audio_Encoder/config.json"
@@ -248,7 +263,8 @@ Create `examples/infer_7b.yaml`:
 ```yaml
 engine:
   config:
-    model_path: models/FlexiSLM-7B-Stage2
+    checkpoint: stage2_7B  # or stage2_0.5B
+    model_path: models/FlexiSLM-7B-Stage2  # or models/FlexiSLM-0_5B-Stage2
     qwen25o_encoder_path: models/Qwen2_5-Omni-Audio_Encoder
     qwen25o_encoder_config_path: models/Qwen2_5-Omni-Audio_Encoder/config.json
     flexicodec_ckpt_path: models/FlexiCodec/nartts_flexicodec_only.safetensors
@@ -271,7 +287,7 @@ output:
   error_path: outputs/inference/errors.jsonl
 
 inference:
-  checkpoint: models/FlexiSLM-7B-Stage2
+  checkpoint: models/FlexiSLM-7B-Stage2  # or models/FlexiSLM-0_5B-Stage2
   target_framerate_hz: 8.0
   transcribe_model_path: models/whisper-large-v3
   output_sample_rate: 16000
@@ -287,6 +303,8 @@ Run the batch inference entrypoint:
 ```bash
 python -m src.infer examples/infer_7b.yaml
 ```
+
+`engine.config.checkpoint` selects `stage2_7B` or `stage2_0.5B`. `inference.checkpoint` is the local weights path recorded in traces. To fetch weights automatically instead of setting `model_path`, use `engine.config.auto_download: true` with `engine.config.checkpoint: stage2_7B` or `stage2_0.5B`.
 
 The runner writes one unified JSONL trace and stores generated speech under `output.audio_dir`.
 
@@ -307,6 +325,7 @@ BENCHMARK_DATA_ROOT="$PWD/data/benchmarks"
 
 # Previously downloaded in inference guide
 hf download FlexiSLM/FlexiSLM-7B-Stage2 --local-dir "$MODEL_ROOT/FlexiSLM-7B-Stage2"
+hf download FlexiSLM/FlexiSLM-0_5B-Stage2 --local-dir "$MODEL_ROOT/FlexiSLM-0_5B-Stage2"
 hf download FlexiSLM/Qwen2_5-Omni-Audio_Encoder --local-dir "$MODEL_ROOT/Qwen2_5-Omni-Audio_Encoder"
 hf download FunAudioLLM/SenseVoiceSmall --local-dir "$MODEL_ROOT/SenseVoiceSmall"
 hf download jiaqili3/flexicodec 12hz_v1_half_config.yaml nartts_flexicodec_only.safetensors --local-dir "$MODEL_ROOT/FlexiCodec"

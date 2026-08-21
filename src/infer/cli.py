@@ -56,8 +56,15 @@ def load_config(config_path: Path) -> CliConfig:
 
     engine = _mapping(raw.get("engine"), "engine")
     engine_config = _mapping(engine.get("config"), "engine.config")
-    if not engine_config.get("model_path"):
-        raise ValueError("engine.config.model_path is required")
+    if (
+        not engine_config.get("model_path")
+        and not engine_config.get("auto_download")
+        and not engine_config.get("checkpoint")
+    ):
+        raise ValueError(
+            "engine.config.model_path is required unless auto_download is true "
+            "or checkpoint is set to stage2_7B / stage2_0.5B"
+        )
 
     runtime = _mapping(raw.get("runtime", {}), "runtime")
     devices_value = runtime.get("devices", ["cuda:0"])

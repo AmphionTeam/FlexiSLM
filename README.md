@@ -4,6 +4,7 @@
 [![demo page](https://img.shields.io/badge/Demo_Page-Github.io-blue)](https://flexislm.github.io)
 [![dataset](https://img.shields.io/badge/Data-yellow?logo=huggingface&logoColor=white)](https://huggingface.co/FlexiSLM/datasets)
 [![model](https://img.shields.io/badge/Models-green?logo=huggingface&logoColor=white)](https://huggingface.co/FlexiSLM/models)
+[![WeChat Blog](https://img.shields.io/badge/WeChat-Blog-07C160?logo=wechat&logoColor=white)](https://mp.weixin.qq.com/s/pno08CK1dXinIfbvt-v5dg)
 
 ## Overview
 

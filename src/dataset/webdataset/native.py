@@ -164,12 +164,30 @@ def build_qwen2_webdataset(
 
     sampling_cfg = runtime.get("sampling", {})
     sampling_seed = int(sampling_cfg.get("seed", runtime.get("seed", seed)))
+    sampling_mode = sampling_cfg.get("mode", "finite_exact")
     bucketing_cfg = runtime.get("bucketing", {})
     errors_cfg = runtime.get("errors", {})
     cache_cfg = runtime.get("cache", {})
-    configured_num_batches = batch_cfg.get(
-        "num_batches", sampling_cfg.get("steps_per_epoch")
+    train_steps_per_epoch = (
+        getattr(training_args, "webdataset_steps_per_epoch", None)
+        if training_args is not None
+        else None
     )
+    dataset_steps_per_epoch = sampling_cfg.get("steps_per_epoch")
+    if train_steps_per_epoch is not None:
+        configured_num_batches = train_steps_per_epoch
+        if (
+            dataset_steps_per_epoch is not None
+            and int(dataset_steps_per_epoch) != int(train_steps_per_epoch)
+        ):
+            logger.info(
+                "Using training webdataset_steps_per_epoch=%s instead of "
+                "dataset sampling.steps_per_epoch=%s",
+                train_steps_per_epoch,
+                dataset_steps_per_epoch,
+            )
+    else:
+        configured_num_batches = batch_cfg.get("num_batches", dataset_steps_per_epoch)
     train_max_cost = (
         getattr(training_args, "max_tokens_per_batch", None)
         if training_args is not None
@@ -254,11 +272,23 @@ def build_qwen2_webdataset(
             source_name=source_name,
         )
         normalized_ratio = float(ratio)
+        # Resampled mixing picks sources by weight, then a shard within the
+        # source. Defaulting weight to selected shard-slot count keeps the same
+        # source proportions as a finite walk over the ratio-expanded shard list.
+        explicit_weight = source.get("weight", web_cfg.get("weight"))
+        if explicit_weight is not None:
+            source_weight = float(explicit_weight)
+        elif sampling_mode == "resampled":
+            source_weight = float(max(len(selected_shards), 1))
+        else:
+            source_weight = 1.0
         logger.info(
-            "WebDataset %s source %s: ratio=%s selected %d shard slots from %d unique shards with seed=%d",
+            "WebDataset %s source %s: ratio=%s weight=%s selected %d shard slots "
+            "from %d unique shards with seed=%d",
             split,
             source_name,
             normalized_ratio,
+            source_weight,
             len(selected_shards),
             shard_count,
             sampling_seed,
@@ -268,7 +298,7 @@ def build_qwen2_webdataset(
                 name=source_name,
                 shards=selected_shards,
                 layout=web_cfg.get("layout", "auto"),
-                weight=float(source.get("weight", web_cfg.get("weight", 1.0))),
+                weight=source_weight,
                 ratio=normalized_ratio,
             )
         )
@@ -326,7 +356,7 @@ def build_qwen2_webdataset(
         seed=sampling_seed,
         drop_last=bool(batch_cfg.get("drop_last", False)),
         num_batches=(int(configured_num_batches) if configured_num_batches is not None else None),
-        sampling_mode=sampling_cfg.get("mode", "finite_exact"),
+        sampling_mode=sampling_mode,
         shard_shuffle=bool(sampling_cfg.get("shuffle", True)),
         batch_limits=BatchLimits(
             max_cost=(float(configured_max_cost) if configured_max_cost is not None else None),

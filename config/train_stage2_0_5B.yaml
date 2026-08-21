@@ -70,6 +70,8 @@ run_name: train_stage2_0_5B
 num_train_epochs: 2
 per_device_train_batch_size: 48
 max_tokens_per_batch: 18000
+# ceil(~5,865,000 logical samples / (8 GPUs * 48 samples per GPU))
+webdataset_steps_per_epoch: 15274
 gradient_accumulation_steps: 1
 auto_find_batch_size: false
 save_strategy: steps
@@ -99,5 +101,3 @@ trust_remote_code: true
 attn_implementation: flash_attention_2
 seed: 42
 data_seed: 42
-# Iterable WebDataset loaders require an explicit optimizer-step limit.
-max_steps: 350000

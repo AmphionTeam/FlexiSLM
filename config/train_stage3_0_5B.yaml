@@ -68,6 +68,8 @@ run_name: train_stage3_0_5B
 num_train_epochs: 1
 per_device_train_batch_size: 8
 max_tokens_per_batch: 8000
+# ceil(~5,865,000 logical samples / (8 GPUs * 8 samples per GPU))
+webdataset_steps_per_epoch: 91641
 gradient_accumulation_steps: 1
 auto_find_batch_size: false
 save_strategy: steps

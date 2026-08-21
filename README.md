@@ -9,7 +9,7 @@
 
 ## Overview
 
-This repository contains the code and data for our paper, "FlexiSLM: A Spoken Language Model with Dynamic and Controllable Frame Rates."
+This repository contains the code for our paper, "FlexiSLM: A Spoken Language Model with Dynamic and Controllable Frame Rates," along with instructions for downloading the released training data.
 
 FlexiSLM is the first spoken language model that supports *dynamic* and *controllable* frame rates on both speech input and output. A single trained model can be steered between 12.5 Hz and 4.0 Hz without retraining, while its dynamic frame-rate mechanism adapts to the varying complexity of speech. FlexiSLM matches state-of-the-art 7B models even in reduced 6.25Hz frame rates. It also supports controllable frame rate generation.
 
@@ -303,7 +303,7 @@ The committed recipes use the datasets downloaded in [Section: Download addition
 - `config/datasets/train_stage1.yaml` for Stage 1 (ASR+TTS only)
 - `config/datasets/train_stage2_3.yaml` for Stages 2 and 3 (ASR+TTS + S2S + WebQ/Trivia; shard retention ratios TTS 0.5, ASR 0.5, S2S 1.0, WebQ/Trivia 3.0). `data_part2_webq_trivia` is included in the same [FlexiSLM-Data-2M-s2s-compact](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-2M-s2s-compact/tree/main/data_part2_webq_trivia) download.
 
-Adjust `webdataset_runtime.sampling.steps_per_epoch` when changing the GPU count or per-device batch size.
+Each training recipe sets `webdataset_steps_per_epoch` for an 8-GPU launch at that recipe's `per_device_train_batch_size`. Recompute it when changing the GPU count or batch size: `ceil(logical_samples / (num_gpus * per_device_train_batch_size))`.
 ### 3. Launch Training
 
 Training arguments are stored in YAML files under `config/`; launchers live under `scripts/`:

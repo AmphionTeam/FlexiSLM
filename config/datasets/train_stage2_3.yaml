@@ -4,6 +4,10 @@
 # - retain a separate deterministic 50% shard subset for ASR;
 # - retain all Speech2Speech compact shards for S2S;
 # - repeat WebQuestions+TriviaQA (data_part2_webq_trivia) 3x.
+#
+# Under sampling.mode=resampled, source weights default to each source's
+# selected shard-slot count so mixture proportions match a finite walk over
+# those shards. Set an explicit `weight` on a source to override.
 dataset_backend: webdataset_stream
 num_mel_bins: 128
 
@@ -55,10 +59,13 @@ dataset:
 
 webdataset_runtime:
   sampling:
-    mode: finite_padded
-    # ~0.5 ASR + ~0.5 TTS from asrtts, full S2S compact, plus webq_trivia at 3x.
-    # Adjust when changing GPU count or per-device batch size.
-    # ceil(~5.9M + 3x webq_trivia / (8 GPUs * 5 samples per GPU))
+    # Distributed training requires resampled mode with a fixed step budget.
+    mode: resampled
+    # Fallback only. Each training recipe should set webdataset_steps_per_epoch
+    # for its GPU count and per_device_train_batch_size.
+    # ~0.5 ASR + ~0.5 TTS from asrtts, full S2S compact, plus webq_trivia at 3x
+    # ≈ 5,865,000 logical samples.
+    # ceil(5,865,000 / (8 GPUs * 5 samples per GPU))
     steps_per_epoch: 146625
     seed: 42
     shuffle: true

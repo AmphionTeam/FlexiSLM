@@ -16,6 +16,9 @@ from typing import Any, Iterable, Iterator, Mapping, Optional, Tuple
 
 from .core import DEFAULT_OUTPUT_SAMPLE_RATE, infer
 
+# src/infer/cli.py -> repository root (matches training/inference path conventions).
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+
 
 @dataclass(frozen=True)
 class CliConfig:
@@ -85,13 +88,13 @@ def load_config(config_path: Path) -> CliConfig:
 
     input_config = _mapping(raw.get("input"), "input")
     output_config = _mapping(raw.get("output"), "output")
-    input_path = _resolve_path(config_path, input_config.get("path"), "input.path")
+    input_path = _resolve_path(input_config.get("path"), "input.path")
     trace_path = _resolve_path(
-        config_path, output_config.get("trace_path"), "output.trace_path"
+        output_config.get("trace_path"), "output.trace_path"
     )
     audio_dir_value = output_config.get("audio_dir")
     audio_dir = (
-        _resolve_path(config_path, audio_dir_value, "output.audio_dir")
+        _resolve_path(audio_dir_value, "output.audio_dir")
         if audio_dir_value is not None
         else trace_path.parent / "audio"
     )
@@ -119,7 +122,7 @@ def load_config(config_path: Path) -> CliConfig:
         raise ValueError("runtime.fail_fast must be a boolean")
     error_path_value = output_config.get("error_path")
     error_path = (
-        _resolve_path(config_path, error_path_value, "output.error_path")
+        _resolve_path(error_path_value, "output.error_path")
         if error_path_value is not None
         else trace_path.with_name(f"{trace_path.stem}.errors.jsonl")
     )
@@ -363,11 +366,12 @@ def _mapping(value: Any, name: str) -> dict[str, Any]:
     return dict(value)
 
 
-def _resolve_path(config_path: Path, value: Any, name: str) -> Path:
+def _resolve_path(value: Any, name: str) -> Path:
+    """Resolve a config path; relative paths are anchored at the repo root."""
     if not isinstance(value, (str, os.PathLike)) or not str(value).strip():
         raise ValueError(f"{name} must be a non-empty path")
-    path = Path(value).expanduser()
-    return path.resolve() if path.is_absolute() else (config_path.parent / path).resolve()
+    path = Path(os.path.expandvars(str(value))).expanduser()
+    return path.resolve() if path.is_absolute() else (_REPO_ROOT / path).resolve()
 
 
 def main() -> None:

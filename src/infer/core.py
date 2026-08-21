@@ -9,9 +9,13 @@ from typing import Any, Mapping
 
 
 DEFAULT_ASR_PROMPT = "Please transcribe the audio."
-# FlexiCodec waveforms are natively decoded at 16 kHz. Saving the unchanged
-# samples with another rate changes playback speed and invalidates audio ASR.
-DEFAULT_OUTPUT_SAMPLE_RATE = 16_000
+# Decoded waveform sample rates (must match the active speech decoder):
+#   - use_flow_matching_decoder=True  (default) → Vocos flow-matching → 24 kHz
+#   - use_flow_matching_decoder=False           → FlexiCodec AR decode → 16 kHz
+# Prefer engine.config.output_sample_rate (resolved at engine init) when saving.
+FLEXICODEC_OUTPUT_SAMPLE_RATE = 16_000
+FLOW_MATCHING_OUTPUT_SAMPLE_RATE = 24_000
+DEFAULT_OUTPUT_SAMPLE_RATE = FLOW_MATCHING_OUTPUT_SAMPLE_RATE
 
 # Lazy per-(model_path, device) Whisper transcriber cache for s2s traces.
 _TRANSCRIBER_CACHE: dict[tuple[str, str], Any] = {}
@@ -103,7 +107,8 @@ def _infer_tts(
 
     output_dir.mkdir(parents=True, exist_ok=True)
     audio_path = output_dir / _wav_name(parts.index, parts.metadata.get("sample_id"))
-    duration = _save_wav(audio_path, audio, output_sample_rate)
+    save_sr = _resolve_save_sample_rate(engine, result, output_sample_rate)
+    duration = _save_wav(audio_path, audio, save_sr)
 
     return _trace(
         index=parts.index,
@@ -252,7 +257,8 @@ def _infer_s2s(
         raise ValueError("generate_from_audio() did not return decodable audio")
     output_dir.mkdir(parents=True, exist_ok=True)
     audio_path_out = output_dir / _wav_name(parts.index, parts.metadata.get("sample_id"))
-    duration = _save_wav(audio_path_out, audio, output_sample_rate)
+    save_sr = _resolve_save_sample_rate(engine, result, output_sample_rate)
+    duration = _save_wav(audio_path_out, audio, save_sr)
 
     transcription = None
     if transcribe_model_path:
@@ -452,18 +458,63 @@ def _wav_name(index: int, sample_id: Any) -> str:
     return f"{index}_{safe_stem}.wav"
 
 
+def _resolve_save_sample_rate(
+    engine: Any,
+    result: Mapping[str, Any] | None,
+    fallback: int,
+) -> int:
+    """Prefer decoder-native rate from the result/engine over YAML fallback."""
+    candidates = []
+    if result is not None:
+        candidates.append(result.get("sample_rate"))
+    config = getattr(engine, "config", None)
+    candidates.append(getattr(config, "output_sample_rate", None))
+    candidates.append(fallback)
+    for candidate in candidates:
+        try:
+            value = int(candidate)
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            use_fm = bool(getattr(config, "use_flow_matching_decoder", True))
+            native = (
+                FLOW_MATCHING_OUTPUT_SAMPLE_RATE
+                if use_fm
+                else FLEXICODEC_OUTPUT_SAMPLE_RATE
+            )
+            # Common misconfig: flow-matching audio labeled as 16 kHz.
+            if use_fm and value == FLEXICODEC_OUTPUT_SAMPLE_RATE:
+                return native
+            return value
+    use_fm = bool(getattr(config, "use_flow_matching_decoder", True))
+    return (
+        FLOW_MATCHING_OUTPUT_SAMPLE_RATE if use_fm else FLEXICODEC_OUTPUT_SAMPLE_RATE
+    )
+
+
 def _save_wav(path: Path, audio: Any, sample_rate: int) -> float:
     if sample_rate <= 0:
         raise ValueError("output_sample_rate must be positive")
     import torch
-    import torchaudio
 
     waveform = torch.as_tensor(audio).detach().float().cpu().squeeze()
     if waveform.ndim == 1:
         waveform = waveform.unsqueeze(0)
     if waveform.ndim != 2:
         raise ValueError(f"Unexpected generated audio shape: {tuple(waveform.shape)}")
-    torchaudio.save(str(path), waveform, sample_rate)
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        import torchaudio
+
+        torchaudio.save(str(path), waveform, sample_rate)
+    except Exception:
+        # torchaudio 2.9+ may route through torchcodec/FFmpeg, which is often
+        # broken in constrained environments. Fall back to soundfile.
+        import soundfile as sf
+
+        sf.write(str(path), waveform.transpose(0, 1).numpy(), sample_rate)
+
     return waveform.shape[-1] / sample_rate
 
 

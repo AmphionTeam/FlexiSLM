@@ -1,19 +1,15 @@
-# Stage 2 (0.5B): initialize from Stage 1, train the Talker and input modules in full,
-# and adapt the Qwen Thinker with LoRA. Paths are relative to the repository root.
+# Stage 1 (0.5B): freeze the Qwen backbone and pre-train the Talker and input modules.
+# Paths are relative to the repository root.
 
 # Model
 model_name_or_path: models/Qwen2.5-0.5B-Instruct
 config_name: models/Qwen2.5-0.5B-Instruct
 tokenizer_name: models/Qwen2.5-0.5B-Instruct
 use_joint_text_audio_vocab: false
-# Stage 2 trains the Thinker through LoRA while keeping the base Qwen weights frozen.
-# The Talker and v2 input/frame merging transformer remain fully trainable.
-freeze_llm: false
+freeze_llm: true
 freeze_talker: false
 only_train_talker: false
-only_train_modules: "input_merging_transformer,talker_model,llm_lora"
-# Continue training the Stage 1 v2 frame merger instead of reinitializing it.
-reinitialize_input_merging_transformer: false
+only_train_modules: "talker_model,audio_embed_transform,input_merging_transformer,audio_start_embedding,audio_end_embedding"
 
 # Audio encoder and codec
 use_sensevoice_feature: false
@@ -51,41 +47,34 @@ use_input_merging_transformer: true
 use_input_merging_transformer_v2: true
 input_merging_transformer_d_model: 768
 use_learnable_audio_boundary: true
+use_lora: false
 
-# LoRA and component-specific learning rates
-use_lora: true
-lora_rank: 32
-lora_alpha: 64
-talker_learning_rate: 1.0e-4
-
-# Data and Stage 1 initialization (Hub id downloads into models/ on first use)
-dataset_name: config/datasets/train_stage2_3.yaml
-checkpoint_load_mode: weights_only
-resume_from_checkpoint: FlexiSLM/FlexiSLM-0_5B-Stage1
+# Data
+dataset_name: config/datasets/train_stage1.yaml
 
 # Training
 do_train: true
-output_dir: outputs/train_stage2_0_5B
-run_name: train_stage2_0_5B
-num_train_epochs: 2
+output_dir: outputs/train_stage1_0_5B
+run_name: train_stage1_0_5B
+num_train_epochs: 1
 per_device_train_batch_size: 48
 max_tokens_per_batch: 18000
-# ceil(~5,865,000 logical samples / (8 GPUs * 48 samples per GPU))
-webdataset_steps_per_epoch: 15274
+# ceil(~6,886,296 logical samples / (8 GPUs * 48 samples per GPU))
+webdataset_steps_per_epoch: 17934
 gradient_accumulation_steps: 1
 auto_find_batch_size: false
 save_strategy: steps
 save_steps: 15000
 save_total_limit: 10
 max_grad_norm: 1.0
-learning_rate: 2.0e-5
+learning_rate: 5.0e-4
 weight_decay: 0.01
 adam_beta1: 0.9
 adam_beta2: 0.95
 adam_epsilon: 1.0e-8
 warmup_ratio: 0.005
 lr_scheduler_type: cosine_with_min_lr
-lr_scheduler_kwargs: {min_lr: 2.0e-6}
+lr_scheduler_kwargs: {min_lr: 4.0e-5}
 logging_steps: 10
 log_level: info
 model_max_length: 1024

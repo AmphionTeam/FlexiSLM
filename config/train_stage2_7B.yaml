@@ -58,10 +58,10 @@ lora_rank: 32
 lora_alpha: 64
 talker_learning_rate: 1.0e-4
 
-# Data and Stage 1 initialization
+# Data and Stage 1 initialization (Hub id downloads into models/ on first use)
 dataset_name: config/datasets/train_stage2_3.yaml
 checkpoint_load_mode: weights_only
-resume_from_checkpoint: outputs/train_stage1_7B/exported_model
+resume_from_checkpoint: FlexiSLM/FlexiSLM-7B-Stage1
 
 # Training
 do_train: true
@@ -70,6 +70,8 @@ run_name: train_stage2_7B
 num_train_epochs: 2
 per_device_train_batch_size: 16
 max_tokens_per_batch: 4000
+# ceil(~5,865,000 logical samples / (8 GPUs * 16 samples per GPU))
+webdataset_steps_per_epoch: 45821
 gradient_accumulation_steps: 2
 auto_find_batch_size: false
 save_strategy: steps
@@ -99,5 +101,3 @@ trust_remote_code: true
 attn_implementation: flash_attention_2
 seed: 42
 data_seed: 42
-# Iterable WebDataset loaders require an explicit optimizer-step limit.
-max_steps: 350000

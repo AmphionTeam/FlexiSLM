@@ -16,14 +16,6 @@ Features:
 - Frame rate control for output speech (0.8-1.0)
 """
 
-FLEXICODEC_CKPT_PATH = "/F00120260003/flexislm_project/model/FlexiCodec/nartts_flexicodec_only.safetensors"
-FLEXICODEC_CONFIG_PATH = "/F00120260003/flexislm_project/model/FlexiCodec/12hz_v1_half_config.yaml"
-SENSEVOICE_PATH = "/F00120260003/flexislm_project/model/SenseVoiceSmall"
-FLOW_MATCHING_CKPT_PATH = "/F00120260003/flexislm_project/model/FlexiCodec/nartts.safetensors"
-FLOW_MATCHING_VOCODER_PATH = "/F00120260003/flexislm_project/model/FlexiCodec/vocos_emilia.safetensors"
-FLOW_MATCHING_PROMPT_AUDIO_PATH = "/F00120260003/flexislm_project/FlexiSLM/assets/flexislm_demo_response_audio.wav"
-DEFAULT_OUTPUT_DIR = "/F00120260003/flexislm_project/jiaqi/outputs/debug_inference_flexislm"
-
 # If True, prepend system prompt in dataset format (system block + user block).
 # Default False: only use system message when calling generate_tts.
 USE_SYSTEM_PROMPT = False
@@ -143,10 +135,35 @@ logger = loguru.logger
 
 # Same directory as the README manual `hf download --local-dir "$PWD/models/..."` flow.
 DEFAULT_INFERENCE_DOWNLOAD_DIR = os.path.join(_REPO_ROOT, "models")
-DEFAULT_FLOW_MATCHING_PROMPT_AUDIO_PATH = os.path.join(
-    _REPO_ROOT, "assets", "flexislm_demo_response_audio.wav"
+DEFAULT_FLEXICODEC_CKPT_PATH = os.path.join(
+    DEFAULT_INFERENCE_DOWNLOAD_DIR, "FlexiCodec", "nartts_flexicodec_only.safetensors"
 )
+DEFAULT_FLEXICODEC_CONFIG_PATH = os.path.join(
+    DEFAULT_INFERENCE_DOWNLOAD_DIR, "FlexiCodec", "12hz_v1_half_config.yaml"
+)
+DEFAULT_SENSEVOICE_PATH = os.path.join(
+    DEFAULT_INFERENCE_DOWNLOAD_DIR, "SenseVoiceSmall"
+)
+DEFAULT_FLOW_MATCHING_CKPT_PATH = os.path.join(
+    DEFAULT_INFERENCE_DOWNLOAD_DIR, "FlexiCodec", "nartts.safetensors"
+)
+DEFAULT_FLOW_MATCHING_VOCODER_PATH = os.path.join(
+    DEFAULT_INFERENCE_DOWNLOAD_DIR, "FlexiCodec", "vocos_emilia.safetensors"
+)
+DEFAULT_FLOW_MATCHING_PROMPT_AUDIO_PATH = os.path.join(
+    _REPO_ROOT, "examples", "input.wav"
+)
+DEFAULT_OUTPUT_DIR = os.path.join(_REPO_ROOT, "outputs", "inference")
 DEFAULT_CHECKPOINT = "stage2_7B"
+# ---------------------------------------------------------------------------
+# Decoded waveform sample rates (do not mix these up when writing WAV files):
+#   - use_flow_matching_decoder=True  (default) → Vocos flow-matching → 24 kHz
+#   - use_flow_matching_decoder=False           → FlexiCodec AR decode → 16 kHz
+# Saving samples with the wrong header changes playback speed.
+# ---------------------------------------------------------------------------
+FLEXICODEC_OUTPUT_SAMPLE_RATE = 16_000
+FLOW_MATCHING_OUTPUT_SAMPLE_RATE = 24_000
+DEFAULT_OUTPUT_SAMPLE_RATE = FLOW_MATCHING_OUTPUT_SAMPLE_RATE  # FM is the default decoder
 STAGE2_CHECKPOINTS = {
     "stage2_7B": {
         "repo_id": "FlexiSLM/FlexiSLM-7B-Stage2",
@@ -187,8 +204,14 @@ DEFAULT_INFERENCE_REPOS = {
             "12hz_v1_half_config.yaml",
             "nartts_flexicodec_only.safetensors",
             "nartts.safetensors",
-            "vocos_emilia.safetensors",
         ],
+    },
+    # Vocos is published with DualCodec-TTS, not under jiaqili3/flexicodec.
+    "vocoder": {
+        "repo_id": "amphion/dualcodec-tts",
+        "local_name": "FlexiCodec",
+        "allow_patterns": ["vocos_emilia.safetensors"],
+        "filename": "vocos_emilia.safetensors",
     },
 }
 
@@ -209,6 +232,13 @@ def _checkpoint_dir_ready(path: Path) -> bool:
     return path.is_dir() and (path / "config.json").is_file() and _has_model_weights(path)
 
 
+def _sensevoice_dir_ready(path: Path) -> bool:
+    """SenseVoiceSmall uses FunASR layout (model.pt), not HF Transformers weights."""
+    return path.is_dir() and (path / "model.pt").is_file() and (
+        (path / "config.yaml").is_file() or (path / "configuration.json").is_file()
+    )
+
+
 def normalize_checkpoint_name(checkpoint: str) -> str:
     """Map a checkpoint flag to the canonical ``stage2_7B`` / ``stage2_0.5B`` name."""
     key = str(checkpoint).strip()
@@ -220,6 +250,140 @@ def normalize_checkpoint_name(checkpoint: str) -> str:
             "(aliases: stage2_0_5B, 7B, 0.5B)."
         )
     return canonical
+
+
+def _cuda_device_index(device: Optional[str]) -> Optional[int]:
+    """Return a CUDA device index from a device string, or None if not CUDA."""
+    if device is None:
+        return None
+    text = str(device).strip().lower()
+    if text == "cuda":
+        return 0 if torch.cuda.is_available() else None
+    if text.startswith("cuda:"):
+        try:
+            return int(text.split(":", 1)[1])
+        except ValueError:
+            return None
+    return None
+
+
+def flash_attn2_is_available(device: Optional[str] = None) -> bool:
+    """True when FlashAttention-2 can run on the target CUDA device.
+
+    FA2 requires the ``flash_attn`` package and GPU compute capability >= 8.0
+    (Ampere+). Pre-Ampere GPUs such as V100 (sm_70) must fall back to SDPA.
+    """
+    if not torch.cuda.is_available():
+        return False
+    idx = _cuda_device_index(device)
+    if idx is None:
+        idx = torch.cuda.current_device()
+    try:
+        major, _minor = torch.cuda.get_device_capability(idx)
+    except Exception:
+        return False
+    if major < 8:
+        return False
+    try:
+        import flash_attn  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+def resolve_attn_implementation(
+    attn_implementation: Optional[str],
+    device: Optional[str] = None,
+    fallback: str = "sdpa",
+) -> str:
+    """Resolve attention backend, auto-disabling FA2 on unsupported GPUs."""
+    requested = (attn_implementation or "sdpa").strip() or "sdpa"
+    if requested != "flash_attention_2":
+        return requested
+    if flash_attn2_is_available(device):
+        return requested
+    reason = "CUDA unavailable or flash_attn missing"
+    idx = _cuda_device_index(device)
+    if torch.cuda.is_available() and idx is not None:
+        try:
+            major, minor = torch.cuda.get_device_capability(idx)
+            name = torch.cuda.get_device_name(idx)
+            reason = (
+                f"GPU {name} (sm_{major}{minor}) does not support FlashAttention-2 "
+                f"(requires compute capability >= 8.0)"
+            )
+        except Exception:
+            pass
+    logger.warning(
+        "attn_implementation=flash_attention_2 is unavailable (%s); "
+        "falling back to %s.",
+        reason,
+        fallback,
+    )
+    return fallback
+
+
+def resolve_torch_dtype_for_device(
+    torch_dtype: str,
+    device: Optional[str] = None,
+) -> str:
+    """Prefer float16 over bfloat16 on GPUs without native bf16 (e.g. V100)."""
+    if torch_dtype != "bfloat16":
+        return torch_dtype
+    idx = _cuda_device_index(device)
+    if idx is None or not torch.cuda.is_available():
+        return torch_dtype
+    try:
+        major, _minor = torch.cuda.get_device_capability(idx)
+    except Exception:
+        return torch_dtype
+    # Native bf16 arrives with Ampere (sm_80+). Older GPUs should use fp16.
+    if major < 8:
+        name = torch.cuda.get_device_name(idx)
+        logger.warning(
+            "torch_dtype=bfloat16 is not natively supported on %s "
+            "(compute capability < 8.0); using float16 instead.",
+            name,
+        )
+        return "float16"
+    return torch_dtype
+
+
+def native_audio_sample_rate(use_flow_matching_decoder: bool) -> int:
+    """Return the decoder-native WAV sample rate.
+
+    Flow-matching (default) Vocos output is 24 kHz. FlexiCodec AR decode is 16 kHz.
+    """
+    if use_flow_matching_decoder:
+        return FLOW_MATCHING_OUTPUT_SAMPLE_RATE
+    return FLEXICODEC_OUTPUT_SAMPLE_RATE
+
+
+def resolve_output_sample_rate(
+    use_flow_matching_decoder: bool,
+    output_sample_rate: Optional[int] = None,
+) -> int:
+    """Align configured sample rate with the active audio decoder.
+
+    Flow-matching Vocos emits 24 kHz; FlexiCodec AR decode emits 16 kHz.
+    Writing samples with the wrong header changes playback speed.
+    """
+    native = native_audio_sample_rate(use_flow_matching_decoder)
+    if output_sample_rate is None or int(output_sample_rate) <= 0:
+        return native
+    configured = int(output_sample_rate)
+    if configured != native:
+        logger.warning(
+            "output_sample_rate=%s does not match %s native rate %s Hz; "
+            "using %s Hz so playback speed is correct.",
+            configured,
+            "flow-matching Vocos (24 kHz)"
+            if use_flow_matching_decoder
+            else "FlexiCodec AR (16 kHz)",
+            native,
+            native,
+        )
+    return native
 
 
 def get_stage2_checkpoint_spec(checkpoint: str = DEFAULT_CHECKPOINT) -> Dict[str, str]:
@@ -306,7 +470,7 @@ def download_inference_checkpoints(
     if download_sensevoice:
         spec = DEFAULT_INFERENCE_REPOS["sensevoice"]
         local_dir = root / spec["local_name"]
-        if not _checkpoint_dir_ready(local_dir):
+        if not _sensevoice_dir_ready(local_dir):
             _snapshot_download(
                 spec["repo_id"],
                 local_dir,
@@ -321,18 +485,22 @@ def download_inference_checkpoints(
         ckpt_path = local_dir / "nartts_flexicodec_only.safetensors"
         config_path = local_dir / "12hz_v1_half_config.yaml"
         flow_matching_ckpt_path = local_dir / "nartts.safetensors"
-        flow_matching_vocoder_path = local_dir / "vocos_emilia.safetensors"
-        required_files = (
-            ckpt_path,
-            config_path,
-            flow_matching_ckpt_path,
-            flow_matching_vocoder_path,
-        )
-        if not all(path.is_file() for path in required_files):
+        codec_files = (ckpt_path, config_path, flow_matching_ckpt_path)
+        if not all(path.is_file() for path in codec_files):
             _snapshot_download(
                 spec["repo_id"],
                 local_dir,
                 allow_patterns=spec["allow_patterns"],
+                token=token,
+                revision=revision,
+            )
+        vocoder_spec = DEFAULT_INFERENCE_REPOS["vocoder"]
+        flow_matching_vocoder_path = local_dir / vocoder_spec["filename"]
+        if not flow_matching_vocoder_path.is_file():
+            _snapshot_download(
+                vocoder_spec["repo_id"],
+                local_dir,
+                allow_patterns=vocoder_spec["allow_patterns"],
                 token=token,
                 revision=revision,
             )
@@ -470,7 +638,8 @@ class FlexiSLMInferenceConfig:
     auto_download: bool = False
     download_dir: str = DEFAULT_INFERENCE_DOWNLOAD_DIR
     
-    # Flow matching decoder configuration
+    # Flow matching decoder configuration (default on).
+    # Decoded audio is 24 kHz with FM; set False for FlexiCodec AR at 16 kHz.
     use_flow_matching_decoder: bool = True
     flow_matching_ckpt_path: Optional[str] = None
     flow_matching_vocoder_path: Optional[str] = None
@@ -519,7 +688,9 @@ class FlexiSLMInferenceConfig:
     length_top_p: float = 1.0
     
     # Output settings
-    output_sample_rate: int = 16000
+    # Default 24 kHz matches use_flow_matching_decoder=True (Vocos).
+    # __post_init__ forces 16 kHz when flow matching is disabled (FlexiCodec AR).
+    output_sample_rate: int = FLOW_MATCHING_OUTPUT_SAMPLE_RATE
     decode_audio: bool = True
     
     # Model loading
@@ -589,6 +760,10 @@ class FlexiSLMInferenceConfig:
             self.qwen25o_encoder_config_path = os.path.join(
                 self.qwen25o_encoder_path, "config.json"
             )
+        self.output_sample_rate = resolve_output_sample_rate(
+            self.use_flow_matching_decoder,
+            self.output_sample_rate,
+        )
 
 
 class ModelArgsAdapter:
@@ -618,6 +793,17 @@ class FlexiSLMInference:
     def __init__(self, config: FlexiSLMInferenceConfig, device: str = "cuda"):
         self.config = config
         self.device = device
+        # Auto-disable FlashAttention-2 / bf16 on pre-Ampere GPUs (e.g. V100).
+        resolved_attn = resolve_attn_implementation(
+            config.attn_implementation, device=device
+        )
+        if resolved_attn != config.attn_implementation:
+            config.attn_implementation = resolved_attn
+        resolved_dtype = resolve_torch_dtype_for_device(
+            config.torch_dtype, device=device
+        )
+        if resolved_dtype != config.torch_dtype:
+            config.torch_dtype = resolved_dtype
         global AUD_START_TOKEN, AUD_END_TOKEN
         # Load model and tokenizer
         self.model, self.tokenizer = self._load_model()
@@ -1289,7 +1475,7 @@ class FlexiSLMInference:
                     if use_input_merging_v2:
                         # v2 path: keep pre-merge frames; the interleaved merging
                         # transformer will perform aggregation via alignment.
-                        semantic_features = u_codec.squeeze(0).to(torch.bfloat16)  # [T, H_enc]
+                        semantic_features = u_codec.squeeze(0).to(dtype)  # [T, H_enc]
                         return {
                             "semantic_features": semantic_features,
                             "token_lengths": token_lengths[0],
@@ -1299,7 +1485,7 @@ class FlexiSLMInference:
                         }
                     u_codec = self.model.aggregate_features(u_codec, u_alignment)  # [1, G, H_enc]
                     u_codec = u_codec  # [1, G, H_enc]
-                    semantic_features = u_codec.squeeze(0).to(torch.bfloat16)  # [G, H_enc]
+                    semantic_features = u_codec.squeeze(0).to(dtype)  # [G, H_enc]
                     # For Qwen/Whisper we do NOT use length embeddings at inference time, so we drop token_lengths.
                     return {
                         "semantic_features": semantic_features,
@@ -1308,7 +1494,7 @@ class FlexiSLMInference:
                     }
 
                 # No flexible merging: just return encoder features
-                semantic_features = u_codec.squeeze(0).to(torch.bfloat16)  # [T, H_enc]
+                semantic_features = u_codec.squeeze(0).to(dtype)  # [T, H_enc]
                 return semantic_features
 
         # ------------------------------------------------------------------
@@ -1320,6 +1506,7 @@ class FlexiSLMInference:
         # Extract fbank features first (matching training collator)
         feature_extractor = self.model.flexicodec_dict["feature_extractor"]
         device = next(self.model.flexicodec_dict["model"].parameters()).device
+        model_dtype = next(self.model.parameters()).dtype
 
         audio_16k = audio_tensor.to(device)
 
@@ -1342,7 +1529,7 @@ class FlexiSLMInference:
                     merging_threshold=1.0,
                     return_semantic_feature=True,
                 )
-                semantic_features = codec_output.squeeze(0).transpose(0, 1).to(torch.bfloat16)  # [T, H]
+                semantic_features = codec_output.squeeze(0).transpose(0, 1).to(model_dtype)  # [T, H]
                 
                 # Apply flexible frame rate merging if enabled (matches training in modeling_flexislm)
                 if getattr(self.model.config, 'enable_flexible_framerate', False):
@@ -1950,6 +2137,7 @@ class FlexiSLMInference:
             "framerate": framerate,
             "audio_ids": result.get("audio_ids"),
             "avg_input_framerate": avg_input_framerate,
+            "sample_rate": int(self.config.output_sample_rate),
         }
     
     @torch.no_grad()
@@ -2856,25 +3044,37 @@ def main():
         help="Download the selected --checkpoint and auxiliary models from Hugging Face.",
     )
     parser.add_argument("--flexicodec_ckpt", type=str, 
-                        default=FLEXICODEC_CKPT_PATH,
-                        help="Path to FlexiCodec checkpoint")
+                        default=DEFAULT_FLEXICODEC_CKPT_PATH,
+                        help="Path to FlexiCodec checkpoint "
+                             f"(default: {DEFAULT_FLEXICODEC_CKPT_PATH})")
     parser.add_argument("--flexicodec_config", type=str,
-                        default=FLEXICODEC_CONFIG_PATH,
-                        help="Path to FlexiCodec config")
+                        default=DEFAULT_FLEXICODEC_CONFIG_PATH,
+                        help="Path to FlexiCodec config "
+                             f"(default: {DEFAULT_FLEXICODEC_CONFIG_PATH})")
     parser.add_argument("--sensevoice_path", type=str,
-                        default=SENSEVOICE_PATH,
-                        help="Path to SenseVoice model")
+                        default=DEFAULT_SENSEVOICE_PATH,
+                        help="Path to SenseVoice model "
+                             f"(default: {DEFAULT_SENSEVOICE_PATH})")
     
-    # Flow matching decoder arguments
-    parser.add_argument("-d", "--use_flow_matching_decoder", action="store_true", default=False,
-                        help="Use flow matching decoder instead of FlexiCodec decode_from_codes")
-    parser.add_argument("--flow_matching_ckpt", type=str, default=FLOW_MATCHING_CKPT_PATH,
-                        help="Path to flow matching model checkpoint")
-    parser.add_argument("--flow_matching_vocoder", type=str, default=FLOW_MATCHING_VOCODER_PATH,
-                        help="Path to flow matching vocoder checkpoint")
+    # Flow matching decoder (default on → 24 kHz Vocos). Pass
+    # --no-use_flow_matching_decoder for FlexiCodec AR decode at 16 kHz.
+    parser.add_argument(
+        "--use_flow_matching_decoder",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Decode speech with flow-matching Vocos at 24 kHz (default). "
+             "Disable for FlexiCodec AR decode at 16 kHz.",
+    )
+    parser.add_argument("--flow_matching_ckpt", type=str, default=DEFAULT_FLOW_MATCHING_CKPT_PATH,
+                        help="Path to flow matching model checkpoint "
+                             f"(default: {DEFAULT_FLOW_MATCHING_CKPT_PATH})")
+    parser.add_argument("--flow_matching_vocoder", type=str, default=DEFAULT_FLOW_MATCHING_VOCODER_PATH,
+                        help="Path to flow matching vocoder checkpoint "
+                             f"(default: {DEFAULT_FLOW_MATCHING_VOCODER_PATH})")
     parser.add_argument("--flow_matching_prompt_audio", type=str,
-                        default=FLOW_MATCHING_PROMPT_AUDIO_PATH,
-                        help="Path to prompt audio file for flow matching decoder")
+                        default=DEFAULT_FLOW_MATCHING_PROMPT_AUDIO_PATH,
+                        help="Path to prompt audio file for flow matching decoder "
+                             f"(default: {DEFAULT_FLOW_MATCHING_PROMPT_AUDIO_PATH})")
     parser.add_argument("--flow_matching_n_timesteps", type=int, default=20,
                         help="Number of diffusion timesteps for flow matching")
     parser.add_argument("--flow_matching_cfg", type=float, default=2.0,
@@ -2931,9 +3131,15 @@ def main():
     parser.add_argument("--input_file", type=str, default=None,
                         help="Input JSONL file for batch mode")
     parser.add_argument("--output_dir", type=str, default=DEFAULT_OUTPUT_DIR,
-                        help="Output directory")
-    parser.add_argument("--output_sample_rate", type=int, default=16000,
-                        help="Output audio sample rate (FlexiCodec native: 16000)")
+                        help=f"Output directory (default: {DEFAULT_OUTPUT_DIR})")
+    parser.add_argument(
+        "--output_sample_rate",
+        type=int,
+        default=FLOW_MATCHING_OUTPUT_SAMPLE_RATE,
+        help="Output WAV sample rate. Default 24000 for flow-matching Vocos; "
+             "use 16000 only with --no-use_flow_matching_decoder (FlexiCodec AR). "
+             "Mismatched rates are corrected automatically.",
+    )
     parser.add_argument("--no_audio", action="store_true",
                         help="Disable audio decoding")
     
@@ -2954,8 +3160,9 @@ def main():
                         help="Torch dtype")
     parser.add_argument("--debug", action="store_true", default=False,
                         help="Run minimal debug examples (TTS, T2S, S2S, S2T, T2T) before interactive mode")
-    parser.add_argument("--debug_audio_path", type=str, default=FLOW_MATCHING_PROMPT_AUDIO_PATH,
-                        help="Audio path used by S2S/S2T examples in --debug mode")
+    parser.add_argument("--debug_audio_path", type=str, default=DEFAULT_FLOW_MATCHING_PROMPT_AUDIO_PATH,
+                        help="Audio path used by S2S/S2T examples in --debug mode "
+                             f"(default: {DEFAULT_FLOW_MATCHING_PROMPT_AUDIO_PATH})")
     
     args = parser.parse_args()
     if not args.model_path and not args.auto_download:
@@ -2965,6 +3172,40 @@ def main():
             args.model_path = str(candidate)
     if not args.model_path and not args.auto_download:
         parser.error("--model_path is required unless --auto_download is set.")
+
+    # Drop missing default asset paths so --auto_download can fill them. When
+    # auto_download is off, missing required assets are a hard error.
+    asset_defaults = {
+        "flexicodec_ckpt": (args.flexicodec_ckpt, True),
+        "flexicodec_config": (args.flexicodec_config, True),
+        "sensevoice_path": (args.sensevoice_path, True),
+        "flow_matching_ckpt": (args.flow_matching_ckpt, args.use_flow_matching_decoder),
+        "flow_matching_vocoder": (
+            args.flow_matching_vocoder,
+            args.use_flow_matching_decoder,
+        ),
+        "flow_matching_prompt_audio": (
+            args.flow_matching_prompt_audio,
+            args.use_flow_matching_decoder,
+        ),
+        "debug_audio_path": (args.debug_audio_path, args.debug),
+    }
+    for name, (path, required) in asset_defaults.items():
+        if path and os.path.exists(path):
+            continue
+        if args.auto_download and name != "debug_audio_path":
+            if path:
+                logger.warning(
+                    f"--{name} not found at {path}; leaving unset for auto-download"
+                )
+            setattr(args, name, None)
+            continue
+        if required:
+            parser.error(
+                f"--{name} not found: {path}. "
+                "Download assets into models/ (see README) or pass --auto_download."
+            )
+        setattr(args, name, None)
     
     # Set random seed
     random.seed(args.seed)

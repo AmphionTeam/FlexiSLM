@@ -1,0 +1,43 @@
+engine:
+  config:
+    checkpoint: stage2_7B  # or stage2_0.5B
+    model_path: models/FlexiSLM-7B-Stage2  # or models/FlexiSLM-0_5B-Stage2
+    qwen25o_encoder_path: models/Qwen2_5-Omni-Audio_Encoder
+    qwen25o_encoder_config_path: models/Qwen2_5-Omni-Audio_Encoder/config.json
+    flexicodec_ckpt_path: models/FlexiCodec/nartts_flexicodec_only.safetensors
+    flexicodec_config_path: models/FlexiCodec/12hz_v1_half_config.yaml
+    sensevoice_path: models/SenseVoiceSmall
+    use_flow_matching_decoder: true
+    flow_matching_ckpt_path: models/FlexiCodec/nartts.safetensors
+    flow_matching_vocoder_path: models/FlexiCodec/vocos_emilia.safetensors
+    flow_matching_prompt_audio_path: examples/input.wav
+    enable_flexible_framerate: true
+    input_framerate: 8.0
+    default_framerate: 8.0
+    decode_audio: true
+    # Vocos flow-matching emits 24 kHz (FlexiCodec AR decode is 16 kHz).
+    output_sample_rate: 24000
+    torch_dtype: bfloat16
+    attn_implementation: flash_attention_2
+
+# input/output paths are resolved relative to the repository root
+input:
+  path: examples/requests.jsonl
+
+output:
+  trace_path: outputs/inference/traces.jsonl
+  audio_dir: outputs/inference/audio
+  error_path: outputs/inference/errors.jsonl
+
+inference:
+  checkpoint: models/FlexiSLM-7B-Stage2  # or models/FlexiSLM-0_5B-Stage2
+  target_framerate_hz: 8.0
+  # Optional: ASR of generated s2s audio (download whisper-large-v3 first).
+  # transcribe_model_path: models/whisper-large-v3
+  # Must match the active decoder: 24000 for flow-matching, 16000 for FlexiCodec AR.
+  output_sample_rate: 24000
+
+runtime:
+  devices: [cuda:0]
+  workers_per_device: 1
+  fail_fast: false

@@ -59,6 +59,62 @@ import loguru
 
 logger = loguru.logger
 
+def _looks_like_hub_repo_id(path: str) -> bool:
+    """True for Hub-style ids such as ``org/name`` that are not local paths."""
+    if not path or path in ("auto",):
+        return False
+    if os.path.isdir(path) or os.path.isfile(path):
+        return False
+    if path.startswith((".", "/", "~")):
+        return False
+    parts = path.split("/")
+    return len(parts) == 2 and all(parts)
+
+
+def _resolve_checkpoint_path(checkpoint: str, *, process_index: int = 0) -> str:
+    """Resolve a local path or Hugging Face Hub repo id to a local directory.
+
+    Hub ids (for example ``FlexiSLM/FlexiSLM-7B-Stage1``) are downloaded into
+    ``models/<repo_name>/`` on first use and reused afterwards.
+    """
+    if checkpoint is None or checkpoint in ("", "auto"):
+        return checkpoint
+    if os.path.isdir(checkpoint) or os.path.isfile(checkpoint):
+        return checkpoint
+    if not _looks_like_hub_repo_id(checkpoint):
+        return checkpoint
+
+    from huggingface_hub import snapshot_download
+
+    local_dir = os.path.join("models", checkpoint.rsplit("/", 1)[-1])
+    weight_markers = (
+        "model.safetensors",
+        "model.safetensors.index.json",
+        "pytorch_model.bin",
+        "pytorch_model.bin.index.json",
+    )
+    if os.path.isdir(local_dir) and any(
+        os.path.isfile(os.path.join(local_dir, name)) for name in weight_markers
+    ):
+        logger.info("Using local Hub checkpoint cache at %s", local_dir)
+        return local_dir
+
+    if process_index == 0:
+        logger.info(
+            "Downloading resume checkpoint from Hugging Face Hub: %s -> %s",
+            checkpoint,
+            local_dir,
+        )
+        snapshot_download(repo_id=checkpoint, local_dir=local_dir)
+    if torch.distributed.is_available() and torch.distributed.is_initialized():
+        torch.distributed.barrier()
+    if not os.path.isdir(local_dir):
+        raise FileNotFoundError(
+            f"Failed to resolve Hub checkpoint {checkpoint!r} to {local_dir}"
+        )
+    return local_dir
+
+
 def _load_state_dict_from_checkpoint(checkpoint: str) -> dict:
     """Load state dict from checkpoint, supporting single-file and sharded Hugging Face formats.
 
@@ -919,6 +975,11 @@ def main():
                 checkpoint = resume_val
             elif last_checkpoint is not None:
                 checkpoint = last_checkpoint
+
+        if isinstance(checkpoint, str) and checkpoint not in ("", "auto"):
+            checkpoint = _resolve_checkpoint_path(
+                checkpoint, process_index=training_args.process_index
+            )
 
         checkpoint_load_mode = str(
             getattr(training_args, "checkpoint_load_mode", "weights_only")

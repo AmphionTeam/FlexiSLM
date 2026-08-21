@@ -761,6 +761,17 @@ class TrainingArguments(transformers.TrainingArguments):
             )
         },
     )
+    webdataset_steps_per_epoch: Optional[int] = field(
+        default=None,
+        metadata={
+            "help": (
+                "Optimizer steps that define one epoch for native WebDataset streams. "
+                "Overrides dataset YAML sampling.steps_per_epoch so each recipe can match "
+                "its GPU count and per_device_train_batch_size. Required for distributed "
+                "training when the dataset YAML leaves steps_per_epoch unset."
+            )
+        },
+    )
 
     def __post_init__(self):
         super().__post_init__()

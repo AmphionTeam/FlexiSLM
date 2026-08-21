@@ -1,5 +1,9 @@
 # VoiceBench/OpenAudioBench audio-QA and LibriSpeech ASR inference manifest.
 # Run with: bash scripts/infer_benchmarks.sh
+#
+# Decoded audio sample rates: flow-matching Vocos = 24 kHz (default);
+# FlexiCodec AR decode = 16 kHz. These jobs set decode_audio=false (text-only),
+# but keep use_flow_matching_decoder=true so enabling audio decode stays correct.
 x-engine: &engine
   engine:
     config:
@@ -9,18 +13,23 @@ x-engine: &engine
       flexicodec_ckpt_path: ${MODEL_ROOT}/FlexiCodec/nartts_flexicodec_only.safetensors
       flexicodec_config_path: ${MODEL_ROOT}/FlexiCodec/12hz_v1_half_config.yaml
       sensevoice_path: ${MODEL_ROOT}/SenseVoiceSmall
-      use_flow_matching_decoder: false
+      use_flow_matching_decoder: true
+      flow_matching_ckpt_path: ${MODEL_ROOT}/FlexiCodec/nartts.safetensors
+      flow_matching_vocoder_path: ${MODEL_ROOT}/FlexiCodec/vocos_emilia.safetensors
+      flow_matching_prompt_audio_path: ${REPO_ROOT}/examples/input.wav
       enable_flexible_framerate: true
       input_framerate: 8.0
       default_framerate: 8.0
       framerate_min: 1.0
       framerate_max: 100.0
       decode_audio: false
+      output_sample_rate: 24000
       torch_dtype: bfloat16
       attn_implementation: flash_attention_2
   inference: &inference
     checkpoint: ${MODEL_ROOT}/FlexiSLM-7B-Stage2
     target_framerate_hz: 8.0
+    output_sample_rate: 24000
   runtime: &runtime
     devices: [cuda:0]
     fail_fast: false

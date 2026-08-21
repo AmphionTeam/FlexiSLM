@@ -1,23 +1,30 @@
 # Paths are relative to the repository root and match README.md.
+# Stage 1: ASR+TTS only. Every physical audio sample contains both asr.json and
+# tts.json; task_policy=all expands it into one ASR and one TTS logical sample.
 dataset_backend: webdataset_stream
 num_mel_bins: 128
 
 dataset:
-  speech2speech:
+  asr_tts:
     ratio: 1.0
     data_format: webdataset_stream
     data_paths:
-      - data/training/FlexiSLM-Data-2M-s2s-compact/data/train-{00000..00242}-of-00243.tar
+      # Exclude train-00355 (only 1,024 samples versus 10,000 elsewhere).
+      - data/training/asrtts_packed_webdataset/data/train-{00000..00354}-of-00356.tar
     webdataset:
-      layout: s2s_pair
+      layout: shared_audio_tasks
+      tasks: [asr, tts]
+      task_policy: all
       audio_extensions: [wav, flac, mp3, m4a, ogg]
       duplicate_member_policy: error
 
 webdataset_runtime:
   sampling:
     mode: finite_padded
-    # ceil(2,425,778 samples / (8 GPUs * 5 samples per GPU))
-    steps_per_epoch: 60645
+    # Selected full shards contain 3,550,000 physical samples → ~6,886,296
+    # valid logical samples after duration filtering.
+    # ceil(6,886,296 / (8 GPUs * 5 samples per GPU))
+    steps_per_epoch: 172158
     seed: 42
     shuffle: true
   shuffle:

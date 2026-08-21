@@ -1,8 +1,37 @@
 # Paths are relative to the repository root and match README.md.
+# Stages 2/3 mixture (shard retention ratios match the internal recipes):
+# - retain a deterministic 50% shard subset for TTS;
+# - retain a separate deterministic 50% shard subset for ASR;
+# - retain all Speech2Speech compact shards for S2S;
+# - repeat WebQuestions+TriviaQA (data_part2_webq_trivia) 3x.
 dataset_backend: webdataset_stream
 num_mel_bins: 128
 
 dataset:
+  tts:
+    ratio: 0.5
+    data_format: webdataset_stream
+    data_paths:
+      - data/training/asrtts_packed_webdataset/data/train-{00000..00355}-of-00356.tar
+    webdataset:
+      layout: shared_audio_tasks
+      tasks: [tts]
+      task_policy: subset
+      audio_extensions: [wav, flac, mp3, m4a, ogg]
+      duplicate_member_policy: error
+
+  asr:
+    ratio: 0.5
+    data_format: webdataset_stream
+    data_paths:
+      - data/training/asrtts_packed_webdataset/data/train-{00000..00355}-of-00356.tar
+    webdataset:
+      layout: shared_audio_tasks
+      tasks: [asr]
+      task_policy: subset
+      audio_extensions: [wav, flac, mp3, m4a, ogg]
+      duplicate_member_policy: error
+
   speech2speech:
     ratio: 1.0
     data_format: webdataset_stream
@@ -13,11 +42,24 @@ dataset:
       audio_extensions: [wav, flac, mp3, m4a, ogg]
       duplicate_member_policy: error
 
+  # Bundled under the same FlexiSLM-Data-2M-s2s-compact download.
+  webq_trivia:
+    ratio: 3.0
+    data_format: webdataset_stream
+    data_paths:
+      - data/training/FlexiSLM-Data-2M-s2s-compact/data_part2_webq_trivia/train-{00000..00008}-of-00009.tar
+    webdataset:
+      layout: s2s_pair
+      audio_extensions: [wav, flac, mp3, m4a, ogg]
+      duplicate_member_policy: error
+
 webdataset_runtime:
   sampling:
     mode: finite_padded
-    # ceil(2,425,778 samples / (8 GPUs * 5 samples per GPU))
-    steps_per_epoch: 60645
+    # ~0.5 ASR + ~0.5 TTS from asrtts, full S2S compact, plus webq_trivia at 3x.
+    # Adjust when changing GPU count or per-device batch size.
+    # ceil(~5.9M + 3x webq_trivia / (8 GPUs * 5 samples per GPU))
+    steps_per_epoch: 146625
     seed: 42
     shuffle: true
   shuffle:

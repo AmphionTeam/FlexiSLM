@@ -319,6 +319,8 @@ FlexiSLM training has three stages:
 2. **Multi-task LoRA fine-tuning.** Train the Talker and input modules while adapting the Thinker with LoRA.
 3. **Full fine-tuning.** Merge the Stage 2 LoRA weights into the Thinker, enable the Talker-to-Thinker connection, and train all model components.
 
+Our released checkpoints are trained with the same settings using 8 A100 GPUs. The configs here are also adapted for 8 A100 GPUs.
+
 ### Download additional checkpoints and dataset
 ```bash
 MODEL_ROOT="$PWD/models"
@@ -337,7 +339,7 @@ hf download Qwen/Qwen2.5-7B-Instruct --local-dir "$MODEL_ROOT/Qwen2.5-7B-Instruc
 hf download Qwen/Qwen2.5-0.5B-Instruct --local-dir "$MODEL_ROOT/Qwen2.5-0.5B-Instruct"
 hf download openai/whisper-large-v3 --local-dir "$MODEL_ROOT/whisper-large-v3"
 
-# S2S Data for Stage 2 and 3
+# S2S Data for Stage 2 and 3 (includes data/ and data_part2_webq_trivia/)
 hf download FlexiSLM/FlexiSLM-Data-2M-s2s-compact \
   --repo-type dataset \
   --local-dir "$TRAIN_DATA_ROOT/FlexiSLM-Data-2M-s2s-compact"
@@ -351,17 +353,53 @@ hf download FlexiSLM/asrtts_packed_webdataset \
 
 ### 1. Data Configuration
 
-The committed recipes use the compact dataset downloaded in [Download additional checkpoints and dataset](#download-additional-checkpoints-and-dataset):
+The committed recipes use the datasets downloaded in [Section: Download additional checkpoints and dataset](#download-additional-checkpoints-and-dataset):
 
-- `config/datasets/train_stage1.yaml` for Stage 1
-- `config/datasets/train_stage2_3.yaml` for Stages 2 and 3
+- `config/datasets/train_stage1.yaml` for Stage 1 (ASR+TTS only)
+- `config/datasets/train_stage2_3.yaml` for Stages 2 and 3 (ASR+TTS + S2S + WebQ/Trivia)
 
-Both point to:
+Stage 1:
 
 ```yaml
 dataset_backend: webdataset_stream
 
 dataset:
+  asr_tts:
+    ratio: 1.0
+    data_format: webdataset_stream
+    data_paths:
+      - data/training/asrtts_packed_webdataset/data/train-{00000..00354}-of-00356.tar
+    webdataset:
+      layout: shared_audio_tasks
+      tasks: [asr, tts]
+      task_policy: all
+```
+
+Stages 2 and 3 (shard retention ratios: TTS 0.5, ASR 0.5, S2S 1.0, WebQ/Trivia 3.0).
+`data_part2_webq_trivia` is included in the same [FlexiSLM-Data-2M-s2s-compact](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-2M-s2s-compact/tree/main/data_part2_webq_trivia) download:
+
+```yaml
+dataset_backend: webdataset_stream
+
+dataset:
+  tts:
+    ratio: 0.5
+    data_format: webdataset_stream
+    data_paths:
+      - data/training/asrtts_packed_webdataset/data/train-{00000..00355}-of-00356.tar
+    webdataset:
+      layout: shared_audio_tasks
+      tasks: [tts]
+      task_policy: subset
+  asr:
+    ratio: 0.5
+    data_format: webdataset_stream
+    data_paths:
+      - data/training/asrtts_packed_webdataset/data/train-{00000..00355}-of-00356.tar
+    webdataset:
+      layout: shared_audio_tasks
+      tasks: [asr]
+      task_policy: subset
   speech2speech:
     ratio: 1.0
     data_format: webdataset_stream
@@ -369,9 +407,16 @@ dataset:
       - data/training/FlexiSLM-Data-2M-s2s-compact/data/train-{00000..00242}-of-00243.tar
     webdataset:
       layout: s2s_pair
+  webq_trivia:
+    ratio: 3.0
+    data_format: webdataset_stream
+    data_paths:
+      - data/training/FlexiSLM-Data-2M-s2s-compact/data_part2_webq_trivia/train-{00000..00008}-of-00009.tar
+    webdataset:
+      layout: s2s_pair
 ```
 
-The provided recipe uses 60,645 batches per epoch, corresponding to 2,425,778 training samples with 8 GPUs and 5 samples per GPU. Adjust `webdataset_runtime.sampling.steps_per_epoch` when changing the GPU count or per-device batch size.
+Adjust `webdataset_runtime.sampling.steps_per_epoch` when changing the GPU count or per-device batch size.
 
 ### 2. Launch Training
 
@@ -382,7 +427,9 @@ Training arguments are stored in YAML files under `config/`; launchers live unde
 | Stage 1 (7B) | `config/train_stage1_7B.yaml` | `scripts/train_stage1_7B.sh` | Qwen2.5-7B base model |
 | Stage 2 (7B) | `config/train_stage2_7B.yaml` | `scripts/train_stage2_7B.sh` | exported Stage 1 checkpoint |
 | Stage 3 (7B) | `config/train_stage3_7B.yaml` | `scripts/train_stage3_7B.sh` | merged Stage 2 checkpoint |
+| Stage 1 (0.5B) | `config/train_stage1_0_5B.yaml` | `scripts/train_stage1_0_5B.sh` | Qwen2.5-0.5B base model |
 | Stage 2 (0.5B) | `config/train_stage2_0_5B.yaml` | `scripts/train_stage2_0_5B.sh` | exported 0.5B Stage 1 checkpoint |
+| Stage 3 (0.5B) | `config/train_stage3_0_5B.yaml` | `scripts/train_stage3_0_5B.sh` | merged 0.5B Stage 2 checkpoint |
 
 Launch each stage after updating its YAML:
 
@@ -392,10 +439,12 @@ bash scripts/train_stage2_7B.sh
 bash scripts/train_stage3_7B.sh
 ```
 
-The 0.5B Stage 2 recipe uses `Qwen2.5-0.5B-Instruct` and a larger per-device batch:
+The 0.5B recipes use `Qwen2.5-0.5B-Instruct` and larger per-device batches:
 
 ```bash
+bash scripts/train_stage1_0_5B.sh
 bash scripts/train_stage2_0_5B.sh
+bash scripts/train_stage3_0_5B.sh
 ```
 
 YAML values can be overridden on the command line:

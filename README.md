@@ -17,7 +17,7 @@ This codebase contains links to our released training data, and full training an
 
 ## News
 
-- **August 21, 2026: ** FlexiSLM is accepted to EMNLP 2026 Main Conference!
+- **August 21, 2026:** FlexiSLM is accepted to EMNLP 2026 Main Conference!
 - **August 20, 2026: Checkpoint release.** We released the [FlexiSLM-7B Stage 2](https://huggingface.co/FlexiSLM/FlexiSLM-7B-Stage2) checkpoint and [FlexiSLM-0.5B Stage 2](https://huggingface.co/FlexiSLM/FlexiSLM-0_5B-Stage2) checkpoint reproduced with this codebase. Please note that this project is in active development. We expect these checkpoints will be overwritten in the coming days as we train for more steps.
 - **August 6, 2026: Data release.** We released [FlexiSLM-Data-4M-s2s](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-4M-s2s), [FlexiSLM-Data-2M-s2s-compact](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-2M-s2s-compact), and [FlexiSLM-Data-5M-t2t](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-5M-t2t).
 - **August 2, 2026: Code release.** We released the FlexiSLM-7B training and inference code.

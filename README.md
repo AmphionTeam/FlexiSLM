@@ -55,6 +55,12 @@ We believe this is one of the largest open-source datasets for spoken language m
 
 Select a released Stage 2 checkpoint with the `checkpoint` flag. The default is **`stage2_7B`**.
 
+Decoded speech sample rates:
+- **Flow-matching Vocos (default, `use_flow_matching_decoder=True`) → 24 kHz**
+- **FlexiCodec AR decode (`use_flow_matching_decoder=False`) → 16 kHz**
+
+Writing waveforms with the wrong rate changes playback speed. Prefer `result["sample_rate"]` when saving.
+
 | Flag | Hugging Face repo | Manual local directory |
 | --- | --- | --- |
 | `stage2_7B` (default) | [FlexiSLM/FlexiSLM-7B-Stage2](https://huggingface.co/FlexiSLM/FlexiSLM-7B-Stage2) | `models/FlexiSLM-7B-Stage2` |
@@ -98,7 +104,9 @@ def save_audio(result, output_path):
         raise RuntimeError("The model did not return decoded audio")
     if torch.is_tensor(waveform):
         waveform = waveform.detach().float().cpu().numpy()
-    sf.write(Path(output_path), waveform.squeeze(), 16_000)
+    # Flow-matching Vocos is 24 kHz; FlexiCodec AR decode is 16 kHz.
+    sample_rate = int(result.get("sample_rate") or 24_000)
+    sf.write(Path(output_path), waveform.squeeze(), sample_rate)
 
 
 # Text-to-speech
@@ -216,12 +224,13 @@ engine:
     checkpoint: stage2_7B  # or stage2_0.5B
     model_path: models/FlexiSLM-7B-Stage2  # or models/FlexiSLM-0_5B-Stage2
     qwen25o_encoder_path: models/Qwen2_5-Omni-Audio_Encoder
-    # ... encoder / FlexiCodec / SenseVoice paths ...
-    use_flow_matching_decoder: false
+    # ... encoder / FlexiCodec / SenseVoice / flow-matching paths ...
+    use_flow_matching_decoder: true
     enable_flexible_framerate: true
     input_framerate: 8.0
     default_framerate: 8.0
     decode_audio: true
+    output_sample_rate: 24000  # Vocos native; use 16000 only for FlexiCodec AR
     torch_dtype: bfloat16
     attn_implementation: flash_attention_2
 
@@ -237,7 +246,7 @@ output:
 inference:
   checkpoint: models/FlexiSLM-7B-Stage2  # or models/FlexiSLM-0_5B-Stage2
   target_framerate_hz: 8.0
-  output_sample_rate: 16000
+  output_sample_rate: 24000
 
 runtime:
   devices: [cuda:0]
@@ -354,9 +363,14 @@ The shared launcher uses Accelerate by default. Stage 3 selects DeepSpeed with `
 
 FlexiSLM uses the bundled [Kimi-Audio-Evalkit](https://github.com/petrichor20211/Kimi-Audio-Evalkit) submodule to evaluate VoiceBench, OpenAudioBench, and LibriSpeech. Inference and scoring are separate. Run all commands below from the FlexiSLM repository root.
 
-A fresh `--recurse-submodules` clone already contains the Evalkit. For an existing clone, initialize it with `git submodule update --init --recursive`. Then install the Evalkit requirements (not needed for training or inference) and download the benchmark data:
+**Use a separate Python environment for Evalkit scoring.** The Evalkit dependency set (see `Kimi-Audio-Evalkit/requirements.txt`) pins packages such as `sacrebleu==1.5.1` and an older PyTorch stack that conflict with FlexiSLM training/inference. Keep your training/inference env (for example `pip install -r requirements.txt`) unchanged, and install Evalkit requirements only in a dedicated env such as `kimi-audio-evalkit` or `eval`.
+
+A fresh `--recurse-submodules` clone already contains the Evalkit. For an existing clone, initialize it with `git submodule update --init --recursive`. Then create/activate the Evalkit env, install its requirements, and download the benchmark data:
 
 ```bash
+# Example: dedicated conda env (do NOT install this into the FlexiSLM train/infer env)
+conda create -n kimi-audio-evalkit python=3.10 -y
+conda activate kimi-audio-evalkit
 pip install -r Kimi-Audio-Evalkit/requirements.txt
 
 BENCHMARK_DATA_ROOT="$PWD/data/benchmarks"
@@ -367,7 +381,10 @@ python Kimi-Audio-Evalkit/data/download_benchmark.py \
 
 ### 1. Build Requests and Run Inference
 
+Build requests and run FlexiSLM inference in your **training/inference** environment (not the Evalkit env):
+
 ```bash
+# activate the FlexiSLM train/infer env first
 python local/build_vb_oab_requests.py \
   --benchmark voicebench \
   --data-root data/benchmarks \
@@ -391,10 +408,12 @@ bash scripts/infer_benchmarks.sh
 
 ### 2. Scoring
 
-Export the DeepSeek API key and run the committed evaluation configuration directly:
+Switch to the **Evalkit** environment, export the DeepSeek API key, and run the committed evaluation configuration:
 
 ```bash
+conda activate kimi-audio-evalkit
 export DEEPSEEK_API_KEY="your_deepseek_api_key"
+export PYTHONPATH="$PWD:$PWD/Kimi-Audio-Evalkit${PYTHONPATH:+:$PYTHONPATH}"
 python -m src.eval config/eval_benchmarks.yaml
 ```
 
@@ -406,7 +425,7 @@ python -m src.eval config/eval_benchmarks.yaml \
   --job librispeech_test-clean
 ```
 
-The committed configuration covers VoiceBench, OpenAudioBench, and LibriSpeech `test-clean`/`test-other` ASR WER. Use `python -m src.eval --help` for all job selection options.
+The committed configuration covers VoiceBench, OpenAudioBench, and LibriSpeech `test-clean`/`test-other` ASR WER. Use `python -m src.eval --help` for all job selection options. LibriSpeech WER scoring does not need `DEEPSEEK_API_KEY`; VoiceBench / OpenAudioBench judge jobs do.
 
 ## Citation
 

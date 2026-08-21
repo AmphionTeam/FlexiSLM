@@ -56,7 +56,7 @@ VOICEBENCH_EVAL_METHOD = {
 
 ASR_PROMPT = "Transcribe the following audio:"
 # FlexiCodec decodes native 16 kHz samples; do not relabel them as 24 kHz.
-DEFAULT_OUTPUT_SAMPLE_RATE = 16_000
+DEFAULT_OUTPUT_SAMPLE_RATE = 24_000  # flow-matching Vocos default; FlexiCodec AR is 16 kHz
 
 
 def _audio_stem(audio_path: str) -> str:

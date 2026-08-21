@@ -7,11 +7,16 @@ engine:
     flexicodec_ckpt_path: models/FlexiCodec/nartts_flexicodec_only.safetensors
     flexicodec_config_path: models/FlexiCodec/12hz_v1_half_config.yaml
     sensevoice_path: models/SenseVoiceSmall
-    use_flow_matching_decoder: false
+    use_flow_matching_decoder: true
+    flow_matching_ckpt_path: models/FlexiCodec/nartts.safetensors
+    flow_matching_vocoder_path: models/FlexiCodec/vocos_emilia.safetensors
+    flow_matching_prompt_audio_path: examples/input.wav
     enable_flexible_framerate: true
     input_framerate: 8.0
     default_framerate: 8.0
     decode_audio: true
+    # Vocos flow-matching emits 24 kHz (FlexiCodec AR decode is 16 kHz).
+    output_sample_rate: 24000
     torch_dtype: bfloat16
     attn_implementation: flash_attention_2
 
@@ -29,7 +34,8 @@ inference:
   target_framerate_hz: 8.0
   # Optional: ASR of generated s2s audio (download whisper-large-v3 first).
   # transcribe_model_path: models/whisper-large-v3
-  output_sample_rate: 16000
+  # Must match the active decoder: 24000 for flow-matching, 16000 for FlexiCodec AR.
+  output_sample_rate: 24000
 
 runtime:
   devices: [cuda:0]

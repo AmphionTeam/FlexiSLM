@@ -16,14 +16,6 @@ Features:
 - Frame rate control for output speech (0.8-1.0)
 """
 
-FLEXICODEC_CKPT_PATH = "/F00120260003/flexislm_project/model/FlexiCodec/nartts_flexicodec_only.safetensors"
-FLEXICODEC_CONFIG_PATH = "/F00120260003/flexislm_project/model/FlexiCodec/12hz_v1_half_config.yaml"
-SENSEVOICE_PATH = "/F00120260003/flexislm_project/model/SenseVoiceSmall"
-FLOW_MATCHING_CKPT_PATH = "/F00120260003/flexislm_project/model/FlexiCodec/nartts.safetensors"
-FLOW_MATCHING_VOCODER_PATH = "/F00120260003/flexislm_project/model/FlexiCodec/vocos_emilia.safetensors"
-FLOW_MATCHING_PROMPT_AUDIO_PATH = "/F00120260003/flexislm_project/FlexiSLM/assets/flexislm_demo_response_audio.wav"
-DEFAULT_OUTPUT_DIR = "/F00120260003/flexislm_project/jiaqi/outputs/debug_inference_flexislm"
-
 # If True, prepend system prompt in dataset format (system block + user block).
 # Default False: only use system message when calling generate_tts.
 USE_SYSTEM_PROMPT = False
@@ -143,9 +135,25 @@ logger = loguru.logger
 
 # Same directory as the README manual `hf download --local-dir "$PWD/models/..."` flow.
 DEFAULT_INFERENCE_DOWNLOAD_DIR = os.path.join(_REPO_ROOT, "models")
-DEFAULT_FLOW_MATCHING_PROMPT_AUDIO_PATH = os.path.join(
-    _REPO_ROOT, "assets", "flexislm_demo_response_audio.wav"
+DEFAULT_FLEXICODEC_CKPT_PATH = os.path.join(
+    DEFAULT_INFERENCE_DOWNLOAD_DIR, "FlexiCodec", "nartts_flexicodec_only.safetensors"
 )
+DEFAULT_FLEXICODEC_CONFIG_PATH = os.path.join(
+    DEFAULT_INFERENCE_DOWNLOAD_DIR, "FlexiCodec", "12hz_v1_half_config.yaml"
+)
+DEFAULT_SENSEVOICE_PATH = os.path.join(
+    DEFAULT_INFERENCE_DOWNLOAD_DIR, "SenseVoiceSmall"
+)
+DEFAULT_FLOW_MATCHING_CKPT_PATH = os.path.join(
+    DEFAULT_INFERENCE_DOWNLOAD_DIR, "FlexiCodec", "nartts.safetensors"
+)
+DEFAULT_FLOW_MATCHING_VOCODER_PATH = os.path.join(
+    DEFAULT_INFERENCE_DOWNLOAD_DIR, "FlexiCodec", "vocos_emilia.safetensors"
+)
+DEFAULT_FLOW_MATCHING_PROMPT_AUDIO_PATH = os.path.join(
+    _REPO_ROOT, "examples", "input.wav"
+)
+DEFAULT_OUTPUT_DIR = os.path.join(_REPO_ROOT, "outputs", "inference")
 DEFAULT_CHECKPOINT = "stage2_7B"
 STAGE2_CHECKPOINTS = {
     "stage2_7B": {
@@ -187,8 +195,14 @@ DEFAULT_INFERENCE_REPOS = {
             "12hz_v1_half_config.yaml",
             "nartts_flexicodec_only.safetensors",
             "nartts.safetensors",
-            "vocos_emilia.safetensors",
         ],
+    },
+    # Vocos is published with DualCodec-TTS, not under jiaqili3/flexicodec.
+    "vocoder": {
+        "repo_id": "amphion/dualcodec-tts",
+        "local_name": "FlexiCodec",
+        "allow_patterns": ["vocos_emilia.safetensors"],
+        "filename": "vocos_emilia.safetensors",
     },
 }
 
@@ -207,6 +221,13 @@ def _has_model_weights(path: Path) -> bool:
 
 def _checkpoint_dir_ready(path: Path) -> bool:
     return path.is_dir() and (path / "config.json").is_file() and _has_model_weights(path)
+
+
+def _sensevoice_dir_ready(path: Path) -> bool:
+    """SenseVoiceSmall uses FunASR layout (model.pt), not HF Transformers weights."""
+    return path.is_dir() and (path / "model.pt").is_file() and (
+        (path / "config.yaml").is_file() or (path / "configuration.json").is_file()
+    )
 
 
 def normalize_checkpoint_name(checkpoint: str) -> str:
@@ -306,7 +327,7 @@ def download_inference_checkpoints(
     if download_sensevoice:
         spec = DEFAULT_INFERENCE_REPOS["sensevoice"]
         local_dir = root / spec["local_name"]
-        if not _checkpoint_dir_ready(local_dir):
+        if not _sensevoice_dir_ready(local_dir):
             _snapshot_download(
                 spec["repo_id"],
                 local_dir,
@@ -321,18 +342,22 @@ def download_inference_checkpoints(
         ckpt_path = local_dir / "nartts_flexicodec_only.safetensors"
         config_path = local_dir / "12hz_v1_half_config.yaml"
         flow_matching_ckpt_path = local_dir / "nartts.safetensors"
-        flow_matching_vocoder_path = local_dir / "vocos_emilia.safetensors"
-        required_files = (
-            ckpt_path,
-            config_path,
-            flow_matching_ckpt_path,
-            flow_matching_vocoder_path,
-        )
-        if not all(path.is_file() for path in required_files):
+        codec_files = (ckpt_path, config_path, flow_matching_ckpt_path)
+        if not all(path.is_file() for path in codec_files):
             _snapshot_download(
                 spec["repo_id"],
                 local_dir,
                 allow_patterns=spec["allow_patterns"],
+                token=token,
+                revision=revision,
+            )
+        vocoder_spec = DEFAULT_INFERENCE_REPOS["vocoder"]
+        flow_matching_vocoder_path = local_dir / vocoder_spec["filename"]
+        if not flow_matching_vocoder_path.is_file():
+            _snapshot_download(
+                vocoder_spec["repo_id"],
+                local_dir,
+                allow_patterns=vocoder_spec["allow_patterns"],
                 token=token,
                 revision=revision,
             )
@@ -2856,25 +2881,31 @@ def main():
         help="Download the selected --checkpoint and auxiliary models from Hugging Face.",
     )
     parser.add_argument("--flexicodec_ckpt", type=str, 
-                        default=FLEXICODEC_CKPT_PATH,
-                        help="Path to FlexiCodec checkpoint")
+                        default=DEFAULT_FLEXICODEC_CKPT_PATH,
+                        help="Path to FlexiCodec checkpoint "
+                             f"(default: {DEFAULT_FLEXICODEC_CKPT_PATH})")
     parser.add_argument("--flexicodec_config", type=str,
-                        default=FLEXICODEC_CONFIG_PATH,
-                        help="Path to FlexiCodec config")
+                        default=DEFAULT_FLEXICODEC_CONFIG_PATH,
+                        help="Path to FlexiCodec config "
+                             f"(default: {DEFAULT_FLEXICODEC_CONFIG_PATH})")
     parser.add_argument("--sensevoice_path", type=str,
-                        default=SENSEVOICE_PATH,
-                        help="Path to SenseVoice model")
+                        default=DEFAULT_SENSEVOICE_PATH,
+                        help="Path to SenseVoice model "
+                             f"(default: {DEFAULT_SENSEVOICE_PATH})")
     
     # Flow matching decoder arguments
     parser.add_argument("-d", "--use_flow_matching_decoder", action="store_true", default=False,
                         help="Use flow matching decoder instead of FlexiCodec decode_from_codes")
-    parser.add_argument("--flow_matching_ckpt", type=str, default=FLOW_MATCHING_CKPT_PATH,
-                        help="Path to flow matching model checkpoint")
-    parser.add_argument("--flow_matching_vocoder", type=str, default=FLOW_MATCHING_VOCODER_PATH,
-                        help="Path to flow matching vocoder checkpoint")
+    parser.add_argument("--flow_matching_ckpt", type=str, default=DEFAULT_FLOW_MATCHING_CKPT_PATH,
+                        help="Path to flow matching model checkpoint "
+                             f"(default: {DEFAULT_FLOW_MATCHING_CKPT_PATH})")
+    parser.add_argument("--flow_matching_vocoder", type=str, default=DEFAULT_FLOW_MATCHING_VOCODER_PATH,
+                        help="Path to flow matching vocoder checkpoint "
+                             f"(default: {DEFAULT_FLOW_MATCHING_VOCODER_PATH})")
     parser.add_argument("--flow_matching_prompt_audio", type=str,
-                        default=FLOW_MATCHING_PROMPT_AUDIO_PATH,
-                        help="Path to prompt audio file for flow matching decoder")
+                        default=DEFAULT_FLOW_MATCHING_PROMPT_AUDIO_PATH,
+                        help="Path to prompt audio file for flow matching decoder "
+                             f"(default: {DEFAULT_FLOW_MATCHING_PROMPT_AUDIO_PATH})")
     parser.add_argument("--flow_matching_n_timesteps", type=int, default=20,
                         help="Number of diffusion timesteps for flow matching")
     parser.add_argument("--flow_matching_cfg", type=float, default=2.0,
@@ -2931,7 +2962,7 @@ def main():
     parser.add_argument("--input_file", type=str, default=None,
                         help="Input JSONL file for batch mode")
     parser.add_argument("--output_dir", type=str, default=DEFAULT_OUTPUT_DIR,
-                        help="Output directory")
+                        help=f"Output directory (default: {DEFAULT_OUTPUT_DIR})")
     parser.add_argument("--output_sample_rate", type=int, default=16000,
                         help="Output audio sample rate (FlexiCodec native: 16000)")
     parser.add_argument("--no_audio", action="store_true",
@@ -2954,8 +2985,9 @@ def main():
                         help="Torch dtype")
     parser.add_argument("--debug", action="store_true", default=False,
                         help="Run minimal debug examples (TTS, T2S, S2S, S2T, T2T) before interactive mode")
-    parser.add_argument("--debug_audio_path", type=str, default=FLOW_MATCHING_PROMPT_AUDIO_PATH,
-                        help="Audio path used by S2S/S2T examples in --debug mode")
+    parser.add_argument("--debug_audio_path", type=str, default=DEFAULT_FLOW_MATCHING_PROMPT_AUDIO_PATH,
+                        help="Audio path used by S2S/S2T examples in --debug mode "
+                             f"(default: {DEFAULT_FLOW_MATCHING_PROMPT_AUDIO_PATH})")
     
     args = parser.parse_args()
     if not args.model_path and not args.auto_download:
@@ -2965,6 +2997,40 @@ def main():
             args.model_path = str(candidate)
     if not args.model_path and not args.auto_download:
         parser.error("--model_path is required unless --auto_download is set.")
+
+    # Drop missing default asset paths so --auto_download can fill them. When
+    # auto_download is off, missing required assets are a hard error.
+    asset_defaults = {
+        "flexicodec_ckpt": (args.flexicodec_ckpt, True),
+        "flexicodec_config": (args.flexicodec_config, True),
+        "sensevoice_path": (args.sensevoice_path, True),
+        "flow_matching_ckpt": (args.flow_matching_ckpt, args.use_flow_matching_decoder),
+        "flow_matching_vocoder": (
+            args.flow_matching_vocoder,
+            args.use_flow_matching_decoder,
+        ),
+        "flow_matching_prompt_audio": (
+            args.flow_matching_prompt_audio,
+            args.use_flow_matching_decoder,
+        ),
+        "debug_audio_path": (args.debug_audio_path, args.debug),
+    }
+    for name, (path, required) in asset_defaults.items():
+        if path and os.path.exists(path):
+            continue
+        if args.auto_download and name != "debug_audio_path":
+            if path:
+                logger.warning(
+                    f"--{name} not found at {path}; leaving unset for auto-download"
+                )
+            setattr(args, name, None)
+            continue
+        if required:
+            parser.error(
+                f"--{name} not found: {path}. "
+                "Download assets into models/ (see README) or pass --auto_download."
+            )
+        setattr(args, name, None)
     
     # Set random seed
     random.seed(args.seed)

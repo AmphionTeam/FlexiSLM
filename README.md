@@ -54,7 +54,7 @@ We believe this is one of the largest open-source datasets for spoken language m
 
 ### 1. Python API (with Automatic downloading)
 
-Set `auto_download=True` to download the default FlexiSLM-7B Stage 2 checkpoint, Qwen2.5-Omni audio encoder, SenseVoice, and FlexiCodec files into `models/` on first run. Later runs reuse the local copies.
+Set `auto_download=True` to download the default FlexiSLM-7B Stage 2 checkpoint, Qwen2.5-Omni audio encoder, SenseVoice, FlexiCodec, flow-matching decoder, and vocoder files into `models/` on first run. Later runs reuse the local copies. Flow-matching decoding is enabled by default and uses `assets/flexislm_demo_response_audio.wav` as its prompt audio.
 
 ```python
 from pathlib import Path
@@ -69,7 +69,10 @@ from src.inference_flexislm import (
 
 config = FlexiSLMInferenceConfig(
     auto_download=True,
-    use_flow_matching_decoder=False,
+    use_flow_matching_decoder=True,
+    flow_matching_prompt_audio_path=str(
+        Path("assets/flexislm_demo_response_audio.wav").resolve()
+    ),
     enable_flexible_framerate=True,
     input_framerate=8.0,
     default_framerate=8.0,
@@ -132,7 +135,12 @@ MODEL_ROOT="$PWD/models"
 hf download FlexiSLM/FlexiSLM-7B-Stage2 --local-dir "$MODEL_ROOT/FlexiSLM-7B-Stage2"
 hf download FlexiSLM/Qwen2_5-Omni-Audio_Encoder --local-dir "$MODEL_ROOT/Qwen2_5-Omni-Audio_Encoder"
 hf download FunAudioLLM/SenseVoiceSmall --local-dir "$MODEL_ROOT/SenseVoiceSmall"
-hf download jiaqili3/flexicodec 12hz_v1_half_config.yaml nartts_flexicodec_only.safetensors --local-dir "$MODEL_ROOT/FlexiCodec"
+hf download jiaqili3/flexicodec \
+  12hz_v1_half_config.yaml \
+  nartts_flexicodec_only.safetensors \
+  nartts.safetensors \
+  vocos_emilia.safetensors \
+  --local-dir "$MODEL_ROOT/FlexiCodec"
 ```
 
 Then point the config at those directories:
@@ -160,7 +168,14 @@ config = FlexiSLMInferenceConfig(
     ),
     flexicodec_config_path=str(model_root / "FlexiCodec/12hz_v1_half_config.yaml"),
     sensevoice_path=str(model_root / "SenseVoiceSmall"),
-    use_flow_matching_decoder=False,
+    use_flow_matching_decoder=True,
+    flow_matching_ckpt_path=str(model_root / "FlexiCodec/nartts.safetensors"),
+    flow_matching_vocoder_path=str(
+        model_root / "FlexiCodec/vocos_emilia.safetensors"
+    ),
+    flow_matching_prompt_audio_path=str(
+        Path("assets/flexislm_demo_response_audio.wav").resolve()
+    ),
     enable_flexible_framerate=True,
     input_framerate=8.0,
     default_framerate=8.0,
@@ -215,7 +230,7 @@ result = engine.generate_from_audio(
 save_audio(result, "s2s.wav")
 ```
 
-A minimal notebook is available at `examples/inference.ipynb`.
+A minimal notebook is available at `examples/inference.ipynb`. The repository also includes `examples/input.wav` (a copy of the demo response audio) for ASR/S2S and `examples/question.wav` (VoiceBench OpenBookQA sample 0) for audio question answering.
 
 ### 3. Batch Inference
 

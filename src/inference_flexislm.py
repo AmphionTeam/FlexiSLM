@@ -129,6 +129,7 @@ from flexicodec.infer import (
 FLEXICODEC_AVAILABLE = True
 
 try:
+    from flexicodec.nar_tts import modeling_voicebox as flexicodec_voicebox
     from flexicodec.nar_tts.modeling_voicebox import VoiceboxWrapper
     from flexicodec.feature_extractors import FBankGen
     FLOW_MATCHING_AVAILABLE = True
@@ -143,6 +144,9 @@ logger = loguru.logger
 
 # Same directory as the README manual `hf download --local-dir "$PWD/models/..."` flow.
 DEFAULT_INFERENCE_DOWNLOAD_DIR = os.path.join(_REPO_ROOT, "models")
+DEFAULT_FLOW_MATCHING_PROMPT_AUDIO_PATH = os.path.join(
+    _REPO_ROOT, "assets", "flexislm_demo_response_audio.wav"
+)
 DEFAULT_INFERENCE_REPOS = {
     "model": {
         "repo_id": "FlexiSLM/FlexiSLM-7B-Stage2",
@@ -162,6 +166,8 @@ DEFAULT_INFERENCE_REPOS = {
         "allow_patterns": [
             "12hz_v1_half_config.yaml",
             "nartts_flexicodec_only.safetensors",
+            "nartts.safetensors",
+            "vocos_emilia.safetensors",
         ],
     },
 }
@@ -274,7 +280,15 @@ def download_inference_checkpoints(
         local_dir = root / spec["local_name"]
         ckpt_path = local_dir / "nartts_flexicodec_only.safetensors"
         config_path = local_dir / "12hz_v1_half_config.yaml"
-        if not ckpt_path.is_file() or not config_path.is_file():
+        flow_matching_ckpt_path = local_dir / "nartts.safetensors"
+        flow_matching_vocoder_path = local_dir / "vocos_emilia.safetensors"
+        required_files = (
+            ckpt_path,
+            config_path,
+            flow_matching_ckpt_path,
+            flow_matching_vocoder_path,
+        )
+        if not all(path.is_file() for path in required_files):
             _snapshot_download(
                 spec["repo_id"],
                 local_dir,
@@ -284,6 +298,8 @@ def download_inference_checkpoints(
             )
         paths["flexicodec_ckpt_path"] = str(ckpt_path)
         paths["flexicodec_config_path"] = str(config_path)
+        paths["flow_matching_ckpt_path"] = str(flow_matching_ckpt_path)
+        paths["flow_matching_vocoder_path"] = str(flow_matching_vocoder_path)
 
     return paths
 
@@ -413,10 +429,10 @@ class FlexiSLMInferenceConfig:
     download_dir: str = DEFAULT_INFERENCE_DOWNLOAD_DIR
     
     # Flow matching decoder configuration
-    use_flow_matching_decoder: bool = False
+    use_flow_matching_decoder: bool = True
     flow_matching_ckpt_path: Optional[str] = None
     flow_matching_vocoder_path: Optional[str] = None
-    flow_matching_prompt_audio_path: Optional[str] = None
+    flow_matching_prompt_audio_path: Optional[str] = DEFAULT_FLOW_MATCHING_PROMPT_AUDIO_PATH
     flow_matching_n_timesteps: int = 15
     flow_matching_cfg: float = 2.0
     flow_matching_rescale_cfg: float = 0.75
@@ -486,7 +502,15 @@ class FlexiSLMInferenceConfig:
                 download_model=not self.model_path,
                 download_encoder=not self.qwen25o_encoder_path,
                 download_flexicodec=not (
-                    self.flexicodec_ckpt_path and self.flexicodec_config_path
+                    self.flexicodec_ckpt_path
+                    and self.flexicodec_config_path
+                    and (
+                        not self.use_flow_matching_decoder
+                        or (
+                            self.flow_matching_ckpt_path
+                            and self.flow_matching_vocoder_path
+                        )
+                    )
                 ),
                 download_sensevoice=not self.sensevoice_path,
             )
@@ -502,6 +526,14 @@ class FlexiSLMInferenceConfig:
                 self.flexicodec_ckpt_path = downloaded["flexicodec_ckpt_path"]
             if not self.flexicodec_config_path:
                 self.flexicodec_config_path = downloaded["flexicodec_config_path"]
+            if not self.flow_matching_ckpt_path:
+                self.flow_matching_ckpt_path = downloaded.get(
+                    "flow_matching_ckpt_path"
+                )
+            if not self.flow_matching_vocoder_path:
+                self.flow_matching_vocoder_path = downloaded.get(
+                    "flow_matching_vocoder_path"
+                )
             if not self.sensevoice_path:
                 self.sensevoice_path = downloaded["sensevoice_path"]
         if self.qwen25o_encoder_path and not self.qwen25o_encoder_config_path:
@@ -840,6 +872,10 @@ class FlexiSLMInference:
             raise ValueError(
                 "Flow matching decoder requires --sensevoice_path."
             )
+        if not self.config.flow_matching_ckpt_path:
+            raise ValueError(
+                "Flow matching decoder requires --flow_matching_ckpt."
+            )
         if not self.config.flow_matching_vocoder_path:
             raise ValueError(
                 "Flow matching decoder requires --flow_matching_vocoder."
@@ -862,13 +898,22 @@ class FlexiSLMInference:
             'time_scheduler': "cos"
         }
         
-        # Load VoiceBox wrapper with local FlexiCodec checkpoint/config to avoid download
-        self.flow_matching_model = VoiceboxWrapper(
-            voicebox_config=voicebox_config,
-            flexicodec_ckpt_path=self.config.flexicodec_ckpt_path,
-            flexicodec_config_path=self.config.flexicodec_config_path,
-            sensevoice_path=self.config.sensevoice_path,
+        # VoiceboxWrapper calls its module-level prepare_model() without forwarding
+        # local paths. Override that call while constructing the wrapper so Python API
+        # inference never falls back to Hugging Face downloads.
+        original_prepare_model = flexicodec_voicebox.prepare_model
+        flexicodec_voicebox.prepare_model = lambda: prepare_model(
+            sensevoice_small_path=self.config.sensevoice_path,
+            device=self.device,
+            ckpt_path=self.config.flexicodec_ckpt_path,
+            config_path=self.config.flexicodec_config_path,
         )
+        try:
+            self.flow_matching_model = VoiceboxWrapper(
+                voicebox_config=voicebox_config,
+            )
+        finally:
+            flexicodec_voicebox.prepare_model = original_prepare_model
         
         # Load checkpoint if provided
         if self.config.flow_matching_ckpt_path:
@@ -901,13 +946,22 @@ class FlexiSLMInference:
         self.flow_matching_model.eval()
         self.flow_matching_model = self.flow_matching_model.to(self.device)
         
-        # Load vocoder
+        # Load vocoder. The third-party module resolves its default Hugging Face
+        # checkpoint at import time, before our explicit vocoder_path is passed.
+        # Temporarily route that default to the configured local file.
         logger.info("Loading vocoder for flow matching decoder...")
         from functools import partial
-        from flexicodec.nar_tts.vocoder_model import (
-            get_vocos_model_spectrogram,
-            mel_to_wav_vocos,
-        )
+        import cached_path as cached_path_module
+
+        original_cached_path = cached_path_module.cached_path
+        cached_path_module.cached_path = lambda _: self.config.flow_matching_vocoder_path
+        try:
+            from flexicodec.nar_tts.vocoder_model import (
+                get_vocos_model_spectrogram,
+                mel_to_wav_vocos,
+            )
+        finally:
+            cached_path_module.cached_path = original_cached_path
 
         vocos_model, _ = get_vocos_model_spectrogram(
             vocoder_path=self.config.flow_matching_vocoder_path,
@@ -933,13 +987,8 @@ class FlexiSLMInference:
             return
         try:
             logger.info(f"Loading prompt audio from: {prompt_path}")
-            prompt_audio, sr = torchaudio.load(prompt_path)
-            
-            # Resample to 16kHz if needed
-            if sr != 16000:
-                resampler = T.Resample(sr, 16000)
-                prompt_audio = resampler(prompt_audio)
-            
+            prompt_audio = self._load_audio(prompt_path)
+
             # Convert to mono if needed
             if prompt_audio.shape[0] > 1:
                 prompt_audio = prompt_audio.mean(dim=0, keepdim=True)
@@ -1830,7 +1879,7 @@ class FlexiSLMInference:
         audio_chunks = result['audio_ids']
         # Decode audio if requested
         audio_output = None
-        if self.config.decode_audio:
+        if self.config.decode_audio and not output_text_only:
             # When using forced speech prompt, use that prompt for flow matching; otherwise use config default
             fm_prompt_path = flow_matching_prompt_audio_path or self.config.flow_matching_prompt_audio_path
             fm_prompt_audio = self.prompt_audio_cache if fm_prompt_path == self.config.flow_matching_prompt_audio_path else None

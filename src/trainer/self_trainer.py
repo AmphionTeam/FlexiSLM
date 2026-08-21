@@ -33,6 +33,8 @@ from transformers import Trainer, TrainerCallback
 from transformers.trainer_utils import EvalLoopOutput, SaveStrategy, seed_worker
 from transformers.utils import is_sagemaker_mp_enabled
 
+from src.task_types import TASK_NAMES
+
 logger = logging.getLogger(__name__)
 logger.setLevel("INFO")
 
@@ -856,9 +858,8 @@ class ATrainer(Trainer):
         self._task_sample_counts = None
 
         metrics = {}
-        task_names = ("asr", "tts", "s2s")
         component_names = ("text_loss", "audio_loss", "length_loss")
-        for task_id, task_name in enumerate(task_names):
+        for task_id, task_name in enumerate(TASK_NAMES):
             component_total = 0.0
             has_tokens = False
             for component_id, component_name in enumerate(component_names):

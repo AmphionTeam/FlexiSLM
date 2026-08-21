@@ -23,6 +23,7 @@ from .pipeline import (
 )
 from .shard_cache import ShardCacheConfig
 from .shard_source import select_shards_by_ratio
+from .types import SHARED_AUDIO_TASKS
 
 
 logger = logging.getLogger(__name__)
@@ -273,9 +274,11 @@ def build_qwen2_webdataset(
         )
         adapter_contexts[source_name] = AdapterContext(
             source_name=source_name,
-            tasks=tuple(web_cfg.get("tasks", ("asr", "tts"))),
+            tasks=tuple(web_cfg.get("tasks", SHARED_AUDIO_TASKS)),
             task_policy=web_cfg.get("task_policy", "all"),
-            task_weights=web_cfg.get("task_weights", {"asr": 1.0, "tts": 1.0}),
+            task_weights=web_cfg.get(
+                "task_weights", {task: 1.0 for task in SHARED_AUDIO_TASKS}
+            ),
             seed=sampling_seed,
             duplicate_member_policy=web_cfg.get("duplicate_member_policy", "error"),
             audio_extension_preference=tuple(

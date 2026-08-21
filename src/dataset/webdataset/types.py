@@ -5,8 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Literal, Optional
 
-TaskType = Literal["s2s", "asr", "tts"]
+TaskType = Literal["s2s", "asr", "tts", "s2tt", "ser", "asc"]
 AudioRole = Literal["user", "assistant"]
+
+AUDIO_INPUT_TEXT_TASKS = ("asr", "s2tt", "ser", "asc")
+SHARED_AUDIO_TASKS = ("asr", "tts", "s2tt", "ser", "asc")
 
 
 @dataclass(frozen=True)

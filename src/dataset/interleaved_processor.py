@@ -644,4 +644,5 @@ class FlexiSampleProcessor:
             "audio_start_id": sample.tokenized["audio_start_id"],
             "audio_end_id": sample.tokenized["audio_end_id"],
             "audio_tag_id": sample.tokenized["audio_tag_id"],
+            "task": sample.canonical.task,
         }

@@ -4,6 +4,9 @@
 
 import torch
 
+from src.task_types import TASK_TO_ID
+
+
 class InterleavedDataCollator:
     def __init__(self, tokenizer, use_omni_token: bool = False):
         self.tokenizer = tokenizer
@@ -28,6 +31,10 @@ class InterleavedDataCollator:
             eos_token_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else 0
 
         # Collect user and assistant turns separately
+        semantic_task_ids = torch.tensor(
+            [TASK_TO_ID.get(sample.get("task"), -1) for sample in batch],
+            dtype=torch.long,
+        )
         user_input_ids = []
         user_audio_tensors = []
         user_turns = []  # Store user turns for later feature extraction
@@ -337,6 +344,7 @@ class InterleavedDataCollator:
             "assistant_audio_features": assistant_padded_audio_features,
             "assistant_audio_features_lens": assistant_audio_features_lens,
             "assistant_has_audio": assistant_has_audio,
+            "semantic_task_ids": semantic_task_ids,
             "audio_start_id": audio_start_id,
             "audio_end_id": audio_end_id,
             "audio_tag_id": audio_tag_id,

@@ -66,7 +66,6 @@ Set `auto_download=True` to download the selected Stage 2 checkpoint (`stage2_7B
 
 ```python
 from pathlib import Path
-
 import soundfile as sf
 import torch
 
@@ -83,9 +82,8 @@ config = FlexiSLMInferenceConfig(
         Path("examples/input.wav").resolve()
     ),
     enable_flexible_framerate=True,
-    input_framerate=8.0,
-    default_framerate=8.0,
-    decode_audio=True,
+    default_input_framerate=8.0,
+    default_output_framerate=8.0,
     torch_dtype="bfloat16",
     attn_implementation="flash_attention_2",
 )
@@ -112,6 +110,7 @@ save_audio(result, "tts.wav")
 result = engine.generate_from_audio(
     audio_path="examples/input.wav",
     text_query="Please transcribe the audio.",
+    input_framerate=8.0,
     framerate=8.0,
     output_text_only=True,
 )
@@ -121,6 +120,7 @@ print(result["text"])
 result = engine.generate_from_audio(
     audio_path="examples/question.wav",
     text_query="",
+    input_framerate=8.0,
     framerate=8.0,
     output_text_only=True,
 )
@@ -130,6 +130,7 @@ print(result["text"])
 result = engine.generate_from_audio(
     audio_path="examples/input.wav",
     text_query="",
+    input_framerate=8.0,
     framerate=8.0,
     output_text_only=False,
 )
@@ -148,7 +149,7 @@ hf download FlexiSLM/FlexiSLM-7B-Stage2 --local-dir "$MODEL_ROOT/FlexiSLM-7B-Sta
 # if you want to run stage2_0.5B
 hf download FlexiSLM/FlexiSLM-0_5B-Stage2 --local-dir "$MODEL_ROOT/FlexiSLM-0_5B-Stage2"
 
-# these files are shared by both sizes
+# required files
 hf download FlexiSLM/Qwen2_5-Omni-Audio_Encoder --local-dir "$MODEL_ROOT/Qwen2_5-Omni-Audio_Encoder"
 hf download FunAudioLLM/SenseVoiceSmall --local-dir "$MODEL_ROOT/SenseVoiceSmall"
 hf download jiaqili3/flexicodec \
@@ -185,9 +186,8 @@ config = FlexiSLMInferenceConfig(
         Path("examples/input.wav").resolve()
     ),
     enable_flexible_framerate=True,
-    input_framerate=8.0,
-    default_framerate=8.0,
-    decode_audio=True,
+    default_input_framerate=8.0,
+    default_output_framerate=8.0,
     torch_dtype="bfloat16",
     attn_implementation="flash_attention_2",
 )
@@ -219,9 +219,8 @@ engine:
     # ... encoder / FlexiCodec / SenseVoice / flow-matching paths ...
     use_flow_matching_decoder: true
     enable_flexible_framerate: true
-    input_framerate: 8.0
-    default_framerate: 8.0
-    decode_audio: true
+    default_input_framerate: 8.0
+    default_output_framerate: 8.0
     output_sample_rate: 24000
     torch_dtype: bfloat16
     attn_implementation: flash_attention_2

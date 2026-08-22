@@ -2,8 +2,9 @@
 # Run with: bash scripts/infer_benchmarks.sh
 #
 # Decoded audio sample rates: flow-matching Vocos = 24 kHz (default);
-# FlexiCodec AR decode = 16 kHz. These jobs set decode_audio=false (text-only),
-# but keep use_flow_matching_decoder=true so enabling audio decode stays correct.
+# FlexiCodec AR decode = 16 kHz. ASR/audio-QA tasks use output_text_only
+# (no waveform decode); keep use_flow_matching_decoder=true so enabling
+# audio decode for other tasks stays correct.
 x-engine: &engine
   engine:
     config:
@@ -18,11 +19,10 @@ x-engine: &engine
       flow_matching_vocoder_path: ${MODEL_ROOT}/FlexiCodec/vocos_emilia.safetensors
       flow_matching_prompt_audio_path: ${REPO_ROOT}/examples/input.wav
       enable_flexible_framerate: true
-      input_framerate: 8.0
-      default_framerate: 8.0
+      default_input_framerate: 8.0
+      default_output_framerate: 8.0
       framerate_min: 1.0
       framerate_max: 100.0
-      decode_audio: false
       output_sample_rate: 24000
       torch_dtype: bfloat16
       attn_implementation: flash_attention_2

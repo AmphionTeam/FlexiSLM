@@ -664,8 +664,8 @@ class FlexiSLMInferenceConfig:
     # Frame rate control
     framerate_min: float = 0.8
     framerate_max: float = 1.0
-    default_framerate: float = 1.0  # Default framerate for output generation
-    input_framerate: float = 1.0  # Framerate for encoding: <=1.0 = merging_threshold, >1.0 = target_rate (Hz)
+    default_output_framerate: float = 1.0  # Default framerate for output generation
+    default_input_framerate: float = 1.0  # Default for encoding: <=1.0 = merging_threshold, >1.0 = target_rate (Hz)
     # Native encoder rate for target-rate merging. None = 25.0 Hz for Qwen2.5-Omni, 12.5 Hz otherwise.
     input_base_rate: Optional[float] = None
     dynamic_merging: bool = True  # If True and target_rate set: search threshold to hit target; else uniform merge
@@ -691,7 +691,6 @@ class FlexiSLMInferenceConfig:
     # Default 24 kHz matches use_flow_matching_decoder=True (Vocos).
     # __post_init__ forces 16 kHz when flow matching is disabled (FlexiCodec AR).
     output_sample_rate: int = FLOW_MATCHING_OUTPUT_SAMPLE_RATE
-    decode_audio: bool = True
     
     # Model loading
     use_lora: bool = False
@@ -859,7 +858,10 @@ class FlexiSLMInference:
         logger.info(f"Using audio input mode: {input_mode}")
         logger.info(f"Flexible framerate enabled: {getattr(self.model.config, 'enable_flexible_framerate', False)}")
         logger.info(f"talker_embed_v2: {getattr(self.model.config, 'talker_embed_v2', False)}")
-        logger.info(f"Input framerate: {self.config.input_framerate}, Output framerate: {self.config.default_framerate}")
+        logger.info(
+            f"Input framerate: {self.config.default_input_framerate}, "
+            f"Output framerate: {self.config.default_output_framerate}"
+        )
     
     def _load_model(self) -> Tuple[ParallelS2SForCausalLM, AutoTokenizer]:
         """Load the Interleaved S2S model and tokenizer.
@@ -1960,19 +1962,19 @@ class FlexiSLMInference:
             input_ids1: Second part of tokenized prompt (assistant prefix)
             audio_input: Optional audio input tensor
             framerate: Output frame rate for audio generation (0.8-1.0)
-            input_framerate: Input frame rate for encoding audio (0.8-1.0). If None, uses config.input_framerate
+            input_framerate: Input frame rate for encoding audio. If None, uses config.default_input_framerate
             force_text_ids: Optional tensor of token IDs to force for text generation
-            output_text_only: If True, generate only text tokens (no audio)
+            output_text_only: If True, generate only text tokens (no audio waveform decode)
         """
-        framerate = framerate or self.config.default_framerate
+        framerate = framerate or self.config.default_output_framerate
         # framerate = max(self.config.framerate_min, min(self.config.framerate_max, framerate))
         
         # If input_framerate is not provided at call time, fall back to the
-        # configured default (config.input_framerate) instead of a hardcoded 1.0
+        # configured default (config.default_input_framerate) instead of a hardcoded 1.0
         input_framerate = (
             input_framerate
             if input_framerate is not None
-            else self.config.input_framerate
+            else self.config.default_input_framerate
         )
 
         input_ids = input_ids.to(self.device)
@@ -2115,9 +2117,9 @@ class FlexiSLMInference:
             print("DEBUG [inference_flexislm.generate]: text_output is empty!")
             
         audio_chunks = result['audio_ids']
-        # Decode audio if requested
+        # Decode audio unless text-only output was requested
         audio_output = None
-        if self.config.decode_audio and not output_text_only:
+        if not output_text_only:
             # When using forced speech prompt, use that prompt for flow matching; otherwise use config default
             fm_prompt_path = flow_matching_prompt_audio_path or self.config.flow_matching_prompt_audio_path
             fm_prompt_audio = self.prompt_audio_cache if fm_prompt_path == self.config.flow_matching_prompt_audio_path else None
@@ -2234,7 +2236,7 @@ class FlexiSLMInference:
             text_query: Text query to accompany the audio
             history: Conversation history
             framerate: Frame rate for output audio
-            input_framerate: Frame rate for encoding input audio (0.8-1.0). If None, uses config.input_framerate
+            input_framerate: Frame rate for encoding input audio. If None, uses config.default_input_framerate
             
         Returns:
             Dict with generated text, audio, and updated history
@@ -2339,7 +2341,9 @@ class FlexiSLMInference:
             # sentence = text_normalize(sentence)
             # sentence = sentence.lower()
             if prompt_audio_path and os.path.exists(prompt_audio_path):
-                extracted = self._extract_prompt_audio_tokens(prompt_audio_path, framerate or self.config.default_framerate)
+                extracted = self._extract_prompt_audio_tokens(
+                    prompt_audio_path, framerate or self.config.default_output_framerate
+                )
                 if extracted is not None:
                     force_audio_ids, force_length_ids = extracted
                     logger.info(f"TTS prompting: using {len(force_audio_ids)} prompt audio tokens")
@@ -2710,7 +2714,7 @@ def run_interactive_mode(engine: FlexiSLMInference, args):
                 if framerate_cmd == 'show':
                     print(f"\nCurrent framerates:")
                     print(f"  Output framerate: {current_framerate}")
-                    print(f"  Input framerate: {engine.config.input_framerate}")
+                    print(f"  Input framerate: {engine.config.default_input_framerate}")
                     print(f"  Range: [{engine.config.framerate_min}, {engine.config.framerate_max}]")
                 else:
                     try:
@@ -2728,8 +2732,8 @@ def run_interactive_mode(engine: FlexiSLMInference, args):
                 try:
                     new_rate = float(user_input[3:])
                     if engine.config.framerate_min <= new_rate <= engine.config.framerate_max:
-                        engine.config.input_framerate = new_rate
-                        print(f"Input frame rate set to: {engine.config.input_framerate}")
+                        engine.config.default_input_framerate = new_rate
+                        print(f"Input frame rate set to: {engine.config.default_input_framerate}")
                     else:
                         print(f"Invalid frame rate. Range: [{engine.config.framerate_min}, {engine.config.framerate_max}]")
                 except ValueError:
@@ -3092,11 +3096,12 @@ def main():
     
     # Frame rate control
     parser.add_argument("--framerate", type=float, default=12.5,
-                        help="Default frame rate for output audio generation in Hz when >1.0")
+                        help="Default output frame rate in Hz when >1.0 (config.default_output_framerate)")
     parser.add_argument("--input_framerate", type=float, default=12.5,
-                        help="Input framerate: <=1.0 = merging_threshold, >1.0 = target_rate in Hz (e.g. 12.5)")
+                        help="Default input framerate: <=1.0 = merging_threshold, >1.0 = target_rate in Hz "
+                             "(config.default_input_framerate)")
     parser.add_argument("--input_base_rate", type=float, default=None,
-                        help="Base frame rate in Hz for target-rate merging (when input_framerate > 1.0). "
+                        help="Base frame rate in Hz for target-rate merging (when default_input_framerate > 1.0). "
                              "Default: 25.0 for Qwen2.5-Omni, 12.5 otherwise")
     parser.add_argument("--no_dynamic_merging", action="store_true",
                         help="Use uniform merging instead of dynamic threshold search when target_rate is set")
@@ -3140,8 +3145,6 @@ def main():
              "use 16000 only with --no-use_flow_matching_decoder (FlexiCodec AR). "
              "Mismatched rates are corrected automatically.",
     )
-    parser.add_argument("--no_audio", action="store_true",
-                        help="Disable audio decoding")
     
     # System prompt arguments
     parser.add_argument("-s", "--system_prompt_type", type=str, default="interleaved",
@@ -3243,8 +3246,8 @@ def main():
         # use_sensevoice_feature will be read from model config during model loading
         framerate_min=args.framerate_min,
         framerate_max=args.framerate_max,
-        default_framerate=args.framerate,
-        input_framerate=args.input_framerate,
+        default_output_framerate=args.framerate,
+        default_input_framerate=args.input_framerate,
         input_base_rate=args.input_base_rate,
         dynamic_merging=not args.no_dynamic_merging,
         enable_flexible_framerate=args.enable_flexible_framerate,
@@ -3257,7 +3260,6 @@ def main():
         length_temperature=args.length_temperature,
         length_top_k=args.length_top_k,
         output_sample_rate=args.output_sample_rate,
-        decode_audio=not args.no_audio,
         torch_dtype=args.torch_dtype,
         system_prompt=system_prompt,
         use_flow_matching_decoder=args.use_flow_matching_decoder,

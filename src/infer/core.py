@@ -391,7 +391,7 @@ def _target_framerate(
     if value is None:
         value = metadata.get("target_framerate_hz")
     if value is None:
-        value = getattr(getattr(engine, "config", None), "default_framerate", None)
+        value = getattr(getattr(engine, "config", None), "default_output_framerate", None)
     return float(value) if value is not None else None
 
 

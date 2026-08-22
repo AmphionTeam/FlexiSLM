@@ -54,7 +54,7 @@ We believe this is one of the largest open-source datasets for spoken language m
 
 Use the `checkpoint` flag to select an inference checkpoint. The default is **`stage2_7B`**.
 
-| Flag | Hugging Face repo | Manual local directory |
+| Flag | Hugging Face repo | Will be downloaded to |
 | --- | --- | --- |
 | `stage2_7B` (default) | [FlexiSLM/FlexiSLM-7B-Stage2](https://huggingface.co/FlexiSLM/FlexiSLM-7B-Stage2) | `models/FlexiSLM-7B-Stage2` |
 | `stage2_0.5B` | [FlexiSLM/FlexiSLM-0_5B-Stage2](https://huggingface.co/FlexiSLM/FlexiSLM-0_5B-Stage2) | `models/FlexiSLM-0_5B-Stage2` |
@@ -295,26 +295,24 @@ hf download FlexiSLM/asrtts_packed_webdataset \
 
 ```
 
-### 2. Data Configuration
+### 2. Launch Training
 
-The committed recipes use the datasets downloaded in [Section: Download additional checkpoints and dataset](#1-download-additional-checkpoints-and-dataset):
+Training recipes set `report_to: swanlab`. Before launching, export your SwanLab API key in the shell:
 
-- `config/datasets/train_stage1.yaml` for Stage 1 (ASR+TTS only)
-- `config/datasets/train_stage2_3.yaml` for Stages 2 and 3 (ASR+TTS + S2S + WebQ/Trivia; shard retention ratios TTS 0.5, ASR 0.5, S2S 1.0, WebQ/Trivia 3.0). `data_part2_webq_trivia` is included in the same [FlexiSLM-Data-2M-s2s-compact](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-2M-s2s-compact/tree/main/data_part2_webq_trivia) download.
-
-Each training recipe sets `webdataset_steps_per_epoch` for an 8-GPU launch at that recipe's `per_device_train_batch_size`. Recompute it when changing the GPU count or batch size: `ceil(logical_samples / (num_gpus * per_device_train_batch_size))`.
-### 3. Launch Training
+```bash
+export SWANLAB_API_KEY="your_swanlab_api_key"
+```
 
 Training arguments are stored in YAML files under `config/`; launchers live under `scripts/`:
 
-| Stage | Configuration | Launcher | Initialization |
-| --- | --- | --- | --- |
-| Stage 1 (7B) | `config/train_stage1_7B.yaml` | `scripts/train_stage1_7B.sh` | Qwen2.5-7B base model |
-| Stage 2 (7B) | `config/train_stage2_7B.yaml` | `scripts/train_stage2_7B.sh` | released Stage 1 ([Hub](https://huggingface.co/FlexiSLM/FlexiSLM-7B-Stage1)) |
-| Stage 3 (7B) | `config/train_stage3_7B.yaml` | `scripts/train_stage3_7B.sh` | merged Stage 2 checkpoint |
-| Stage 1 (0.5B) | `config/train_stage1_0_5B.yaml` | `scripts/train_stage1_0_5B.sh` | Qwen2.5-0.5B base model |
-| Stage 2 (0.5B) | `config/train_stage2_0_5B.yaml` | `scripts/train_stage2_0_5B.sh` | released Stage 1 ([Hub](https://huggingface.co/FlexiSLM/FlexiSLM-0_5B-Stage1)) |
-| Stage 3 (0.5B) | `config/train_stage3_0_5B.yaml` | `scripts/train_stage3_0_5B.sh` | merged 0.5B Stage 2 checkpoint |
+| Stage | Configuration | Data config | Launcher | Initialization |
+| --- | --- | --- | --- | --- |
+| Stage 1 (7B) | `config/train_stage1_7B.yaml` | `config/datasets/train_stage1.yaml` | `scripts/train_stage1_7B.sh` | Qwen2.5-7B base model |
+| Stage 2 (7B) | `config/train_stage2_7B.yaml` | `config/datasets/train_stage2_3.yaml` | `scripts/train_stage2_7B.sh` | released Stage 1 ([Hub](https://huggingface.co/FlexiSLM/FlexiSLM-7B-Stage1)) |
+| Stage 3 (7B) | `config/train_stage3_7B.yaml` | `config/datasets/train_stage2_3.yaml` | `scripts/train_stage3_7B.sh` | merged Stage 2 checkpoint |
+| Stage 1 (0.5B) | `config/train_stage1_0_5B.yaml` | `config/datasets/train_stage1.yaml` | `scripts/train_stage1_0_5B.sh` | Qwen2.5-0.5B base model |
+| Stage 2 (0.5B) | `config/train_stage2_0_5B.yaml` | `config/datasets/train_stage2_3.yaml` | `scripts/train_stage2_0_5B.sh` | released Stage 1 ([Hub](https://huggingface.co/FlexiSLM/FlexiSLM-0_5B-Stage1)) |
+| Stage 3 (0.5B) | `config/train_stage3_0_5B.yaml` | `config/datasets/train_stage2_3.yaml` | `scripts/train_stage3_0_5B.sh` | merged 0.5B Stage 2 checkpoint |
 
 Stage 2 sets `resume_from_checkpoint` to the released Stage 1 Hub repo (downloaded into `models/` if missing). Launch each stage after updating its YAML:
 

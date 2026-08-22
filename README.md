@@ -19,7 +19,7 @@ FlexiSLM is the first spoken language model that supports *dynamic* and *control
 ## News
 
 - **August 21, 2026:** FlexiSLM is accepted to EMNLP 2026 Main Conference!
-- **August 20, 2026: Checkpoint release.** We released the [FlexiSLM-7B Stage 2](https://huggingface.co/FlexiSLM/FlexiSLM-7B-Stage2) checkpoint and [FlexiSLM-0.5B Stage 2](https://huggingface.co/FlexiSLM/FlexiSLM-0_5B-Stage2) checkpoint reproduced with this codebase. Please note that this project is in active development. We expect these checkpoints will be overwritten in the coming days as we train for more steps.
+- **August 20, 2026: Checkpoint release.** We released the [FlexiSLM-7B Stage 2](https://huggingface.co/FlexiSLM/FlexiSLM-7B-Stage2) checkpoint and [FlexiSLM-0.5B Stage 2](https://huggingface.co/FlexiSLM/FlexiSLM-0_5B-Stage2) checkpoint reproduced with this codebase.
 - **August 6, 2026: Data release.** We released [FlexiSLM-Data-4M-s2s](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-4M-s2s), [FlexiSLM-Data-2M-s2s-compact](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-2M-s2s-compact), and [FlexiSLM-Data-5M-t2t](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-5M-t2t).
 - **August 2, 2026: Code release.** We released the FlexiSLM-7B training and inference code.
 
@@ -38,7 +38,7 @@ pip install -r requirements.txt
 - [Evaluation with Kimi-Audio-Evalkit](#evaluation-with-kimi-audio-evalkit)
 - [Citation](#citation)
 - [Acknowledgements](#acknowledgements)
-- [Appendix: Project File Structure](#appendix-project-structure)
+- [Project File Structure](#project-structure)
 
 ## FlexiSLM-Data Details
 
@@ -446,7 +446,7 @@ If you find our work useful, please consider citing:
 
 This project is licensed under the MIT License.
 
-## Appendix: Project Structure
+## Project Structure
 If you want to understand the project structure, you can refer to the following:
 ```text
 FlexiSLM/

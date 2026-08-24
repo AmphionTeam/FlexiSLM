@@ -207,8 +207,6 @@ def _drop_incompatible_state_dict_tensors(model, state_dict: dict) -> list:
 def _validate_weights_only_transfer_components(
     model,
     state_dict: dict,
-    *,
-    reinitialize_input_merging_transformer: bool = False,
 ) -> dict:
     """Require complete Stage 1 components while allowing a separately initialized backbone.
 
@@ -221,8 +219,6 @@ def _validate_weights_only_transfer_components(
     counts = {}
 
     for component, prefixes in _REQUIRED_TRANSFER_COMPONENTS.items():
-        if component == "input_merging_transformer" and reinitialize_input_merging_transformer:
-            continue
         expected = _keys_with_prefixes(target_keys, prefixes)
         provided = _keys_with_prefixes(source_keys, prefixes)
         if component == "talker_model":
@@ -1035,22 +1031,6 @@ def main():
             )
 
         if checkpoint is not None and checkpoint_load_mode == "weights_only":
-            initial_merging_state = None
-            should_reinitialize_merging = bool(
-                getattr(training_args, "reinitialize_input_merging_transformer", False)
-            )
-            if should_reinitialize_merging:
-                merging_module = getattr(model, "input_merging_transformer", None)
-                if merging_module is None:
-                    raise ValueError(
-                        "reinitialize_input_merging_transformer=True requires "
-                        "model.input_merging_transformer"
-                    )
-                initial_merging_state = {
-                    name: tensor.detach().cpu().clone()
-                    for name, tensor in merging_module.state_dict().items()
-                }
-
             # Support single-file and sharded Hugging Face checkpoints
             if os.path.isdir(checkpoint):
                 state_dict = _load_state_dict_from_checkpoint(checkpoint)
@@ -1083,7 +1063,6 @@ def main():
             transfer_counts = _validate_weights_only_transfer_components(
                 model,
                 state_dict,
-                reinitialize_input_merging_transformer=should_reinitialize_merging,
             )
             logger.info(
                 "Validated weights_only transfer components from {}: {}",
@@ -1093,16 +1072,6 @@ def main():
                 ),
             )
             load_result = model.load_state_dict(state_dict, strict=False, assign=True)
-            if initial_merging_state is not None:
-                model.input_merging_transformer.load_state_dict(
-                    initial_merging_state, strict=True, assign=True
-                )
-                logger.info(
-                    "Restored fresh Stage 2 input_merging_transformer initialization "
-                    "after loading exported model checkpoint %s",
-                    checkpoint,
-                )
-                initial_merging_state = None
 
             missing_keys = set(load_result.missing_keys)
             unexpected_keys = set(load_result.unexpected_keys)

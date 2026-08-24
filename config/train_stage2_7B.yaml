@@ -12,8 +12,6 @@ freeze_llm: false
 freeze_talker: false
 only_train_talker: false
 only_train_modules: "input_merging_transformer,talker_model,llm_lora"
-# Continue training the Stage 1 v2 frame merger instead of reinitializing it.
-reinitialize_input_merging_transformer: false
 
 # Audio encoder and codec
 use_sensevoice_feature: false

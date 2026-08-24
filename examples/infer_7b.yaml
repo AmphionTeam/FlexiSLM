@@ -12,9 +12,8 @@ engine:
     flow_matching_vocoder_path: models/FlexiCodec/vocos_emilia.safetensors
     flow_matching_prompt_audio_path: examples/input.wav
     enable_flexible_framerate: true
-    input_framerate: 8.0
-    default_framerate: 8.0
-    decode_audio: true
+    default_input_framerate: 8.0
+    default_output_framerate: 8.0
     # Vocos flow-matching emits 24 kHz (FlexiCodec AR decode is 16 kHz).
     output_sample_rate: 24000
     torch_dtype: bfloat16

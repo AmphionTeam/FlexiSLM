@@ -18,7 +18,11 @@ export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
 # Required for torchcodec + conda-forge FFmpeg/OpenVINO (CXXABI_1.3.15).
 # shellcheck source=scripts/prepend_conda_lib.sh
 source "${SCRIPT_DIR}/prepend_conda_lib.sh"
-export SWANLAB_API_KEY="${SWANLAB_API_KEY:-}"  # Set your key in environment; do not hard-code secrets.
+# SwanLab 0.6 treats an empty API-key variable as an actual credential and
+# ignores saved login state, so leave it unset unless the caller provided one.
+if [[ -z "${SWANLAB_API_KEY:-}" ]]; then
+    unset SWANLAB_API_KEY
+fi
 
 # Create SwanLab global state directory before distributed workers start.
 # Older swankit versions race here when several ranks import it concurrently.

@@ -5,7 +5,6 @@
 [![dataset](https://img.shields.io/badge/Data-yellow?logo=huggingface&logoColor=white)](https://huggingface.co/FlexiSLM/datasets)
 [![model](https://img.shields.io/badge/Models-green?logo=huggingface&logoColor=white)](https://huggingface.co/FlexiSLM/models)
 [![WeChat Blog](https://img.shields.io/badge/WeChat-Blog-07C160?logo=wechat&logoColor=white)](https://mp.weixin.qq.com/s/pno08CK1dXinIfbvt-v5dg)
-[![Presentation Video](https://img.shields.io/badge/Presentation-Video-8A2BE2)](https://jiaqili3.github.io/assets/videos/showcase_video.mp4)
 
 ## Overview
 
@@ -19,7 +18,7 @@ FlexiSLM is the first spoken language model that supports *dynamic* and *control
 ## News
 
 - **August 21, 2026:** FlexiSLM is accepted to EMNLP 2026 Main Conference!
-- **August 20, 2026: Checkpoint release.** We released the [FlexiSLM-7B Stage 2](https://huggingface.co/FlexiSLM/FlexiSLM-7B-Stage2) checkpoint and [FlexiSLM-0.5B Stage 2](https://huggingface.co/FlexiSLM/FlexiSLM-0_5B-Stage2) checkpoint reproduced with this codebase. Please note that this project is in active development. We expect these checkpoints will be overwritten in the coming days as we train for more steps.
+- **August 20, 2026: Checkpoint release.** We released the [FlexiSLM-7B Stage 2](https://huggingface.co/FlexiSLM/FlexiSLM-7B-Stage2) checkpoint and [FlexiSLM-0.5B Stage 2](https://huggingface.co/FlexiSLM/FlexiSLM-0_5B-Stage2) checkpoint reproduced with this codebase.
 - **August 6, 2026: Data release.** We released [FlexiSLM-Data-4M-s2s](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-4M-s2s), [FlexiSLM-Data-2M-s2s-compact](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-2M-s2s-compact), and [FlexiSLM-Data-5M-t2t](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-5M-t2t).
 - **August 2, 2026: Code release.** We released the FlexiSLM-7B training and inference code.
 
@@ -38,7 +37,7 @@ pip install -r requirements.txt
 - [Evaluation with Kimi-Audio-Evalkit](#evaluation-with-kimi-audio-evalkit)
 - [Citation](#citation)
 - [Acknowledgements](#acknowledgements)
-- [Appendix: Project File Structure](#appendix-project-structure)
+- [Project File Structure](#project-structure)
 
 ## FlexiSLM-Data Details
 
@@ -53,15 +52,9 @@ We believe this is one of the largest open-source datasets for spoken language m
 
 ## Inference
 
-Select a released Stage 2 checkpoint with the `checkpoint` flag. The default is **`stage2_7B`**.
+Use the `checkpoint` flag to select an inference checkpoint. The default is **`stage2_7B`**.
 
-Decoded speech sample rates:
-- **Flow-matching Vocos (default, `use_flow_matching_decoder=True`) → 24 kHz**
-- **FlexiCodec AR decode (`use_flow_matching_decoder=False`) → 16 kHz**
-
-Writing waveforms with the wrong rate changes playback speed. Prefer `result["sample_rate"]` when saving.
-
-| Flag | Hugging Face repo | Manual local directory |
+| Flag | Hugging Face repo | Will be downloaded to |
 | --- | --- | --- |
 | `stage2_7B` (default) | [FlexiSLM/FlexiSLM-7B-Stage2](https://huggingface.co/FlexiSLM/FlexiSLM-7B-Stage2) | `models/FlexiSLM-7B-Stage2` |
 | `stage2_0.5B` | [FlexiSLM/FlexiSLM-0_5B-Stage2](https://huggingface.co/FlexiSLM/FlexiSLM-0_5B-Stage2) | `models/FlexiSLM-0_5B-Stage2` |
@@ -72,7 +65,6 @@ Set `auto_download=True` to download the selected Stage 2 checkpoint (`stage2_7B
 
 ```python
 from pathlib import Path
-
 import soundfile as sf
 import torch
 
@@ -89,9 +81,8 @@ config = FlexiSLMInferenceConfig(
         Path("examples/input.wav").resolve()
     ),
     enable_flexible_framerate=True,
-    input_framerate=8.0,
-    default_framerate=8.0,
-    decode_audio=True,
+    default_input_framerate=8.0,
+    default_output_framerate=8.0,
     torch_dtype="bfloat16",
     attn_implementation="flash_attention_2",
 )
@@ -104,15 +95,13 @@ def save_audio(result, output_path):
         raise RuntimeError("The model did not return decoded audio")
     if torch.is_tensor(waveform):
         waveform = waveform.detach().float().cpu().numpy()
-    # Flow-matching Vocos is 24 kHz; FlexiCodec AR decode is 16 kHz.
-    sample_rate = int(result.get("sample_rate") or 24_000)
-    sf.write(Path(output_path), waveform.squeeze(), sample_rate)
+    sf.write(Path(output_path), waveform.squeeze(), 24_000)
 
 
 # Text-to-speech
 result = engine.generate_tts(
-    sentence="FlexiSLM supports controllable speech generation.",
-    framerate=8.0,
+    sentence="This is a test sentence.",
+    output_framerate=8.0,
 )
 save_audio(result, "tts.wav")
 
@@ -120,7 +109,8 @@ save_audio(result, "tts.wav")
 result = engine.generate_from_audio(
     audio_path="examples/input.wav",
     text_query="Please transcribe the audio.",
-    framerate=8.0,
+    input_framerate=8.0,
+    output_framerate=8.0,
     output_text_only=True,
 )
 print(result["text"])
@@ -129,7 +119,8 @@ print(result["text"])
 result = engine.generate_from_audio(
     audio_path="examples/question.wav",
     text_query="",
-    framerate=8.0,
+    input_framerate=8.0,
+    output_framerate=8.0,
     output_text_only=True,
 )
 print(result["text"])
@@ -138,7 +129,8 @@ print(result["text"])
 result = engine.generate_from_audio(
     audio_path="examples/input.wav",
     text_query="",
-    framerate=8.0,
+    input_framerate=8.0,
+    output_framerate=8.0,
     output_text_only=False,
 )
 save_audio(result, "s2s.wav")
@@ -156,7 +148,7 @@ hf download FlexiSLM/FlexiSLM-7B-Stage2 --local-dir "$MODEL_ROOT/FlexiSLM-7B-Sta
 # if you want to run stage2_0.5B
 hf download FlexiSLM/FlexiSLM-0_5B-Stage2 --local-dir "$MODEL_ROOT/FlexiSLM-0_5B-Stage2"
 
-# these files are shared by both sizes
+# required files
 hf download FlexiSLM/Qwen2_5-Omni-Audio_Encoder --local-dir "$MODEL_ROOT/Qwen2_5-Omni-Audio_Encoder"
 hf download FunAudioLLM/SenseVoiceSmall --local-dir "$MODEL_ROOT/SenseVoiceSmall"
 hf download jiaqili3/flexicodec \
@@ -193,9 +185,8 @@ config = FlexiSLMInferenceConfig(
         Path("examples/input.wav").resolve()
     ),
     enable_flexible_framerate=True,
-    input_framerate=8.0,
-    default_framerate=8.0,
-    decode_audio=True,
+    default_input_framerate=8.0,
+    default_output_framerate=8.0,
     torch_dtype="bfloat16",
     attn_implementation="flash_attention_2",
 )
@@ -227,10 +218,9 @@ engine:
     # ... encoder / FlexiCodec / SenseVoice / flow-matching paths ...
     use_flow_matching_decoder: true
     enable_flexible_framerate: true
-    input_framerate: 8.0
-    default_framerate: 8.0
-    decode_audio: true
-    output_sample_rate: 24000  # Vocos native; use 16000 only for FlexiCodec AR
+    default_input_framerate: 8.0
+    default_output_framerate: 8.0
+    output_sample_rate: 24000
     torch_dtype: bfloat16
     attn_implementation: flash_attention_2
 
@@ -282,8 +272,6 @@ TRAIN_DATA_ROOT="$PWD/data/training"
 BENCHMARK_DATA_ROOT="$PWD/data/benchmarks"
 
 # Previously downloaded in inference guide
-hf download FlexiSLM/FlexiSLM-7B-Stage2 --local-dir "$MODEL_ROOT/FlexiSLM-7B-Stage2"
-hf download FlexiSLM/FlexiSLM-0_5B-Stage2 --local-dir "$MODEL_ROOT/FlexiSLM-0_5B-Stage2"
 hf download FlexiSLM/Qwen2_5-Omni-Audio_Encoder --local-dir "$MODEL_ROOT/Qwen2_5-Omni-Audio_Encoder"
 hf download FunAudioLLM/SenseVoiceSmall --local-dir "$MODEL_ROOT/SenseVoiceSmall"
 hf download jiaqili3/flexicodec 12hz_v1_half_config.yaml nartts_flexicodec_only.safetensors --local-dir "$MODEL_ROOT/FlexiCodec"
@@ -305,26 +293,24 @@ hf download FlexiSLM/asrtts_packed_webdataset \
 
 ```
 
-### 2. Data Configuration
+### 2. Launch Training
 
-The committed recipes use the datasets downloaded in [Section: Download additional checkpoints and dataset](#1-download-additional-checkpoints-and-dataset):
+Training recipes set `report_to: swanlab`. Before launching, export your SwanLab API key in the shell:
 
-- `config/datasets/train_stage1.yaml` for Stage 1 (ASR+TTS only)
-- `config/datasets/train_stage2_3.yaml` for Stages 2 and 3 (ASR+TTS + S2S + WebQ/Trivia; shard retention ratios TTS 0.5, ASR 0.5, S2S 1.0, WebQ/Trivia 3.0). `data_part2_webq_trivia` is included in the same [FlexiSLM-Data-2M-s2s-compact](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-2M-s2s-compact/tree/main/data_part2_webq_trivia) download.
-
-Each training recipe sets `webdataset_steps_per_epoch` for an 8-GPU launch at that recipe's `per_device_train_batch_size`. Recompute it when changing the GPU count or batch size: `ceil(logical_samples / (num_gpus * per_device_train_batch_size))`.
-### 3. Launch Training
+```bash
+export SWANLAB_API_KEY="your_swanlab_api_key"
+```
 
 Training arguments are stored in YAML files under `config/`; launchers live under `scripts/`:
 
-| Stage | Configuration | Launcher | Initialization |
-| --- | --- | --- | --- |
-| Stage 1 (7B) | `config/train_stage1_7B.yaml` | `scripts/train_stage1_7B.sh` | Qwen2.5-7B base model |
-| Stage 2 (7B) | `config/train_stage2_7B.yaml` | `scripts/train_stage2_7B.sh` | released Stage 1 ([Hub](https://huggingface.co/FlexiSLM/FlexiSLM-7B-Stage1)) |
-| Stage 3 (7B) | `config/train_stage3_7B.yaml` | `scripts/train_stage3_7B.sh` | merged Stage 2 checkpoint |
-| Stage 1 (0.5B) | `config/train_stage1_0_5B.yaml` | `scripts/train_stage1_0_5B.sh` | Qwen2.5-0.5B base model |
-| Stage 2 (0.5B) | `config/train_stage2_0_5B.yaml` | `scripts/train_stage2_0_5B.sh` | released Stage 1 ([Hub](https://huggingface.co/FlexiSLM/FlexiSLM-0_5B-Stage1)) |
-| Stage 3 (0.5B) | `config/train_stage3_0_5B.yaml` | `scripts/train_stage3_0_5B.sh` | merged 0.5B Stage 2 checkpoint |
+| Stage | Configuration | Data config | Launcher | Initialization |
+| --- | --- | --- | --- | --- |
+| Stage 1 (7B) | `config/train_stage1_7B.yaml` | `config/datasets/train_stage1.yaml` | `scripts/train_stage1_7B.sh` | Qwen2.5-7B base model |
+| Stage 2 (7B) | `config/train_stage2_7B.yaml` | `config/datasets/train_stage2_3.yaml` | `scripts/train_stage2_7B.sh` | released Stage 1 ([Hub](https://huggingface.co/FlexiSLM/FlexiSLM-7B-Stage1)) |
+| Stage 3 (7B) | `config/train_stage3_7B.yaml` | `config/datasets/train_stage2_3.yaml` | `scripts/train_stage3_7B.sh` | merged Stage 2 checkpoint |
+| Stage 1 (0.5B) | `config/train_stage1_0_5B.yaml` | `config/datasets/train_stage1.yaml` | `scripts/train_stage1_0_5B.sh` | Qwen2.5-0.5B base model |
+| Stage 2 (0.5B) | `config/train_stage2_0_5B.yaml` | `config/datasets/train_stage2_3.yaml` | `scripts/train_stage2_0_5B.sh` | released Stage 1 ([Hub](https://huggingface.co/FlexiSLM/FlexiSLM-0_5B-Stage1)) |
+| Stage 3 (0.5B) | `config/train_stage3_0_5B.yaml` | `config/datasets/train_stage2_3.yaml` | `scripts/train_stage3_0_5B.sh` | merged 0.5B Stage 2 checkpoint |
 
 Stage 2 sets `resume_from_checkpoint` to the released Stage 1 Hub repo (downloaded into `models/` if missing). Launch each stage after updating its YAML:
 
@@ -451,7 +437,7 @@ If you find our work useful, please consider citing:
 
 This project is licensed under the MIT License.
 
-## Appendix: Project Structure
+## Project Structure
 If you want to understand the project structure, you can refer to the following:
 ```text
 FlexiSLM/

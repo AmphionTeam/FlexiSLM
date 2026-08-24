@@ -714,15 +714,6 @@ class TrainingArguments(transformers.TrainingArguments):
             )
         },
     )
-    reinitialize_input_merging_transformer: bool = field(
-        default=False,
-        metadata={
-            "help": (
-                "Keep the freshly initialized input_merging_transformer after a weights_only "
-                "checkpoint load instead of restoring that component's checkpoint weights."
-            )
-        },
-    )
     combine_proj_learning_rate: Optional[float] = field(
         default=None,
         metadata={

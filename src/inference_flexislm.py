@@ -2141,6 +2141,20 @@ class FlexiSLMInference:
             "avg_input_framerate": avg_input_framerate,
             "sample_rate": int(self.config.output_sample_rate),
         }
+
+    def _resolve_output_framerate(
+        self,
+        output_framerate: Optional[float] = None,
+        framerate: Optional[float] = None,
+    ) -> Optional[float]:
+        """Prefer ``output_framerate``; ``framerate`` remains a backward-compatible alias."""
+        if (
+            output_framerate is not None
+            and framerate is not None
+            and output_framerate != framerate
+        ):
+            raise ValueError("Pass only one of output_framerate or framerate")
+        return output_framerate if output_framerate is not None else framerate
     
     @torch.no_grad()
     def generate_from_text(
@@ -2148,6 +2162,7 @@ class FlexiSLMInference:
         text_input: str,
         history: str = "",
         framerate: Optional[float] = None,
+        output_framerate: Optional[float] = None,
         input_framerate: Optional[float] = None,
         force_text_ids: Optional[torch.Tensor] = None,
         force_audio_ids: Optional[torch.Tensor] = None,
@@ -2162,7 +2177,7 @@ class FlexiSLMInference:
         Args:
             text_input: Text input
             history: Conversation history
-            framerate: Frame rate for output audio
+            output_framerate: Frame rate for output audio. ``framerate`` is a deprecated alias.
             input_framerate: Frame rate for encoding input audio (not used for text-only input)
             force_text_ids: Optional tensor of token IDs to force for text generation [L]
             use_system_prompt: If True, prepend TTS system prompt. If None, uses global USE_SYSTEM_PROMPT.
@@ -2171,6 +2186,7 @@ class FlexiSLMInference:
         Returns:
             Dict with generated text, audio_ids, and updated history
         """
+        framerate = self._resolve_output_framerate(output_framerate, framerate)
         # Determine if assistant should have audio based on output_text_only flag
         assistant_has_audio = not output_text_only
         
@@ -2225,6 +2241,7 @@ class FlexiSLMInference:
         text_query: str = "",
         history: str = "",
         framerate: Optional[float] = None,
+        output_framerate: Optional[float] = None,
         input_framerate: Optional[float] = None,
         output_text_only: bool = False,
     ) -> Dict:
@@ -2235,12 +2252,13 @@ class FlexiSLMInference:
             audio_path: Path to input audio file
             text_query: Text query to accompany the audio
             history: Conversation history
-            framerate: Frame rate for output audio
+            output_framerate: Frame rate for output audio. ``framerate`` is a deprecated alias.
             input_framerate: Frame rate for encoding input audio. If None, uses config.default_input_framerate
             
         Returns:
             Dict with generated text, audio, and updated history
         """
+        framerate = self._resolve_output_framerate(output_framerate, framerate)
         # if framerate == 1.0:
         #     # override framerate to 0.99
         #     framerate = 0.99
@@ -2299,6 +2317,7 @@ class FlexiSLMInference:
         self,
         sentence: str,
         framerate: Optional[float] = None,
+        output_framerate: Optional[float] = None,
         input_framerate: Optional[float] = None,
         system_prompt: Optional[str] = None,
         force_text_ids: Optional[torch.Tensor] = None,
@@ -2312,7 +2331,7 @@ class FlexiSLMInference:
         
         Args:
             sentence: The sentence to speak
-            framerate: Frame rate for output audio
+            output_framerate: Frame rate for output audio. ``framerate`` is a deprecated alias.
             input_framerate: Frame rate for encoding input audio (not used for TTS, kept for API consistency)
             system_prompt: Optional custom system prompt (defaults to TTS system prompt)
             force_text_ids: Optional tensor of token IDs to force for text generation [L]
@@ -2326,6 +2345,7 @@ class FlexiSLMInference:
         Returns:
             Dict with generated text, audio, audio_ids, length_ids, and other metadata
         """
+        framerate = self._resolve_output_framerate(output_framerate, framerate)
         tts_system_prompt = ""
         from src.processor.constants import text_normalize
         # sentence = text_normalize(sentence)

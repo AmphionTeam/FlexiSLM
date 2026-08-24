@@ -101,7 +101,7 @@ def save_audio(result, output_path):
 # Text-to-speech
 result = engine.generate_tts(
     sentence="This is a test sentence.",
-    framerate=8.0,
+    output_framerate=8.0,
 )
 save_audio(result, "tts.wav")
 
@@ -110,7 +110,7 @@ result = engine.generate_from_audio(
     audio_path="examples/input.wav",
     text_query="Please transcribe the audio.",
     input_framerate=8.0,
-    framerate=8.0,
+    output_framerate=8.0,
     output_text_only=True,
 )
 print(result["text"])
@@ -120,7 +120,7 @@ result = engine.generate_from_audio(
     audio_path="examples/question.wav",
     text_query="",
     input_framerate=8.0,
-    framerate=8.0,
+    output_framerate=8.0,
     output_text_only=True,
 )
 print(result["text"])
@@ -130,7 +130,7 @@ result = engine.generate_from_audio(
     audio_path="examples/input.wav",
     text_query="",
     input_framerate=8.0,
-    framerate=8.0,
+    output_framerate=8.0,
     output_text_only=False,
 )
 save_audio(result, "s2s.wav")

@@ -431,14 +431,11 @@ Numbers below use the same DeepSeek judge setup as the guide above. For FlexiSLM
 If you find our work useful, please consider citing:
 
 ```bibtex
-@misc{li2026flexislmdynamiccontrollableframe,
-      title={FlexiSLM: A Dynamic and Controllable Frame Rate Spoken Language Model},
-      author={Jiaqi Li and Chaoren Wang and Xiaohai Tian and Mingjie Chen and Xinyu Liang and Xu Li and Yufan Lin and Junwen Qiu and Jun Zhang and Lu Lu and Haizhou Li and Zhizheng Wu},
-      year={2026},
-      eprint={2606.31247},
-      archivePrefix={arXiv},
-      primaryClass={cs.SD},
-      url={https://arxiv.org/abs/2606.31247},
+@article{li2026flexislm,
+  title={FlexiSLM: A Spoken Language Model with Dynamic and Controllable Frame Rates},
+  author={Li, Jiaqi and Wang, Chaoren and Tian, Xiaohai and Chen, Mingjie and Liang, Xinyu and Li, Xu and Lin, Yufan and Qiu, Junwen and Zhang, Jun and Lu, Lu and others},
+  journal={arXiv preprint arXiv:2606.31247},
+  year={2026}
 }
 ```
 

@@ -50,7 +50,7 @@ use_learnable_audio_boundary: true
 use_lora: false
 
 # Data
-dataset_name: config/datasets/train_stage1.yaml
+dataset_name: config/datasets/train_stage1_asr.yaml
 
 # Training
 do_train: true

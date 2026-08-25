@@ -1,10 +1,12 @@
-# VoiceBench/OpenAudioBench audio-QA and LibriSpeech ASR inference manifest.
-# Run with: bash scripts/infer_benchmarks.sh
+# VoiceBench/OpenAudioBench s2s and LibriSpeech ASR at 12.5 Hz.
+# Run with:
+#   CONFIG=config/infer_benchmarks_12_5hz.yaml bash scripts/infer_benchmarks.sh
+# GPUs come from CUDA_VISIBLE_DEVICES (or all nvidia devices); the launcher
+# sets runtime.devices per job — do not set devices here.
 #
-# Decoded audio sample rates: flow-matching Vocos = 24 kHz (default);
-# FlexiCodec AR decode = 16 kHz. ASR/audio-QA tasks use output_text_only
-# (no waveform decode); keep use_flow_matching_decoder=true so enabling
-# audio decode for other tasks stays correct.
+# VoiceBench / OpenAudioBench are s2s (24 kHz flow-matching WAVs + Whisper
+# ASR of the generated speech). LibriSpeech remains ASR (text only).
+# MMSU and OpenBookQA are omitted.
 x-engine: &engine
   engine:
     config:
@@ -19,8 +21,8 @@ x-engine: &engine
       flow_matching_vocoder_path: ${MODEL_ROOT}/FlexiCodec/vocos_emilia.safetensors
       flow_matching_prompt_audio_path: ${REPO_ROOT}/examples/input.wav
       enable_flexible_framerate: true
-      default_input_framerate: 8.0
-      default_output_framerate: 8.0
+      default_input_framerate: 12.5
+      default_output_framerate: 12.5
       framerate_min: 1.0
       framerate_max: 100.0
       output_sample_rate: 24000
@@ -28,43 +30,22 @@ x-engine: &engine
       attn_implementation: flash_attention_2
   inference: &inference
     checkpoint: ${MODEL_ROOT}/FlexiSLM-7B-Stage2
-    target_framerate_hz: 8.0
+    transcribe_model_path: ${TRANSCRIBE_MODEL_PATH}
+    target_framerate_hz: 12.5
     output_sample_rate: 24000
   runtime: &runtime
-    devices: [cuda:0]
     fail_fast: false
 
 jobs:
-  - name: mmsu
-    config:
-      <<: *engine
-      input:
-        path: ${REPO_ROOT}/outputs/evaluation/requests/voicebench/mmsu_requests.jsonl
-      output:
-        trace_path: ${REPO_ROOT}/outputs/evaluation/traces/mmsu/traces.jsonl
-        error_path: ${LOG_ROOT}/mmsu/errors.jsonl
-      inference: *inference
-      runtime: *runtime
-
-  - name: openbookqa
-    config:
-      <<: *engine
-      input:
-        path: ${REPO_ROOT}/outputs/evaluation/requests/voicebench/openbookqa_requests.jsonl
-      output:
-        trace_path: ${REPO_ROOT}/outputs/evaluation/traces/openbookqa/traces.jsonl
-        error_path: ${LOG_ROOT}/openbookqa/errors.jsonl
-      inference: *inference
-      runtime: *runtime
-
   - name: sd-qa
     config:
       <<: *engine
       input:
         path: ${REPO_ROOT}/outputs/evaluation/requests/voicebench/sd-qa_requests.jsonl
       output:
-        trace_path: ${REPO_ROOT}/outputs/evaluation/traces/sd-qa/traces.jsonl
-        error_path: ${LOG_ROOT}/sd-qa/errors.jsonl
+        trace_path: ${REPO_ROOT}/outputs/evaluation/traces/12_5hz/sd-qa/traces.jsonl
+        audio_dir: ${REPO_ROOT}/outputs/evaluation/traces/12_5hz/sd-qa/audio
+        error_path: ${LOG_ROOT}/12_5hz/sd-qa/errors.jsonl
       inference: *inference
       runtime: *runtime
 
@@ -74,8 +55,9 @@ jobs:
       input:
         path: ${REPO_ROOT}/outputs/evaluation/requests/voicebench/advbench_requests.jsonl
       output:
-        trace_path: ${REPO_ROOT}/outputs/evaluation/traces/advbench/traces.jsonl
-        error_path: ${LOG_ROOT}/advbench/errors.jsonl
+        trace_path: ${REPO_ROOT}/outputs/evaluation/traces/12_5hz/advbench/traces.jsonl
+        audio_dir: ${REPO_ROOT}/outputs/evaluation/traces/12_5hz/advbench/audio
+        error_path: ${LOG_ROOT}/12_5hz/advbench/errors.jsonl
       inference: *inference
       runtime: *runtime
 
@@ -85,8 +67,9 @@ jobs:
       input:
         path: ${REPO_ROOT}/outputs/evaluation/requests/voicebench/ifeval_requests.jsonl
       output:
-        trace_path: ${REPO_ROOT}/outputs/evaluation/traces/ifeval/traces.jsonl
-        error_path: ${LOG_ROOT}/ifeval/errors.jsonl
+        trace_path: ${REPO_ROOT}/outputs/evaluation/traces/12_5hz/ifeval/traces.jsonl
+        audio_dir: ${REPO_ROOT}/outputs/evaluation/traces/12_5hz/ifeval/audio
+        error_path: ${LOG_ROOT}/12_5hz/ifeval/errors.jsonl
       inference: *inference
       runtime: *runtime
 
@@ -96,8 +79,9 @@ jobs:
       input:
         path: ${REPO_ROOT}/outputs/evaluation/requests/voicebench/alpacaeval_full_requests.jsonl
       output:
-        trace_path: ${REPO_ROOT}/outputs/evaluation/traces/alpacaeval_full/traces.jsonl
-        error_path: ${LOG_ROOT}/alpacaeval_full/errors.jsonl
+        trace_path: ${REPO_ROOT}/outputs/evaluation/traces/12_5hz/alpacaeval_full/traces.jsonl
+        audio_dir: ${REPO_ROOT}/outputs/evaluation/traces/12_5hz/alpacaeval_full/audio
+        error_path: ${LOG_ROOT}/12_5hz/alpacaeval_full/errors.jsonl
       inference: *inference
       runtime: *runtime
 
@@ -107,8 +91,9 @@ jobs:
       input:
         path: ${REPO_ROOT}/outputs/evaluation/requests/voicebench/commoneval_requests.jsonl
       output:
-        trace_path: ${REPO_ROOT}/outputs/evaluation/traces/commoneval/traces.jsonl
-        error_path: ${LOG_ROOT}/commoneval/errors.jsonl
+        trace_path: ${REPO_ROOT}/outputs/evaluation/traces/12_5hz/commoneval/traces.jsonl
+        audio_dir: ${REPO_ROOT}/outputs/evaluation/traces/12_5hz/commoneval/audio
+        error_path: ${LOG_ROOT}/12_5hz/commoneval/errors.jsonl
       inference: *inference
       runtime: *runtime
 
@@ -118,8 +103,9 @@ jobs:
       input:
         path: ${REPO_ROOT}/outputs/evaluation/requests/openaudiobench/OpenAudioBench_requests.jsonl
       output:
-        trace_path: ${REPO_ROOT}/outputs/evaluation/traces/OpenAudioBench/traces.jsonl
-        error_path: ${LOG_ROOT}/OpenAudioBench/errors.jsonl
+        trace_path: ${REPO_ROOT}/outputs/evaluation/traces/12_5hz/OpenAudioBench/traces.jsonl
+        audio_dir: ${REPO_ROOT}/outputs/evaluation/traces/12_5hz/OpenAudioBench/audio
+        error_path: ${LOG_ROOT}/12_5hz/OpenAudioBench/errors.jsonl
       inference: *inference
       runtime: *runtime
 
@@ -129,8 +115,8 @@ jobs:
       input:
         path: ${REPO_ROOT}/outputs/evaluation/requests/librispeech/test-clean_requests.jsonl
       output:
-        trace_path: ${REPO_ROOT}/outputs/evaluation/traces/librispeech/test-clean/traces.jsonl
-        error_path: ${LOG_ROOT}/librispeech/test-clean/errors.jsonl
+        trace_path: ${REPO_ROOT}/outputs/evaluation/traces/12_5hz/librispeech/test-clean/traces.jsonl
+        error_path: ${LOG_ROOT}/12_5hz/librispeech/test-clean/errors.jsonl
       inference: *inference
       runtime: *runtime
 
@@ -140,7 +126,7 @@ jobs:
       input:
         path: ${REPO_ROOT}/outputs/evaluation/requests/librispeech/test-other_requests.jsonl
       output:
-        trace_path: ${REPO_ROOT}/outputs/evaluation/traces/librispeech/test-other/traces.jsonl
-        error_path: ${LOG_ROOT}/librispeech/test-other/errors.jsonl
+        trace_path: ${REPO_ROOT}/outputs/evaluation/traces/12_5hz/librispeech/test-other/traces.jsonl
+        error_path: ${LOG_ROOT}/12_5hz/librispeech/test-other/errors.jsonl
       inference: *inference
       runtime: *runtime

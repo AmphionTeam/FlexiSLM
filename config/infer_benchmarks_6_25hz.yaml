@@ -1,0 +1,132 @@
+# VoiceBench/OpenAudioBench s2s and LibriSpeech ASR at 6.25 Hz.
+# Run with:
+#   CONFIG=config/infer_benchmarks_6_25hz.yaml bash scripts/infer_benchmarks.sh
+# GPUs come from CUDA_VISIBLE_DEVICES (or all nvidia devices); the launcher
+# sets runtime.devices per job — do not set devices here.
+#
+# VoiceBench / OpenAudioBench are s2s (24 kHz flow-matching WAVs + Whisper
+# ASR of the generated speech). LibriSpeech remains ASR (text only).
+# MMSU and OpenBookQA are omitted.
+x-engine: &engine
+  engine:
+    config:
+      model_path: ${MODEL_ROOT}/FlexiSLM-7B-Stage2
+      qwen25o_encoder_path: ${MODEL_ROOT}/Qwen2_5-Omni-Audio_Encoder
+      qwen25o_encoder_config_path: ${MODEL_ROOT}/Qwen2_5-Omni-Audio_Encoder/config.json
+      flexicodec_ckpt_path: ${MODEL_ROOT}/FlexiCodec/nartts_flexicodec_only.safetensors
+      flexicodec_config_path: ${MODEL_ROOT}/FlexiCodec/12hz_v1_half_config.yaml
+      sensevoice_path: ${MODEL_ROOT}/SenseVoiceSmall
+      use_flow_matching_decoder: true
+      flow_matching_ckpt_path: ${MODEL_ROOT}/FlexiCodec/nartts.safetensors
+      flow_matching_vocoder_path: ${MODEL_ROOT}/FlexiCodec/vocos_emilia.safetensors
+      flow_matching_prompt_audio_path: ${REPO_ROOT}/examples/input.wav
+      enable_flexible_framerate: true
+      default_input_framerate: 6.25
+      default_output_framerate: 6.25
+      framerate_min: 1.0
+      framerate_max: 100.0
+      output_sample_rate: 24000
+      torch_dtype: bfloat16
+      attn_implementation: flash_attention_2
+  inference: &inference
+    checkpoint: ${MODEL_ROOT}/FlexiSLM-7B-Stage2
+    transcribe_model_path: ${TRANSCRIBE_MODEL_PATH}
+    target_framerate_hz: 6.25
+    output_sample_rate: 24000
+  runtime: &runtime
+    fail_fast: false
+
+jobs:
+  - name: sd-qa
+    config:
+      <<: *engine
+      input:
+        path: ${REPO_ROOT}/outputs/evaluation/requests/voicebench/sd-qa_requests.jsonl
+      output:
+        trace_path: ${REPO_ROOT}/outputs/evaluation/traces/6_25hz/sd-qa/traces.jsonl
+        audio_dir: ${REPO_ROOT}/outputs/evaluation/traces/6_25hz/sd-qa/audio
+        error_path: ${LOG_ROOT}/6_25hz/sd-qa/errors.jsonl
+      inference: *inference
+      runtime: *runtime
+
+  - name: advbench
+    config:
+      <<: *engine
+      input:
+        path: ${REPO_ROOT}/outputs/evaluation/requests/voicebench/advbench_requests.jsonl
+      output:
+        trace_path: ${REPO_ROOT}/outputs/evaluation/traces/6_25hz/advbench/traces.jsonl
+        audio_dir: ${REPO_ROOT}/outputs/evaluation/traces/6_25hz/advbench/audio
+        error_path: ${LOG_ROOT}/6_25hz/advbench/errors.jsonl
+      inference: *inference
+      runtime: *runtime
+
+  - name: ifeval
+    config:
+      <<: *engine
+      input:
+        path: ${REPO_ROOT}/outputs/evaluation/requests/voicebench/ifeval_requests.jsonl
+      output:
+        trace_path: ${REPO_ROOT}/outputs/evaluation/traces/6_25hz/ifeval/traces.jsonl
+        audio_dir: ${REPO_ROOT}/outputs/evaluation/traces/6_25hz/ifeval/audio
+        error_path: ${LOG_ROOT}/6_25hz/ifeval/errors.jsonl
+      inference: *inference
+      runtime: *runtime
+
+  - name: alpacaeval_full
+    config:
+      <<: *engine
+      input:
+        path: ${REPO_ROOT}/outputs/evaluation/requests/voicebench/alpacaeval_full_requests.jsonl
+      output:
+        trace_path: ${REPO_ROOT}/outputs/evaluation/traces/6_25hz/alpacaeval_full/traces.jsonl
+        audio_dir: ${REPO_ROOT}/outputs/evaluation/traces/6_25hz/alpacaeval_full/audio
+        error_path: ${LOG_ROOT}/6_25hz/alpacaeval_full/errors.jsonl
+      inference: *inference
+      runtime: *runtime
+
+  - name: commoneval
+    config:
+      <<: *engine
+      input:
+        path: ${REPO_ROOT}/outputs/evaluation/requests/voicebench/commoneval_requests.jsonl
+      output:
+        trace_path: ${REPO_ROOT}/outputs/evaluation/traces/6_25hz/commoneval/traces.jsonl
+        audio_dir: ${REPO_ROOT}/outputs/evaluation/traces/6_25hz/commoneval/audio
+        error_path: ${LOG_ROOT}/6_25hz/commoneval/errors.jsonl
+      inference: *inference
+      runtime: *runtime
+
+  - name: OpenAudioBench
+    config:
+      <<: *engine
+      input:
+        path: ${REPO_ROOT}/outputs/evaluation/requests/openaudiobench/OpenAudioBench_requests.jsonl
+      output:
+        trace_path: ${REPO_ROOT}/outputs/evaluation/traces/6_25hz/OpenAudioBench/traces.jsonl
+        audio_dir: ${REPO_ROOT}/outputs/evaluation/traces/6_25hz/OpenAudioBench/audio
+        error_path: ${LOG_ROOT}/6_25hz/OpenAudioBench/errors.jsonl
+      inference: *inference
+      runtime: *runtime
+
+  - name: librispeech_test-clean
+    config:
+      <<: *engine
+      input:
+        path: ${REPO_ROOT}/outputs/evaluation/requests/librispeech/test-clean_requests.jsonl
+      output:
+        trace_path: ${REPO_ROOT}/outputs/evaluation/traces/6_25hz/librispeech/test-clean/traces.jsonl
+        error_path: ${LOG_ROOT}/6_25hz/librispeech/test-clean/errors.jsonl
+      inference: *inference
+      runtime: *runtime
+
+  - name: librispeech_test-other
+    config:
+      <<: *engine
+      input:
+        path: ${REPO_ROOT}/outputs/evaluation/requests/librispeech/test-other_requests.jsonl
+      output:
+        trace_path: ${REPO_ROOT}/outputs/evaluation/traces/6_25hz/librispeech/test-other/traces.jsonl
+        error_path: ${LOG_ROOT}/6_25hz/librispeech/test-other/errors.jsonl
+      inference: *inference
+      runtime: *runtime

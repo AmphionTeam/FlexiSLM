@@ -334,14 +334,6 @@ bash scripts/train_stage2_7B.sh \
   --learning_rate 2e-5
 ```
 
-Use the shared launcher for a custom configuration:
-
-```bash
-bash scripts/train.sh config/train_stage2_7B.yaml
-```
-
-The shared launcher uses Accelerate by default. Stage 3 selects DeepSpeed with `config/ds_config_zero2.json`; set `FLEXISLM_LAUNCHER` and `DEEPSPEED_CONFIG` to override the launcher or ZeRO configuration. GPU and distributed settings are detected by `scripts/env.sh`.
-
 ## Evaluation with Kimi-Audio-Evalkit
 
 FlexiSLM uses the bundled [Kimi-Audio-Evalkit](https://github.com/petrichor20211/Kimi-Audio-Evalkit) submodule to evaluate VoiceBench, OpenAudioBench, and LibriSpeech. Inference and scoring are separate. Run all commands below from the FlexiSLM repository root.

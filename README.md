@@ -306,10 +306,10 @@ Training arguments are stored in YAML files under `config/`; launchers live unde
 
 | Stage | Configuration | Data config | Launcher | Initialization |
 | --- | --- | --- | --- | --- |
-| Stage 1 (7B) | `config/train_stage1_7B.yaml` | `config/datasets/train_stage1.yaml` | `scripts/train_stage1_7B.sh` | Qwen2.5-7B base model |
+| Stage 1 (7B) | `config/train_stage1_7B.yaml` | `config/datasets/train_stage1.yaml` | `scripts/train_stage1_7B.sh` | Qwen2.5-7B Instruct model |
 | Stage 2 (7B) | `config/train_stage2_7B.yaml` | `config/datasets/train_stage2_3.yaml` | `scripts/train_stage2_7B.sh` | released Stage 1 ([Hub](https://huggingface.co/FlexiSLM/FlexiSLM-7B-Stage1)) |
 | Stage 3 (7B) | `config/train_stage3_7B.yaml` | `config/datasets/train_stage2_3.yaml` | `scripts/train_stage3_7B.sh` | merged Stage 2 checkpoint |
-| Stage 1 (0.5B) | `config/train_stage1_0_5B.yaml` | `config/datasets/train_stage1.yaml` | `scripts/train_stage1_0_5B.sh` | Qwen2.5-0.5B base model |
+| Stage 1 (0.5B) | `config/train_stage1_0_5B.yaml` | `config/datasets/train_stage1.yaml` | `scripts/train_stage1_0_5B.sh` | Qwen2.5-0.5B Instruct model |
 | Stage 2 (0.5B) | `config/train_stage2_0_5B.yaml` | `config/datasets/train_stage2_3.yaml` | `scripts/train_stage2_0_5B.sh` | released Stage 1 ([Hub](https://huggingface.co/FlexiSLM/FlexiSLM-0_5B-Stage1)) |
 | Stage 3 (0.5B) | `config/train_stage3_0_5B.yaml` | `config/datasets/train_stage2_3.yaml` | `scripts/train_stage3_0_5B.sh` | merged 0.5B Stage 2 checkpoint |
 
@@ -319,11 +319,7 @@ Stage 2 sets `resume_from_checkpoint` to the released Stage 1 Hub repo (download
 bash scripts/train_stage1_7B.sh
 bash scripts/train_stage2_7B.sh
 bash scripts/train_stage3_7B.sh
-```
-
-The 0.5B recipes use `Qwen2.5-0.5B-Instruct` and larger per-device batches:
-
-```bash
+# for 0.5B
 bash scripts/train_stage1_0_5B.sh
 bash scripts/train_stage2_0_5B.sh
 bash scripts/train_stage3_0_5B.sh
@@ -428,7 +424,7 @@ Numbers below use the same DeepSeek judge setup as the guide above. For FlexiSLM
 | Benchmark | Metric | Qwen2.5-Omni s2t | Qwen2.5-Omni s2s | FlexiSLM-7B-Stage2 12.5 Hz s2t | FlexiSLM-7B-Stage2 12.5 Hz s2s | FlexiSLM-7B-Stage2 6.25 Hz s2t | FlexiSLM-7B-Stage2 6.25 Hz s2s |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | LibriSpeech / LibriSpeech-PC | test-clean (WER ↓) | 2.38 | — | — | — | 3.43 | — |
-| | test-other (WER ↓) | 4.21† | — | — | — | 6.15‡ | — |
+| | test-other (WER ↓) | 4.21 | — | — | — | 6.15 | — |
 | OpenAudioBench | Llama Questions (Acc ↑) | 76.85 | 72.24 | 80.67 | 74.00 | 80.67 | 72.33 |
 | | Web Questions (Acc ↑) | 52.4 | 51.5 | 58.2 | 55.2 | 59.0 | 55.1 |
 | | TriviaQA (Acc ↑) | 57.6 | 56.16 | 63.3 | 52.5 | 63.3 | 52.6 |

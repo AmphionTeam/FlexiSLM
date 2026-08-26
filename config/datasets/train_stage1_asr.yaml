@@ -13,7 +13,7 @@ dataset:
       - data/training/asrtts_packed_webdataset/data/train-{00000..00354}-of-00356.tar
     webdataset:
       layout: shared_audio_tasks
-      tasks: [asr, tts]
+      tasks: [asr]
       task_policy: all
       audio_extensions: [wav, flac, mp3, m4a, ogg]
       duplicate_member_policy: error

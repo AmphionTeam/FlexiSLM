@@ -35,6 +35,7 @@ pip install -r requirements.txt
 - [Inference Guide](#inference)
 - [Training Guide](#training-guide)
 - [Evaluation with Kimi-Audio-Evalkit](#evaluation-with-kimi-audio-evalkit)
+- [Evaluation Results of released checkpoints](#evaluation-results)
 - [Citation](#citation)
 - [Acknowledgements](#acknowledgements)
 - [Project File Structure](#project-structure)
@@ -259,7 +260,7 @@ The runner writes one unified JSONL trace and stores generated speech under `out
 
 FlexiSLM training has three stages:
 
-1. **Talker and input-module pre-training.** Freeze the Qwen backbone and train the Talker, audio embeddings, and input frame-merging module.
+1. **Talker and input-module pre-training.** Freeze the Qwen backbone and train the Talker, audio embeddings, and input frame-merging module. For better performance, out released checkpoint had the talker module separately trained with TTS-only and merged its talker weights into stage 1 weights. But we confirmed that without talker weights in stage 1, the performance in Stage 2 is still good.
 2. **Multi-task LoRA fine-tuning.** Train the Talker and input modules while adapting the Thinker with LoRA.
 3. **Full fine-tuning.** Merge the Stage 2 LoRA weights into the Thinker, enable the Talker-to-Thinker connection, and train all model components.
 
@@ -367,51 +368,75 @@ python Kimi-Audio-Evalkit/data/download_benchmark.py \
 
 ### 1. Build Requests and Run Inference
 
-Build requests and run FlexiSLM inference in your **training/inference** environment (not the Evalkit env):
+Build requests and run FlexiSLM inference in your **training/inference** environment (not the Evalkit env). VoiceBench and OpenAudioBench use **s2s** (spoken answers, 24 kHz WAVs). MMSU and OpenBookQA are omitted. LibriSpeech stays ASR (text only):
 
 ```bash
 # activate the FlexiSLM train/infer env first
+export TRANSCRIBE_MODEL_PATH="${TRANSCRIBE_MODEL_PATH:-models/whisper-large-v3}"
 python local/build_vb_oab_requests.py \
   --benchmark voicebench \
   --data-root data/benchmarks \
   --out-dir outputs/evaluation/requests/voicebench \
-  --task audio_qa
+  --task s2s \
+  --transcribe-model-path "$TRANSCRIBE_MODEL_PATH" \
+  --subsets sd-qa advbench ifeval alpacaeval_full commoneval
 python local/build_vb_oab_requests.py \
   --benchmark openaudiobench \
   --data-root data/benchmarks \
   --out-dir outputs/evaluation/requests/openaudiobench \
-  --task audio_qa
+  --task s2s \
+  --transcribe-model-path "$TRANSCRIBE_MODEL_PATH"
 python local/build_librispeech_requests.py \
   --data-root data/benchmarks \
   --out-dir outputs/evaluation/requests/librispeech
 ```
 
-Run all ten inference jobs with the committed configuration. The launcher detects the available GPUs and writes every trace to the path expected by `config/eval_benchmarks.yaml`:
+Run inference with a rate-specific `CONFIG`. The launcher uses every GPU in `CUDA_VISIBLE_DEVICES` when set, otherwise all visible GPUs (`nvidia-smi`), and assigns one job per GPU per wave. Generated s2s WAVs are stored next to each trace under `audio/`.
 
 ```bash
-bash scripts/infer_benchmarks.sh
+# 12.5 Hz in/out → outputs/evaluation/traces/12_5hz/
+CONFIG=config/infer_benchmarks_12_5hz.yaml bash scripts/infer_benchmarks.sh
+
+# 6.25 Hz in/out → outputs/evaluation/traces/6_25hz/
+CONFIG=config/infer_benchmarks_6_25hz.yaml bash scripts/infer_benchmarks.sh
 ```
 
 ### 2. Scoring
 
-Switch to the **Evalkit** environment, export the DeepSeek API key, and run the committed evaluation configuration:
+Switch to the **Evalkit** environment, export the DeepSeek API key, and run the eval YAML that matches the inference rate. The YAML lists every job; no `--job` flags are required.
 
 ```bash
 conda activate kimi-audio-evalkit
 export DEEPSEEK_API_KEY="your_deepseek_api_key"
 export PYTHONPATH="$PWD:$PWD/Kimi-Audio-Evalkit${PYTHONPATH:+:$PYTHONPATH}"
-python -m src.eval config/eval_benchmarks.yaml
+
+# After CONFIG=config/infer_benchmarks_12_5hz.yaml
+python -m src.eval config/eval_benchmarks_12_5hz.yaml
+
+# After CONFIG=config/infer_benchmarks_6_25hz.yaml
+python -m src.eval config/eval_benchmarks_6_25hz.yaml
 ```
 
-Results are written to `outputs/evaluation/results/`. To run selected jobs only, repeat `--job`, for example:
+Results are written under `outputs/evaluation/results/{12_5,6_25}hz/`. LibriSpeech WER does not need `DEEPSEEK_API_KEY`; VoiceBench / OpenAudioBench LLM-judge jobs do.
 
-```bash
-python -m src.eval config/eval_benchmarks.yaml \
-  --job voicebench_openbookqa \
-  --job librispeech_test-clean
-```
+## Evaluation Results
 
-The committed configuration covers VoiceBench, OpenAudioBench, and LibriSpeech `test-clean`/`test-other` ASR WER. Use `python -m src.eval --help` for all job selection options. LibriSpeech WER scoring does not need `DEEPSEEK_API_KEY`; VoiceBench / OpenAudioBench judge jobs do.
+We use Deepseek-V4-Flash-0731 as the judge. Our released checkpoints were used to evaluate. We set input=output frame rate.
+
+Numbers below use the same DeepSeek judge setup as the guide above. For FlexiSLM **s2s** traces, **s2t** is the model’s direct text channel (`output.text`) and **s2s** is Whisper ASR of the generated spoken answer. Qwen2.5-Omni is a baseline under the same judge. FlexiSLM-7B Stage 2 is reported at 12.5 Hz and 6.25 Hz.
+
+| Benchmark | Metric | Qwen2.5-Omni s2t | Qwen2.5-Omni s2s | FlexiSLM-7B-Stage2 12.5 Hz s2t | FlexiSLM-7B-Stage2 12.5 Hz s2s | FlexiSLM-7B-Stage2 6.25 Hz s2t | FlexiSLM-7B-Stage2 6.25 Hz s2s |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| LibriSpeech / LibriSpeech-PC | test-clean (WER ↓) | 2.38 | — | — | — | 3.43 | — |
+| | test-other (WER ↓) | 4.21† | — | — | — | 6.15‡ | — |
+| OpenAudioBench | Llama Questions (Acc ↑) | 76.85 | 72.24 | 80.67 | 74.00 | 80.67 | 72.33 |
+| | Web Questions (Acc ↑) | 52.4 | 51.5 | 58.2 | 55.2 | 59.0 | 55.1 |
+| | TriviaQA (Acc ↑) | 57.6 | 56.16 | 63.3 | 52.5 | 63.3 | 52.6 |
+| VoiceBench | AlpacaEval (Score ↑) | 3.71 | 3.45 | 4.96 | 4.78 | 4.94 | 4.85 |
+| | CommonEval (Score ↑) | 3.67 | 3.63 | 4.97 | 4.98 | 4.95 | 4.92 |
+| | SD-QA (Acc ↑) | 55.88 | 50.99 | 61.84 | 55.88 | 59.67 | 54.07 |
+| | AdvBench (Acc ↑) | - | 98.65 | — | 94.04 | — | 94.42 |
+
 
 ## Citation
 

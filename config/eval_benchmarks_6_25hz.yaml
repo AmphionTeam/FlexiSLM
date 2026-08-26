@@ -1,0 +1,70 @@
+# Scoring for traces from CONFIG=config/infer_benchmarks_6_25hz.yaml.
+# Run: python -m src.eval config/eval_benchmarks_6_25hz.yaml
+evalkit_path: Kimi-Audio-Evalkit
+data_root: data/benchmarks
+model_name: FlexiSLM-7B-Stage2-6.25Hz
+voicebench_summary_path: outputs/evaluation/results/6_25hz/voicebench_summary.json
+log_dir: logs/evaluation/benchmarks/6_25hz
+
+judge_model: deepseek-chat
+judge_api_base: https://api.deepseek.com/v1/chat/completions
+judge_api_key_env: DEEPSEEK_API_KEY
+
+evalkit_commit: 57547485d89d480b474ff0e9eb02652f34d0f139
+
+jobs:
+  - name: voicebench_sd-qa
+    benchmark: voicebench
+    dataset: sd-qa
+    method: vb-qa
+    trace_file: outputs/evaluation/traces/6_25hz/sd-qa/traces.jsonl
+    result_path: outputs/evaluation/results/6_25hz/sd-qa_performance.json
+
+  - name: voicebench_advbench
+    benchmark: voicebench
+    dataset: advbench
+    method: vb-advbench
+    trace_file: outputs/evaluation/traces/6_25hz/advbench/traces.jsonl
+    result_path: outputs/evaluation/results/6_25hz/advbench_performance.json
+
+  - name: voicebench_ifeval
+    benchmark: voicebench
+    dataset: ifeval
+    method: default
+    auxiliary_method: vb-ifeval
+    include_prediction_text: false
+    trace_file: outputs/evaluation/traces/6_25hz/ifeval/traces.jsonl
+    result_path: outputs/evaluation/results/6_25hz/ifeval_performance.json
+
+  - name: voicebench_alpacaeval_full
+    benchmark: voicebench
+    dataset: alpacaeval_full
+    method: default
+    trace_file: outputs/evaluation/traces/6_25hz/alpacaeval_full/traces.jsonl
+    result_path: outputs/evaluation/results/6_25hz/alpacaeval_full_performance.json
+
+  - name: voicebench_commoneval
+    benchmark: voicebench
+    dataset: commoneval
+    method: default
+    trace_file: outputs/evaluation/traces/6_25hz/commoneval/traces.jsonl
+    result_path: outputs/evaluation/results/6_25hz/commoneval_performance.json
+
+  - name: openaudiobench
+    benchmark: openaudiobench
+    dataset: OpenAudioBench
+    method: default
+    trace_file: outputs/evaluation/traces/6_25hz/OpenAudioBench/traces.jsonl
+    result_path: outputs/evaluation/results/6_25hz/openaudiobench_performance.json
+
+  - name: librispeech_test-clean
+    benchmark: librispeech
+    task: asr
+    trace_file: outputs/evaluation/traces/6_25hz/librispeech/test-clean/traces.jsonl
+    result_path: outputs/evaluation/results/6_25hz/librispeech_test-clean_wer.json
+
+  - name: librispeech_test-other
+    benchmark: librispeech
+    task: asr
+    trace_file: outputs/evaluation/traces/6_25hz/librispeech/test-other/traces.jsonl
+    result_path: outputs/evaluation/results/6_25hz/librispeech_test-other_wer.json

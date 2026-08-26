@@ -1,14 +1,37 @@
 #!/usr/bin/env bash
-# Run VoiceBench/OpenAudioBench audio-QA and LibriSpeech ASR jobs.
+# Run VoiceBench/OpenAudioBench s2s and LibriSpeech ASR jobs.
+#
+# CONFIG is required (repo-relative or absolute):
+#   CONFIG=config/infer_benchmarks_12_5hz.yaml bash scripts/infer_benchmarks.sh
+#   CONFIG=config/infer_benchmarks_6_25hz.yaml bash scripts/infer_benchmarks.sh
+#
+# GPUs: uses every device in CUDA_VISIBLE_DEVICES when set, otherwise all
+# nvidia-smi GPUs. One job per GPU per wave; runtime.devices is set by this
+# launcher (do not put devices in the YAML).
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-CONFIG="$REPO_ROOT/config/infer_benchmarks.yaml"
+
+if [[ -z "${CONFIG:-}" ]]; then
+    echo "Error: set CONFIG to an inference manifest, e.g." >&2
+    echo "  CONFIG=config/infer_benchmarks_12_5hz.yaml bash scripts/infer_benchmarks.sh" >&2
+    echo "  CONFIG=config/infer_benchmarks_6_25hz.yaml bash scripts/infer_benchmarks.sh" >&2
+    exit 1
+fi
+if [[ "$CONFIG" != /* ]]; then
+    CONFIG="$REPO_ROOT/$CONFIG"
+fi
+if [[ ! -f "$CONFIG" ]]; then
+    echo "Error: inference config not found: $CONFIG" >&2
+    exit 1
+fi
+
 MODEL_ROOT=${MODEL_ROOT:-$REPO_ROOT/models}
 LOG_ROOT=${LOG_ROOT:-$REPO_ROOT/logs/evaluation/inference/benchmarks}
-export REPO_ROOT MODEL_ROOT LOG_ROOT
+TRANSCRIBE_MODEL_PATH=${TRANSCRIBE_MODEL_PATH:-$MODEL_ROOT/whisper-large-v3}
+export REPO_ROOT MODEL_ROOT LOG_ROOT TRANSCRIBE_MODEL_PATH
 
 if [[ -v CUDA_VISIBLE_DEVICES ]]; then
     IFS=',' read -ra VISIBLE_GPUS <<< "${CUDA_VISIBLE_DEVICES// /}"
@@ -31,7 +54,9 @@ for ((gpu = 0; gpu < GPU_COUNT; gpu++)); do
     RUNTIME_DEVICES+=("cuda:$gpu")
 done
 printf 'Inference devices: %s\n' "${RUNTIME_DEVICES[*]}"
+printf 'Inference config: %s\n' "$CONFIG"
 printf 'Model root: %s\n' "$MODEL_ROOT"
+printf 'Whisper transcribe model: %s\n' "$TRANSCRIBE_MODEL_PATH"
 
 TMP_CONFIG_DIR=$(mktemp -d)
 trap 'rm -rf "$TMP_CONFIG_DIR"' EXIT

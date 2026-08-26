@@ -35,6 +35,7 @@ pip install -r requirements.txt
 - [Inference Guide](#inference)
 - [Training Guide](#training-guide)
 - [Evaluation with Kimi-Audio-Evalkit](#evaluation-with-kimi-audio-evalkit)
+- [Evaluation Results of released checkpoints](#evaluation-results)
 - [Citation](#citation)
 - [Acknowledgements](#acknowledgements)
 - [Project File Structure](#project-structure)
@@ -417,6 +418,25 @@ python -m src.eval config/eval_benchmarks_6_25hz.yaml
 ```
 
 Results are written under `outputs/evaluation/results/{12_5,6_25}hz/`. LibriSpeech WER does not need `DEEPSEEK_API_KEY`; VoiceBench / OpenAudioBench LLM-judge jobs do.
+
+## Evaluation Results
+
+We use Deepseek-V4-Flash-0731 as the judge. Our released checkpoints were used to evaluate. We set input=output frame rate.
+
+Numbers below use the same DeepSeek judge setup as the guide above. For FlexiSLM **s2s** traces, **s2t** is the model’s direct text channel (`output.text`) and **s2s** is Whisper ASR of the generated spoken answer. Qwen2.5-Omni is a baseline under the same judge. FlexiSLM-7B Stage 2 is reported at 12.5 Hz and 6.25 Hz.
+
+| Benchmark | Metric | Qwen2.5-Omni s2t | Qwen2.5-Omni s2s | FlexiSLM-7B-Stage2 12.5 Hz s2t | FlexiSLM-7B-Stage2 12.5 Hz s2s | FlexiSLM-7B-Stage2 6.25 Hz s2t | FlexiSLM-7B-Stage2 6.25 Hz s2s |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| LibriSpeech / LibriSpeech-PC | test-clean (WER ↓) | 2.38 | — | — | — | 3.43 | — |
+| | test-other (WER ↓) | 4.21† | — | — | — | 6.15‡ | — |
+| OpenAudioBench | Llama Questions (Acc ↑) | 76.85 | 72.24 | 80.67 | 74.00 | 80.67 | 72.33 |
+| | Web Questions (Acc ↑) | 52.4 | 51.5 | 58.2 | 55.2 | 59.0 | 55.1 |
+| | TriviaQA (Acc ↑) | 57.6 | 56.16 | 63.3 | 52.5 | 63.3 | 52.6 |
+| VoiceBench | AlpacaEval (Score ↑) | 3.71 | 3.45 | 4.96 | 4.78 | 4.94 | 4.85 |
+| | CommonEval (Score ↑) | 3.67 | 3.63 | 4.97 | 4.98 | 4.95 | 4.92 |
+| | SD-QA (Acc ↑) | 55.88 | 50.99 | 61.84 | 55.88 | 59.67 | 54.07 |
+| | AdvBench (Acc ↑) | - | 98.65 | — | 94.04 | — | 94.42 |
+
 
 ## Citation
 

@@ -415,8 +415,8 @@ Numbers below use the same DeepSeek judge setup as the guide above. For FlexiSLM
 
 | Benchmark | Metric | Qwen2.5-Omni s2t | Qwen2.5-Omni s2s | FlexiSLM-7B-Stage2 12.5 Hz s2t | FlexiSLM-7B-Stage2 12.5 Hz s2s | FlexiSLM-7B-Stage2 6.25 Hz s2t | FlexiSLM-7B-Stage2 6.25 Hz s2s |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| LibriSpeech / LibriSpeech-PC | test-clean (WER ↓) | 2.38 | — | — | — | 3.43 | — |
-| | test-other (WER ↓) | 4.21 | — | — | — | 6.15 | — |
+| LibriSpeech | test-clean (WER ↓) | 2.38 | — | 2.14 | — | 3.43 | — |
+| | test-other (WER ↓) | 4.21 | — | 5.75 | — | 6.15 | — |
 | OpenAudioBench | Llama Questions (Acc ↑) | 76.85 | 72.24 | 80.67 | 74.00 | 80.67 | 72.33 |
 | | Web Questions (Acc ↑) | 52.4 | 51.5 | 58.2 | 55.2 | 59.0 | 55.1 |
 | | TriviaQA (Acc ↑) | 57.6 | 56.16 | 63.3 | 52.5 | 63.3 | 52.6 |

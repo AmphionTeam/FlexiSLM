@@ -39,7 +39,7 @@ pip install -r requirements.txt
 - [Inference Guide](#inference)
 - [Training Guide](#training-guide)
 - [Evaluation with Kimi-Audio-Evalkit](#evaluation-with-kimi-audio-evalkit)
-- [Evaluation Results of released checkpoints](#evaluation-results)
+- [Evaluation Results](#evaluation-results)
 - [Citation](#citation)
 - [Acknowledgements](#acknowledgements)
 - [Project File Structure](#project-structure)
@@ -414,8 +414,7 @@ Results are written under `outputs/evaluation/results/{12_5,6_25}hz/`. LibriSpee
 ## Evaluation Results
 
 We use Deepseek-V4-Flash-0731 as the judge. Our released checkpoints were used to evaluate. We set input=output frame rate.
-
-Numbers below use the same DeepSeek judge setup as the guide above. For FlexiSLM **s2s** traces, **s2t** is the model’s direct text channel (`output.text`) and **s2s** is Whisper ASR of the generated spoken answer. Qwen2.5-Omni is a baseline under the same judge. FlexiSLM-7B Stage 2 is reported at 12.5 Hz and 6.25 Hz.
+They are evaluated using the scripts above.
 
 | Benchmark | Metric | Qwen2.5-Omni s2t | Qwen2.5-Omni s2s | FlexiSLM-7B-Stage2 12.5 Hz s2t | FlexiSLM-7B-Stage2 12.5 Hz s2s | FlexiSLM-7B-Stage2 6.25 Hz s2t | FlexiSLM-7B-Stage2 6.25 Hz s2s |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |

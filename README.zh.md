@@ -20,7 +20,7 @@ FlexiSLM 是首个在语音输入与输出两端均支持**动态**且**可控**
 ## 新闻
 
 - **2026 年 8 月 21 日：** FlexiSLM 被 EMNLP 2026 主会接收！
-- **2026 年 8 月 20 日：检查点发布。** 我们发布了基于本代码库复现的 [FlexiSLM-7B Stage 2](https://huggingface.co/FlexiSLM/FlexiSLM-7B-Stage2) 检查点与 [FlexiSLM-0.5B Stage 2](https://huggingface.co/FlexiSLM/FlexiSLM-0_5B-Stage2) 检查点。
+- **2026 年 8 月 20 日：模型权重发布。** 我们发布了基于本代码库复现的 [FlexiSLM-7B Stage 2](https://huggingface.co/FlexiSLM/FlexiSLM-7B-Stage2) 模型权重与 [FlexiSLM-0.5B Stage 2](https://huggingface.co/FlexiSLM/FlexiSLM-0_5B-Stage2) 模型权重。
 - **2026 年 8 月 6 日：数据发布。** 我们发布了 [FlexiSLM-Data-4M-s2s](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-4M-s2s)、[FlexiSLM-Data-2M-s2s-compact](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-2M-s2s-compact) 与 [FlexiSLM-Data-5M-t2t](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-5M-t2t)。
 - **2026 年 8 月 2 日：代码发布。** 我们发布了 FlexiSLM-7B 的训练与推理代码。
 
@@ -37,7 +37,7 @@ pip install -r requirements.txt
 - [推理指南](#推理)
 - [训练指南](#训练指南)
 - [使用 Kimi-Audio-Evalkit 评测](#使用-kimi-audio-evalkit-评测)
-- [已发布检查点的评测结果](#评测结果)
+- [已发布模型权重的评测结果](#评测结果)
 - [引用](#引用)
 - [致谢](#致谢)
 - [项目文件结构](#项目结构)
@@ -55,7 +55,7 @@ pip install -r requirements.txt
 
 ## 推理
 
-使用 `checkpoint` 参数选择推理检查点。默认值为 **`stage2_7B`**。
+使用 `checkpoint` 参数选择推理模型权重。默认值为 **`stage2_7B`**。
 
 | 参数 | Hugging Face 仓库 | 下载目录 |
 | --- | --- | --- |
@@ -64,7 +64,7 @@ pip install -r requirements.txt
 
 ### 1. Python API（自动下载）
 
-将 `auto_download=True` 后，首次运行会下载所选 Stage 2 检查点（默认 `stage2_7B`，也可选 `stage2_0.5B`），以及 Qwen2.5-Omni 音频编码器、SenseVoice、FlexiCodec、流匹配解码器与声码器文件到 `models/`。之后运行会复用本地副本。
+将 `auto_download=True` 后，首次运行会下载所选 Stage 2 模型权重（默认 `stage2_7B`，也可选 `stage2_0.5B`），以及 Qwen2.5-Omni 音频编码器、SenseVoice、FlexiCodec、流匹配解码器与声码器文件到 `models/`。之后运行会复用本地副本。
 
 ```python
 from pathlib import Path
@@ -141,7 +141,7 @@ save_audio(result, "s2s.wav")
 
 ### 2. Python API（手动下载）
 
-下载要运行的检查点。辅助编码器与 codec 文件两种规模共用。
+下载要运行的模型权重。辅助编码器与 codec 文件两种规模共用。
 
 ```bash
 MODEL_ROOT="$PWD/models"
@@ -247,7 +247,7 @@ runtime:
   fail_fast: false
 ```
 
-下载 Stage 2 检查点及共用的编码器 / codec 文件后运行（见 [第 2 节](#2-python-api手动下载)）：
+下载 Stage 2 模型权重及共用的编码器 / codec 文件后运行（见 [第 2 节](#2-python-api手动下载)）：
 
 ```bash
 python -m src.infer examples/infer_7b.yaml
@@ -262,13 +262,13 @@ python -m src.infer examples/infer_7b.yaml
 
 FlexiSLM 训练分为三个阶段：
 
-1. **Talker 与输入模块预训练。** 冻结 Qwen 骨干网络，训练 Talker、音频嵌入与输入帧合并模块。为获得更好效果，我们发布的检查点曾单独用 TTS 任务训练 Talker 模块，再将其权重合并进 Stage 1 权重。但我们也确认：即便 Stage 1 不含 Talker 权重，Stage 2 的效果仍然很好。
+1. **Talker 与输入模块预训练。** 冻结 Qwen 骨干网络，训练 Talker、音频嵌入与输入帧合并模块。为获得更好效果，我们发布的模型权重曾单独用 TTS 任务训练 Talker 模块，再将其权重合并进 Stage 1 权重。但我们也确认：即便 Stage 1 不含 Talker 权重，Stage 2 的效果仍然很好。
 2. **多任务 LoRA 微调。** 训练 Talker 与输入模块，同时用 LoRA 适配 Thinker。
 3. **全量微调。** 将 Stage 2 的 LoRA 权重合并进 Thinker，启用 Talker 到 Thinker 的连接，并训练全部模型组件。
 
-我们发布的检查点使用相同设置、在 8 张 A100 GPU 上训练。此处配置同样按 8 张 A100 适配。
+我们发布的模型权重使用相同设置、在 8 张 A100 GPU 上训练。此处配置同样按 8 张 A100 适配。
 
-### 1. 下载额外检查点与数据集
+### 1. 下载额外模型权重与数据集
 ```bash
 MODEL_ROOT="$PWD/models"
 TRAIN_DATA_ROOT="$PWD/data/training"
@@ -310,10 +310,10 @@ export SWANLAB_API_KEY="your_swanlab_api_key"
 | --- | --- | --- | --- | --- |
 | Stage 1（7B） | `config/train_stage1_7B.yaml` | `config/datasets/train_stage1.yaml` | `scripts/train_stage1_7B.sh` | Qwen2.5-7B Instruct 模型 |
 | Stage 2（7B） | `config/train_stage2_7B.yaml` | `config/datasets/train_stage2_3.yaml` | `scripts/train_stage2_7B.sh` | 已发布的 Stage 1（[Hub](https://huggingface.co/FlexiSLM/FlexiSLM-7B-Stage1)） |
-| Stage 3（7B） | `config/train_stage3_7B.yaml` | `config/datasets/train_stage2_3.yaml` | `scripts/train_stage3_7B.sh` | 合并后的 Stage 2 检查点 |
+| Stage 3（7B） | `config/train_stage3_7B.yaml` | `config/datasets/train_stage2_3.yaml` | `scripts/train_stage3_7B.sh` | 合并后的 Stage 2 模型权重 |
 | Stage 1（0.5B） | `config/train_stage1_0_5B.yaml` | `config/datasets/train_stage1.yaml` | `scripts/train_stage1_0_5B.sh` | Qwen2.5-0.5B Instruct 模型 |
 | Stage 2（0.5B） | `config/train_stage2_0_5B.yaml` | `config/datasets/train_stage2_3.yaml` | `scripts/train_stage2_0_5B.sh` | 已发布的 Stage 1（[Hub](https://huggingface.co/FlexiSLM/FlexiSLM-0_5B-Stage1)） |
-| Stage 3（0.5B） | `config/train_stage3_0_5B.yaml` | `config/datasets/train_stage2_3.yaml` | `scripts/train_stage3_0_5B.sh` | 合并后的 0.5B Stage 2 检查点 |
+| Stage 3（0.5B） | `config/train_stage3_0_5B.yaml` | `config/datasets/train_stage2_3.yaml` | `scripts/train_stage3_0_5B.sh` | 合并后的 0.5B Stage 2 模型权重 |
 
 Stage 2 将 `resume_from_checkpoint` 设为已发布的 Stage 1 Hub 仓库（若不存在会下载到 `models/`）。更新对应 YAML 后即可启动各阶段：
 
@@ -411,7 +411,7 @@ python -m src.eval config/eval_benchmarks_6_25hz.yaml
 
 ## 评测结果
 
-我们使用 Deepseek-V4-Flash-0731 作为裁判模型，并基于已发布检查点评测。输入与输出帧率设为相同。
+我们使用 Deepseek-V4-Flash-0731 作为裁判模型，并基于已发布模型权重评测。输入与输出帧率设为相同。
 
 下表数字与上文指南中的 DeepSeek 裁判设置一致。对于 FlexiSLM 的 **s2s** traces，**s2t** 是模型直接文本通道（`output.text`），**s2s** 是对生成口语回答做 Whisper ASR 的结果。Qwen2.5-Omni 作为同一裁判下的基线。FlexiSLM-7B Stage 2 分别报告 12.5 Hz 与 6.25 Hz。
 

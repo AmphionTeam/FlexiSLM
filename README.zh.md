@@ -1,4 +1,6 @@
-# FlexiSLM: A Spoken Language Model with Dynamic and Controllable Frame Rates
+# FlexiSLM: 支持动态与可控帧率的口语语言模型
+
+[English](README.md) | **中文**
 
 [![arXiv Paper](https://img.shields.io/badge/arXiv_Paper-2606.31247-b31b1b)](https://arxiv.org/abs/2606.31247)
 [![demo page](https://img.shields.io/badge/Demo_Page-Github.io-blue)](https://flexislm.github.io)
@@ -6,67 +8,63 @@
 [![model](https://img.shields.io/badge/Models-green?logo=huggingface&logoColor=white)](https://huggingface.co/FlexiSLM/models)
 [![WeChat Blog](https://img.shields.io/badge/WeChat-Blog-07C160?logo=wechat&logoColor=white)](https://mp.weixin.qq.com/s/pno08CK1dXinIfbvt-v5dg)
 
+## 概述
 
+本仓库包含论文 *FlexiSLM: A Spoken Language Model with Dynamic and Controllable Frame Rates* 的代码，以及已发布训练数据的下载说明。
 
-**English** | [中文](README.zh.md)
-
-## Overview
-
-This repository contains the code for our paper, "FlexiSLM: A Spoken Language Model with Dynamic and Controllable Frame Rates," along with instructions for downloading the released training data.
-
-FlexiSLM is the first spoken language model that supports *dynamic* and *controllable* frame rates on both speech input and output. A single trained model can be steered between 12.5 Hz and 4.0 Hz without retraining, while its dynamic frame-rate mechanism adapts to the varying complexity of speech. FlexiSLM matches state-of-the-art 7B models even in reduced 6.25Hz frame rates. It also supports controllable frame rate generation.
+FlexiSLM 是首个在语音输入与输出两端均支持**动态**且**可控**帧率的口语语言模型。同一套训练好的模型可在无需重新训练的情况下，在 12.5 Hz 与 4.0 Hz 之间调节；其动态帧率机制会随语音复杂度变化而自适应调整。即便将帧率降至 6.25 Hz，FlexiSLM 仍能与当前最先进的 7B 模型持平，并支持可控帧率生成。
 
 
 <!-- ![FlexiSLM architecture](assets/flexislm_architecture.png) -->
 
-## News
+## 新闻
 
-- **August 21, 2026:** FlexiSLM is accepted to EMNLP 2026 Main Conference!
-- **August 20, 2026: Checkpoint release.** We released the [FlexiSLM-7B Stage 2](https://huggingface.co/FlexiSLM/FlexiSLM-7B-Stage2) checkpoint and [FlexiSLM-0.5B Stage 2](https://huggingface.co/FlexiSLM/FlexiSLM-0_5B-Stage2) checkpoint reproduced with this codebase.
-- **August 6, 2026: Data release.** We released [FlexiSLM-Data-4M-s2s](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-4M-s2s), [FlexiSLM-Data-2M-s2s-compact](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-2M-s2s-compact), and [FlexiSLM-Data-5M-t2t](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-5M-t2t).
-- **August 2, 2026: Code release.** We released the FlexiSLM-7B training and inference code.
+- **2026 年 8 月 21 日：** FlexiSLM 被 EMNLP 2026 主会接收！
+- **2026 年 8 月 20 日：检查点发布。** 我们发布了基于本代码库复现的 [FlexiSLM-7B Stage 2](https://huggingface.co/FlexiSLM/FlexiSLM-7B-Stage2) 检查点与 [FlexiSLM-0.5B Stage 2](https://huggingface.co/FlexiSLM/FlexiSLM-0_5B-Stage2) 检查点。
+- **2026 年 8 月 6 日：数据发布。** 我们发布了 [FlexiSLM-Data-4M-s2s](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-4M-s2s)、[FlexiSLM-Data-2M-s2s-compact](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-2M-s2s-compact) 与 [FlexiSLM-Data-5M-t2t](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-5M-t2t)。
+- **2026 年 8 月 2 日：代码发布。** 我们发布了 FlexiSLM-7B 的训练与推理代码。
 
-## Installation
+## 安装
 
 ```bash
 git clone --recurse-submodules https://github.com/AmphionTeam/FlexiSLM.git
 cd FlexiSLM
 pip install -r requirements.txt
 ```
-## Table of Contents
+## 目录
 
-- [FlexiSLM-Data Details](#flexislm-data-details)
-- [Inference Guide](#inference)
-- [Training Guide](#training-guide)
-- [Evaluation with Kimi-Audio-Evalkit](#evaluation-with-kimi-audio-evalkit)
-- [Evaluation Results of released checkpoints](#evaluation-results)
-- [Citation](#citation)
-- [Acknowledgements](#acknowledgements)
-- [Project File Structure](#project-structure)
+- [FlexiSLM-Data 数据详情](#flexislm-data-数据详情)
+- [推理指南](#推理)
+- [训练指南](#训练指南)
+- [使用 Kimi-Audio-Evalkit 评测](#使用-kimi-audio-evalkit-评测)
+- [已发布检查点的评测结果](#评测结果)
+- [引用](#引用)
+- [致谢](#致谢)
+- [项目文件结构](#项目结构)
 
-## FlexiSLM-Data Details
+## FlexiSLM-Data 数据详情
 
-We open-source the data produced by the following pipeline:
+我们开源了由以下流程产出的数据：
 
-1. **Prompt collection and response generation.** Text prompts are collected from public QA, instruction-following, and dialogue datasets. Responses are generated with Qwen3-Omni-30B-A3B. The resulting text pairs are released as [![dataset](https://img.shields.io/badge/Data-5M_text2text-yellow?logo=huggingface&logoColor=white)](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-5M-t2t).
-2. **Speech synthesis.** Responses are synthesized with Qwen3-TTS, while prompts are synthesized with Fish-Audio using randomly sampled speaker prompts. The resulting 4.2M samples and approximately 26K hours of audio are released as [![dataset](https://img.shields.io/badge/Data-4M_speech2speech-yellow?logo=huggingface&logoColor=white)](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-4M-s2s). Download size is about 2.8TB.
-3. **Quality filtering and compression.** Stricter filtering is applied and all audio is converted to MP3. The compact release contains 2.43M samples and approximately 14.8K hours of audio in about 385 GB: [![dataset](https://img.shields.io/badge/Data-2M_speech2speech-yellow?logo=huggingface&logoColor=white)](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-2M-s2s-compact) **We use this compact dataset for training**.
+1. **Prompt 收集与回复生成。** 文本 prompt 来自公开的问答、指令跟随与对话数据集。回复由 Qwen3-Omni-30B-A3B 生成。得到的文本对发布为 [![dataset](https://img.shields.io/badge/Data-5M_text2text-yellow?logo=huggingface&logoColor=white)](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-5M-t2t)。
+2. **语音合成。** 回复使用 Qwen3-TTS 合成，prompt 使用 Fish-Audio 并随机采样说话人 prompt 合成。得到的 420 万条样本、约 2.6 万小时音频发布为 [![dataset](https://img.shields.io/badge/Data-4M_speech2speech-yellow?logo=huggingface&logoColor=white)](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-4M-s2s)。下载体积约 2.8TB。
+3. **质量过滤与压缩。** 采用更严格的过滤，并将全部音频转为 MP3。精简版包含 243 万条样本、约 1.48 万小时音频，体积约 385 GB：[![dataset](https://img.shields.io/badge/Data-2M_speech2speech-yellow?logo=huggingface&logoColor=white)](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-2M-s2s-compact) **训练使用该精简数据集**。
 
-We believe this is one of the largest open-source datasets for spoken language model training, and we hope this will especially benefit new researchers in this area. For data preview and statistics, please refer to the links above.
+我们相信这是目前规模最大的口语语言模型开源训练数据之一，希望尤其能帮助该领域的新研究者。数据预览与统计请见上方链接。
 
 
-## Inference
+## 推理
 
-Use the `checkpoint` flag to select an inference checkpoint. The default is **`stage2_7B`**.
+使用 `checkpoint` 参数选择推理检查点。默认值为 **`stage2_7B`**。
 
-| Flag | Hugging Face repo | Will be downloaded to |
+| 参数 | Hugging Face 仓库 | 下载目录 |
 | --- | --- | --- |
-| `stage2_7B` (default) | [FlexiSLM/FlexiSLM-7B-Stage2](https://huggingface.co/FlexiSLM/FlexiSLM-7B-Stage2) | `models/FlexiSLM-7B-Stage2` |
+| `stage2_7B`（默认） | [FlexiSLM/FlexiSLM-7B-Stage2](https://huggingface.co/FlexiSLM/FlexiSLM-7B-Stage2) | `models/FlexiSLM-7B-Stage2` |
 | `stage2_0.5B` | [FlexiSLM/FlexiSLM-0_5B-Stage2](https://huggingface.co/FlexiSLM/FlexiSLM-0_5B-Stage2) | `models/FlexiSLM-0_5B-Stage2` |
 
-### 1. Python API (with Automatic downloading)
+### 1. Python API（自动下载）
 
-Set `auto_download=True` to download the selected Stage 2 checkpoint (`stage2_7B` by default, or `stage2_0.5B`), plus the Qwen2.5-Omni audio encoder, SenseVoice, FlexiCodec, flow-matching decoder, and vocoder files into `models/` on first run. Later runs reuse the local copies. 
+将 `auto_download=True` 后，首次运行会下载所选 Stage 2 检查点（默认 `stage2_7B`，也可选 `stage2_0.5B`），以及 Qwen2.5-Omni 音频编码器、SenseVoice、FlexiCodec、流匹配解码器与声码器文件到 `models/`。之后运行会复用本地副本。
 
 ```python
 from pathlib import Path
@@ -141,9 +139,9 @@ result = engine.generate_from_audio(
 save_audio(result, "s2s.wav")
 ```
 
-### 2. Python API (Manual downloading)
+### 2. Python API（手动下载）
 
-Download the checkpoint you want to run. Auxiliary encoder and codec files are shared by both sizes.
+下载要运行的检查点。辅助编码器与 codec 文件两种规模共用。
 
 ```bash
 MODEL_ROOT="$PWD/models"
@@ -165,7 +163,7 @@ hf download amphion/dualcodec-tts vocos_emilia.safetensors \
   --local-dir "$MODEL_ROOT/FlexiCodec"
 ```
 
-Then reuse the Python API example from [Section 1](#1-python-api-with-automatic-downloading), replacing only the `config = FlexiSLMInferenceConfig(...)` block. Set `checkpoint` to match the weights you downloaded, or pass `model_path` directly:
+然后复用 [第 1 节](#1-python-api自动下载) 中的 Python API 示例，只需替换 `config = FlexiSLMInferenceConfig(...)` 代码块。将 `checkpoint` 设为与已下载权重一致，或直接传入 `model_path`：
 
 ```python
 model_root = Path.cwd() / "models"
@@ -197,13 +195,13 @@ config = FlexiSLMInferenceConfig(
 )
 ```
 
-A minimal notebook is available at `examples/inference.ipynb`. 
+精简 notebook 见 `examples/inference.ipynb`。
 
-### 3. Batch Inference
+### 3. 批量推理
 
-Batch inference reads requests from JSONL and uses a YAML file for model, input, output, and multi-GPU runtime settings. Committed examples are `examples/requests.jsonl` and `examples/infer_7b.yaml`.
+批量推理从 JSONL 读取请求，并用 YAML 配置模型、输入、输出与多 GPU 运行设置。仓库中的示例为 `examples/requests.jsonl` 与 `examples/infer_7b.yaml`。
 
-`examples/requests.jsonl`:
+`examples/requests.jsonl`：
 
 ```jsonl
 {"index": 0, "task": "tts", "input": {"text": "FlexiSLM supports controllable speech generation."}, "metadata": {"sample_id": "tts-demo"}}
@@ -212,7 +210,7 @@ Batch inference reads requests from JSONL and uses a YAML file for model, input,
 {"index": 3, "task": "s2s", "input": {"audio_path": "examples/input.wav"}, "metadata": {"sample_id": "s2s-demo"}}
 ```
 
-`examples/infer_7b.yaml` (abbreviated; see the file for the full config):
+`examples/infer_7b.yaml`（节选；完整配置见该文件）：
 
 ```yaml
 engine:
@@ -249,28 +247,28 @@ runtime:
   fail_fast: false
 ```
 
-Run after downloading the Stage 2 checkpoint and shared encoder/codec files (see [Section 2](#2-python-api-manual-downloading)):
+下载 Stage 2 检查点及共用的编码器 / codec 文件后运行（见 [第 2 节](#2-python-api手动下载)）：
 
 ```bash
 python -m src.infer examples/infer_7b.yaml
 ```
 
-`input`/`output` paths are resolved relative to the repository root. `engine.config` model paths and JSONL `audio_path` values are relative to the working directory (run from the repo root). `engine.config.checkpoint` selects `stage2_7B` or `stage2_0.5B`. `inference.checkpoint` is the local weights path recorded in traces. To fetch weights automatically instead of setting `model_path`, use `engine.config.auto_download: true` with `engine.config.checkpoint: stage2_7B` or `stage2_0.5B`. Optional `inference.transcribe_model_path` (for example `models/whisper-large-v3`) ASR-transcribes generated s2s audio; download Whisper first if you enable it.
+`input` / `output` 路径相对于仓库根目录解析。`engine.config` 中的模型路径与 JSONL 中的 `audio_path` 相对于工作目录（请在仓库根目录运行）。`engine.config.checkpoint` 用于选择 `stage2_7B` 或 `stage2_0.5B`。`inference.checkpoint` 是写入 traces 的本地权重路径。若希望自动拉取权重而不设置 `model_path`，可使用 `engine.config.auto_download: true`，并将 `engine.config.checkpoint` 设为 `stage2_7B` 或 `stage2_0.5B`。可选的 `inference.transcribe_model_path`（例如 `models/whisper-large-v3`）会对生成的 s2s 音频做 ASR 转写；若启用，请先下载 Whisper。
 
-The runner writes one unified JSONL trace and stores generated speech under `output.audio_dir`.
+运行器会写入一份统一的 JSONL trace，并将生成的语音存到 `output.audio_dir`。
 
 
-## Training Guide
+## 训练指南
 
-FlexiSLM training has three stages:
+FlexiSLM 训练分为三个阶段：
 
-1. **Talker and input-module pre-training.** Freeze the Qwen backbone and train the Talker, audio embeddings, and input frame-merging module. For better performance, out released checkpoint had the talker module separately trained with TTS-only and merged its talker weights into stage 1 weights. But we confirmed that without talker weights in stage 1, the performance in Stage 2 is still good.
-2. **Multi-task LoRA fine-tuning.** Train the Talker and input modules while adapting the Thinker with LoRA.
-3. **Full fine-tuning.** Merge the Stage 2 LoRA weights into the Thinker, enable the Talker-to-Thinker connection, and train all model components.
+1. **Talker 与输入模块预训练。** 冻结 Qwen 骨干网络，训练 Talker、音频嵌入与输入帧合并模块。为获得更好效果，我们发布的检查点曾单独用 TTS 任务训练 Talker 模块，再将其权重合并进 Stage 1 权重。但我们也确认：即便 Stage 1 不含 Talker 权重，Stage 2 的效果仍然很好。
+2. **多任务 LoRA 微调。** 训练 Talker 与输入模块，同时用 LoRA 适配 Thinker。
+3. **全量微调。** 将 Stage 2 的 LoRA 权重合并进 Thinker，启用 Talker 到 Thinker 的连接，并训练全部模型组件。
 
-Our released checkpoints are trained with the same settings using 8 A100 GPUs. The configs here are also adapted for 8 A100 GPUs.
+我们发布的检查点使用相同设置、在 8 张 A100 GPU 上训练。此处配置同样按 8 张 A100 适配。
 
-### 1. Download additional checkpoints and dataset
+### 1. 下载额外检查点与数据集
 ```bash
 MODEL_ROOT="$PWD/models"
 TRAIN_DATA_ROOT="$PWD/data/training"
@@ -298,26 +296,26 @@ hf download FlexiSLM/asrtts_packed_webdataset \
 
 ```
 
-### 2. Launch Training
+### 2. 启动训练
 
-Training recipes set `report_to: swanlab`. Before launching, export your SwanLab API key in the shell:
+训练配方将 `report_to` 设为 `swanlab`。启动前请在 shell 中导出 SwanLab API key：
 
 ```bash
 export SWANLAB_API_KEY="your_swanlab_api_key"
 ```
 
-Training arguments are stored in YAML files under `config/`; launchers live under `scripts/`:
+训练参数存放在 `config/` 下的 YAML 中；启动脚本在 `scripts/` 下：
 
-| Stage | Configuration | Data config | Launcher | Initialization |
+| 阶段 | 配置 | 数据配置 | 启动脚本 | 初始化 |
 | --- | --- | --- | --- | --- |
-| Stage 1 (7B) | `config/train_stage1_7B.yaml` | `config/datasets/train_stage1.yaml` | `scripts/train_stage1_7B.sh` | Qwen2.5-7B Instruct model |
-| Stage 2 (7B) | `config/train_stage2_7B.yaml` | `config/datasets/train_stage2_3.yaml` | `scripts/train_stage2_7B.sh` | released Stage 1 ([Hub](https://huggingface.co/FlexiSLM/FlexiSLM-7B-Stage1)) |
-| Stage 3 (7B) | `config/train_stage3_7B.yaml` | `config/datasets/train_stage2_3.yaml` | `scripts/train_stage3_7B.sh` | merged Stage 2 checkpoint |
-| Stage 1 (0.5B) | `config/train_stage1_0_5B.yaml` | `config/datasets/train_stage1.yaml` | `scripts/train_stage1_0_5B.sh` | Qwen2.5-0.5B Instruct model |
-| Stage 2 (0.5B) | `config/train_stage2_0_5B.yaml` | `config/datasets/train_stage2_3.yaml` | `scripts/train_stage2_0_5B.sh` | released Stage 1 ([Hub](https://huggingface.co/FlexiSLM/FlexiSLM-0_5B-Stage1)) |
-| Stage 3 (0.5B) | `config/train_stage3_0_5B.yaml` | `config/datasets/train_stage2_3.yaml` | `scripts/train_stage3_0_5B.sh` | merged 0.5B Stage 2 checkpoint |
+| Stage 1（7B） | `config/train_stage1_7B.yaml` | `config/datasets/train_stage1.yaml` | `scripts/train_stage1_7B.sh` | Qwen2.5-7B Instruct 模型 |
+| Stage 2（7B） | `config/train_stage2_7B.yaml` | `config/datasets/train_stage2_3.yaml` | `scripts/train_stage2_7B.sh` | 已发布的 Stage 1（[Hub](https://huggingface.co/FlexiSLM/FlexiSLM-7B-Stage1)） |
+| Stage 3（7B） | `config/train_stage3_7B.yaml` | `config/datasets/train_stage2_3.yaml` | `scripts/train_stage3_7B.sh` | 合并后的 Stage 2 检查点 |
+| Stage 1（0.5B） | `config/train_stage1_0_5B.yaml` | `config/datasets/train_stage1.yaml` | `scripts/train_stage1_0_5B.sh` | Qwen2.5-0.5B Instruct 模型 |
+| Stage 2（0.5B） | `config/train_stage2_0_5B.yaml` | `config/datasets/train_stage2_3.yaml` | `scripts/train_stage2_0_5B.sh` | 已发布的 Stage 1（[Hub](https://huggingface.co/FlexiSLM/FlexiSLM-0_5B-Stage1)） |
+| Stage 3（0.5B） | `config/train_stage3_0_5B.yaml` | `config/datasets/train_stage2_3.yaml` | `scripts/train_stage3_0_5B.sh` | 合并后的 0.5B Stage 2 检查点 |
 
-Stage 2 sets `resume_from_checkpoint` to the released Stage 1 Hub repo (downloaded into `models/` if missing). Launch each stage after updating its YAML:
+Stage 2 将 `resume_from_checkpoint` 设为已发布的 Stage 1 Hub 仓库（若不存在会下载到 `models/`）。更新对应 YAML 后即可启动各阶段：
 
 ```bash
 bash scripts/train_stage1_7B.sh
@@ -329,7 +327,7 @@ bash scripts/train_stage2_0_5B.sh
 bash scripts/train_stage3_0_5B.sh
 ```
 
-YAML values can be overridden on the command line:
+YAML 中的值可在命令行覆盖：
 
 ```bash
 bash scripts/train_stage2_7B.sh \
@@ -338,13 +336,13 @@ bash scripts/train_stage2_7B.sh \
   --learning_rate 2e-5
 ```
 
-## Evaluation with Kimi-Audio-Evalkit
+## 使用 Kimi-Audio-Evalkit 评测
 
-FlexiSLM uses the bundled [Kimi-Audio-Evalkit](https://github.com/petrichor20211/Kimi-Audio-Evalkit) submodule to evaluate VoiceBench, OpenAudioBench, and LibriSpeech. Inference and scoring are separate. Run all commands below from the FlexiSLM repository root.
+FlexiSLM 使用捆绑的 [Kimi-Audio-Evalkit](https://github.com/petrichor20211/Kimi-Audio-Evalkit) 子模块评测 VoiceBench、OpenAudioBench 与 LibriSpeech。推理与打分分开进行。以下命令均请在 FlexiSLM 仓库根目录执行。
 
-**Use a separate Python environment for Evalkit scoring.** The Evalkit dependency set (see `Kimi-Audio-Evalkit/requirements.txt`) pins packages such as `sacrebleu==1.5.1` and an older PyTorch stack that conflict with FlexiSLM training/inference. Keep your training/inference env (for example `pip install -r requirements.txt`) unchanged, and install Evalkit requirements only in a dedicated env such as `kimi-audio-evalkit` or `eval`.
+**请为 Evalkit 打分使用独立的 Python 环境。** Evalkit 依赖（见 `Kimi-Audio-Evalkit/requirements.txt`）会固定如 `sacrebleu==1.5.1` 以及较旧的 PyTorch 栈，与 FlexiSLM 训练 / 推理环境冲突。请保持训练 / 推理环境（例如 `pip install -r requirements.txt`）不变，仅在独立环境（如 `kimi-audio-evalkit` 或 `eval`）中安装 Evalkit 依赖。
 
-A fresh `--recurse-submodules` clone already contains the Evalkit. For an existing clone, initialize it with `git submodule update --init --recursive`. Then create/activate the Evalkit env, install its requirements, and download the benchmark data:
+使用 `--recurse-submodules` 全新克隆时已包含 Evalkit。若是已有仓库，请用 `git submodule update --init --recursive` 初始化。然后创建 / 激活 Evalkit 环境，安装依赖并下载评测数据：
 
 ```bash
 # Example: dedicated conda env (do NOT install this into the FlexiSLM train/infer env)
@@ -358,9 +356,9 @@ python Kimi-Audio-Evalkit/data/download_benchmark.py \
   --output-dir "$BENCHMARK_DATA_ROOT"
 ```
 
-### 1. Build Requests and Run Inference
+### 1. 构建请求并运行推理
 
-Build requests and run FlexiSLM inference in your **training/inference** environment (not the Evalkit env). VoiceBench and OpenAudioBench use **s2s** (spoken answers, 24 kHz WAVs). MMSU and OpenBookQA are omitted. LibriSpeech stays ASR (text only):
+在**训练 / 推理**环境中构建请求并运行 FlexiSLM 推理（不要用 Evalkit 环境）。VoiceBench 与 OpenAudioBench 使用 **s2s**（口语回答，24 kHz WAV）。评测省略 MMSU 与 OpenBookQA。LibriSpeech 仍为 ASR（仅文本）：
 
 ```bash
 # activate the FlexiSLM train/infer env first
@@ -383,7 +381,7 @@ python local/build_librispeech_requests.py \
   --out-dir outputs/evaluation/requests/librispeech
 ```
 
-Run inference with a rate-specific `CONFIG`. The launcher uses every GPU in `CUDA_VISIBLE_DEVICES` when set, otherwise all visible GPUs (`nvidia-smi`), and assigns one job per GPU per wave. Generated s2s WAVs are stored next to each trace under `audio/`.
+使用对应帧率的 `CONFIG` 运行推理。若设置了 `CUDA_VISIBLE_DEVICES`，启动脚本会使用其中全部 GPU，否则使用所有可见 GPU（`nvidia-smi`），每个 wave 为每张 GPU 分配一个任务。生成的 s2s WAV 存放在每条 trace 旁的 `audio/` 目录。
 
 ```bash
 # 12.5 Hz in/out → outputs/evaluation/traces/12_5hz/
@@ -393,9 +391,9 @@ CONFIG=config/infer_benchmarks_12_5hz.yaml bash scripts/infer_benchmarks.sh
 CONFIG=config/infer_benchmarks_6_25hz.yaml bash scripts/infer_benchmarks.sh
 ```
 
-### 2. Scoring
+### 2. 打分
 
-Switch to the **Evalkit** environment, export the DeepSeek API key, and run the eval YAML that matches the inference rate. The YAML lists every job; no `--job` flags are required.
+切换到 **Evalkit** 环境，导出 DeepSeek API key，并运行与推理帧率匹配的评测 YAML。YAML 已列出全部任务，无需再传 `--job`。
 
 ```bash
 conda activate kimi-audio-evalkit
@@ -409,13 +407,13 @@ python -m src.eval config/eval_benchmarks_12_5hz.yaml
 python -m src.eval config/eval_benchmarks_6_25hz.yaml
 ```
 
-Results are written under `outputs/evaluation/results/{12_5,6_25}hz/`. LibriSpeech WER does not need `DEEPSEEK_API_KEY`; VoiceBench / OpenAudioBench LLM-judge jobs do.
+结果写入 `outputs/evaluation/results/{12_5,6_25}hz/`。LibriSpeech WER 不需要 `DEEPSEEK_API_KEY`；VoiceBench / OpenAudioBench 的 LLM-judge 任务需要。
 
-## Evaluation Results
+## 评测结果
 
-We use Deepseek-V4-Flash-0731 as the judge. Our released checkpoints were used to evaluate. We set input=output frame rate.
+我们使用 Deepseek-V4-Flash-0731 作为裁判模型，并基于已发布检查点评测。输入与输出帧率设为相同。
 
-Numbers below use the same DeepSeek judge setup as the guide above. For FlexiSLM **s2s** traces, **s2t** is the model’s direct text channel (`output.text`) and **s2s** is Whisper ASR of the generated spoken answer. Qwen2.5-Omni is a baseline under the same judge. FlexiSLM-7B Stage 2 is reported at 12.5 Hz and 6.25 Hz.
+下表数字与上文指南中的 DeepSeek 裁判设置一致。对于 FlexiSLM 的 **s2s** traces，**s2t** 是模型直接文本通道（`output.text`），**s2s** 是对生成口语回答做 Whisper ASR 的结果。Qwen2.5-Omni 作为同一裁判下的基线。FlexiSLM-7B Stage 2 分别报告 12.5 Hz 与 6.25 Hz。
 
 | Benchmark | Metric | Qwen2.5-Omni s2t | Qwen2.5-Omni s2s | FlexiSLM-7B-Stage2 12.5 Hz s2t | FlexiSLM-7B-Stage2 12.5 Hz s2s | FlexiSLM-7B-Stage2 6.25 Hz s2t | FlexiSLM-7B-Stage2 6.25 Hz s2s |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -430,9 +428,9 @@ Numbers below use the same DeepSeek judge setup as the guide above. For FlexiSLM
 | | AdvBench (Acc ↑) | - | 98.65 | — | 94.04 | — | 94.42 |
 
 
-## Citation
+## 引用
 
-If you find our work useful, please consider citing:
+如果本工作对你有帮助，欢迎引用：
 
 ```bibtex
 @article{li2026flexislm,
@@ -443,19 +441,19 @@ If you find our work useful, please consider citing:
 }
 ```
 
-## Acknowledgements
+## 致谢
 
-- Our work uses Qwen 2.5 as the backbone and [Qwen2.5-Omni](https://github.com/QwenLM/Qwen2.5-Omni) as the audio encoder.
-- Our training framework is largely based on [Transformers](https://github.com/huggingface/transformers).
-- Our evaluation uses [Kimi-Audio-Evalkit](https://github.com/MoonshotAI/Kimi-Audio-Evalkit)
-- Our previous open-source works [FlexiCodec](https://github.com/AmphionTeam/FlexiCodec) and [DualCodec](https://github.com/jiaqili3/DualCodec) are foundational to this work.
+- 本工作以 Qwen 2.5 为骨干网络，并以 [Qwen2.5-Omni](https://github.com/QwenLM/Qwen2.5-Omni) 作为音频编码器。
+- 训练框架主要基于 [Transformers](https://github.com/huggingface/transformers)。
+- 评测使用 [Kimi-Audio-Evalkit](https://github.com/MoonshotAI/Kimi-Audio-Evalkit)
+- 我们此前的开源工作 [FlexiCodec](https://github.com/AmphionTeam/FlexiCodec) 与 [DualCodec](https://github.com/jiaqili3/DualCodec) 是本工作的基础。
 
-## License
+## 许可证
 
-This project is licensed under the MIT License.
+本项目采用 MIT 许可证。
 
-## Project Structure
-If you want to understand the project structure, you can refer to the following:
+## 项目结构
+若需了解项目结构，可参考如下目录：
 ```text
 FlexiSLM/
 ├── assets/                 # Documentation and demo assets
@@ -476,4 +474,3 @@ FlexiSLM/
 │   ├── models/             # FlexiSLM and vendored FlexiCodec implementation
     └── trainer/            # Trainer implementation
 ```
-

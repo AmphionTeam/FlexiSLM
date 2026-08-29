@@ -244,7 +244,7 @@ class BaseDataset(torch.utils.data.Dataset):
         with open(self.cfg_path, "r", encoding="utf8") as cfg_file:
             cfg_data = cfg_file.read()
 
-        self.cfg = yaml.load(cfg_data, Loader=yaml.CLoader)
+        self.cfg = yaml.safe_load(cfg_data)
         logger.info(f"cfg {self.cfg}")
 
         # Default for interleaved preprocess; Qwen2Dataset may override from CLI/YAML.
@@ -430,16 +430,18 @@ class BaseDataset(torch.utils.data.Dataset):
 
         self.raw_data = raw_data
 
-        if torch.distributed.is_initialized() and torch.distributed.get_rank() == 0:
-            output_xlsx = os.path.basename(self.cfg_path).replace("yaml", "xlsx")
-            output_xlsx = os.path.join(self.output_dir, output_xlsx)
-            logger.info(f"output_xlsx {output_xlsx}")
+        if torch.distributed.is_initialized() and torch.distributed.get_world_size() > 1:
+            if torch.distributed.get_rank() == 0:
+                output_xlsx = os.path.basename(self.cfg_path).replace("yaml", "xlsx")
+                output_xlsx = os.path.join(self.output_dir, output_xlsx)
+                logger.info(f"output_xlsx {output_xlsx}")
 
         logger.info(f"raw_data {raw_data}")
 
-        if torch.distributed.is_initialized() and torch.distributed.get_rank() == 0:
-            logger.info(f"raw_data {raw_data[:10]}")
-            logger.info(f"raw_data {raw_data[-10:]}")
+        if torch.distributed.is_initialized() and torch.distributed.get_world_size() > 1:
+            if torch.distributed.get_rank() == 0:
+                logger.info(f"raw_data {raw_data[:10]}")
+                logger.info(f"raw_data {raw_data[-10:]}")
 
     def __len__(self):
         return len(self.raw_data)

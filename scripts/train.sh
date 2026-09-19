@@ -25,6 +25,10 @@ fi
 RUN_NAME="${RUN_NAME:-$(basename "$CONFIG_PATH" .yaml)}"
 OUTPUT_DIR_BASE="${OUTPUT_DIR_BASE:-$REPO_ROOT/outputs/$RUN_NAME}"
 RESUME_CHECKPOINT="${RESUME_CHECKPOINT:-}"
+# Default SwanLab cloud project to the run name. Leaving this unset makes the
+# Transformers callback use the repo folder name "FlexiSLM", which is a
+# new-format project that requires SwanLab SDK >= 0.9 (installed env is 0.6.x).
+export SWANLAB_PROJECT="${SWANLAB_PROJECT:-$RUN_NAME}"
 
 # Shared GPU, distributed-training, output-directory, and DeepSpeed setup.
 source "$SCRIPT_DIR/env.sh"

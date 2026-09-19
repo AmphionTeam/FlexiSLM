@@ -310,12 +310,12 @@ export SWANLAB_API_KEY="your_swanlab_api_key"
 | --- | --- | --- | --- | --- |
 | Stage 1（7B） | `config/train_stage1_7B.yaml` | `config/datasets/train_stage1.yaml` | `scripts/train_stage1_7B.sh` | Qwen2.5-7B Instruct 模型 |
 | Stage 2（7B） | `config/train_stage2_7B.yaml` | `config/datasets/train_stage2_3.yaml` | `scripts/train_stage2_7B.sh` | 已发布的 Stage 1（[Hub](https://huggingface.co/FlexiSLM/FlexiSLM-7B-Stage1)） |
-| Stage 3（7B） | `config/train_stage3_7B.yaml` | `config/datasets/train_stage2_3.yaml` | `scripts/train_stage3_7B.sh` | 合并后的 Stage 2 模型权重 |
+| Stage 3（7B） | `config/train_stage3_7B.yaml` | `config/datasets/train_stage2_3.yaml` | `scripts/train_stage3_7B.sh` | 已发布 Stage 2，先 merge LoRA（[Hub](https://huggingface.co/FlexiSLM/FlexiSLM-7B-Stage2)） |
 | Stage 1（0.5B） | `config/train_stage1_0_5B.yaml` | `config/datasets/train_stage1.yaml` | `scripts/train_stage1_0_5B.sh` | Qwen2.5-0.5B Instruct 模型 |
 | Stage 2（0.5B） | `config/train_stage2_0_5B.yaml` | `config/datasets/train_stage2_3.yaml` | `scripts/train_stage2_0_5B.sh` | 已发布的 Stage 1（[Hub](https://huggingface.co/FlexiSLM/FlexiSLM-0_5B-Stage1)） |
 | Stage 3（0.5B） | `config/train_stage3_0_5B.yaml` | `config/datasets/train_stage2_3.yaml` | `scripts/train_stage3_0_5B.sh` | 合并后的 0.5B Stage 2 模型权重 |
 
-Stage 2 将 `resume_from_checkpoint` 设为已发布的 Stage 1 Hub 仓库（若不存在会下载到 `models/`）。更新对应 YAML 后即可启动各阶段：
+Stage 2 将 `resume_from_checkpoint` 设为已发布的 Stage 1 Hub 仓库（若不存在会下载到 `models/`）。Stage 3 会先把已发布 Stage 2 Hub 仓库中的 LoRA 合并进 `models/FlexiSLM-7B-Stage2-merged`，再以无 LoRA 的全参数方式训练。更新对应 YAML 后即可启动各阶段：
 
 ```bash
 bash scripts/train_stage1_7B.sh
@@ -334,6 +334,10 @@ bash scripts/train_stage2_7B.sh \
   --resume_from_checkpoint FlexiSLM/FlexiSLM-7B-Stage1 \
   --output_dir outputs/train_stage2_7B \
   --learning_rate 2e-5
+
+bash scripts/train_stage3_7B.sh \
+  --output_dir outputs/train_stage3_7B \
+  --max_steps 30000
 ```
 
 ## 使用 Kimi-Audio-Evalkit 评测

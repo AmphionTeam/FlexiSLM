@@ -74,6 +74,8 @@ auto_find_batch_size: false
 save_strategy: steps
 save_steps: 15000
 save_total_limit: 10
+# Keep 16-bit model weights; do not write AdamW / ZeRO optimizer dumps.
+save_only_model: true
 max_grad_norm: 1.0
 weight_decay: 0.01
 adam_beta1: 0.9

@@ -1,6 +1,6 @@
-# Stage 3 (7B): initialize from a merged Stage 2 checkpoint and fully fine-tune the
-# Thinker, Talker, input modules, and Talker-to-Thinker connection.
-# Paths are relative to the repository root.
+# Stage 3 (7B): initialize from a merged Stage 2 checkpoint (LoRA already folded
+# into full Thinker weights) and fully fine-tune the Thinker, Talker, input
+# modules, and Talker-to-Thinker connection. Paths are relative to the repository root.
 
 # Model
 model_name_or_path: models/Qwen2.5-7B-Instruct
@@ -49,7 +49,8 @@ use_input_merging_transformer_v2: true
 input_merging_transformer_d_model: 768
 use_learnable_audio_boundary: true
 
-# Full fine-tuning and component-specific learning rates
+# Stage 3 is full-parameter: no LoRA wrap. The launcher merges the released
+# Stage 2 Hub checkpoint into models/FlexiSLM-7B-Stage2-merged first.
 use_lora: false
 learning_rate: 1.0e-6
 talker_learning_rate: 1.0e-4
@@ -58,13 +59,17 @@ combine_proj_learning_rate: 2.0e-5
 # Data and merged Stage 2 initialization
 dataset_name: config/datasets/train_stage2_3.yaml
 checkpoint_load_mode: weights_only
-resume_from_checkpoint: outputs/train_stage2_7B/merged_model
+resume_from_checkpoint: models/FlexiSLM-7B-Stage2-merged
 
 # Training
 do_train: true
 output_dir: outputs/train_stage3_7B
 run_name: train_stage3_7B
 num_train_epochs: 1
+# Stop after 30,000 optimizer steps. Trainer.save_model() writes the last
+# weights into output_dir; numbered checkpoint-30000 is skipped to avoid a
+# duplicate dump.
+max_steps: 30000
 per_device_train_batch_size: 2
 max_tokens_per_batch: 2200
 # ceil(~5,865,000 logical samples / (8 GPUs * 2 samples per GPU))
@@ -74,6 +79,8 @@ auto_find_batch_size: false
 save_strategy: steps
 save_steps: 15000
 save_total_limit: 10
+# Keep 16-bit model weights; do not write AdamW / ZeRO optimizer dumps.
+save_only_model: true
 max_grad_norm: 1.0
 weight_decay: 0.01
 adam_beta1: 0.9

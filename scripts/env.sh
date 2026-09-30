@@ -28,6 +28,11 @@ fi
 # Older swankit versions race here when several ranks import it concurrently.
 export SWANLAB_SAVE_DIR="${SWANLAB_SAVE_DIR:-${HOME}/.swanlab}"
 mkdir -p "$SWANLAB_SAVE_DIR"
+# Launch scripts / train.sh should export SWANLAB_PROJECT. If only RUN_NAME is
+# set (e.g. custom entrypoints), fall back to it rather than the repo folder.
+if [[ -z "${SWANLAB_PROJECT:-}" && -n "${RUN_NAME:-}" ]]; then
+    export SWANLAB_PROJECT="$RUN_NAME"
+fi
 
 # NCCL configuration for multi-machine training
 export NCCL_CONNECT_TIMEOUT=60

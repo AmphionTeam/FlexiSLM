@@ -55,16 +55,17 @@ pip install -r requirements.txt
 
 ## 推理
 
-使用 `checkpoint` 参数选择推理模型权重。默认值为 **`stage2_7B`**。
+使用 `checkpoint` 参数选择推理模型权重。默认值为 **`stage2_7B`**（推理更快）。若使用 Stage 3 全参数微调的 7B 权重，请设置 **`stage3_7B`**。
 
 | 参数 | Hugging Face 仓库 | 下载目录 |
 | --- | --- | --- |
 | `stage2_7B`（默认） | [FlexiSLM/FlexiSLM-7B-Stage2](https://huggingface.co/FlexiSLM/FlexiSLM-7B-Stage2) | `models/FlexiSLM-7B-Stage2` |
+| `stage3_7B` | [FlexiSLM/FlexiSLM-7B-Stage3](https://huggingface.co/FlexiSLM/FlexiSLM-7B-Stage3) | `models/FlexiSLM-7B-Stage3` |
 | `stage2_0.5B` | [FlexiSLM/FlexiSLM-0_5B-Stage2](https://huggingface.co/FlexiSLM/FlexiSLM-0_5B-Stage2) | `models/FlexiSLM-0_5B-Stage2` |
 
 ### 1. Python API（自动下载）
 
-将 `auto_download=True` 后，首次运行会下载所选 Stage 2 模型权重（默认 `stage2_7B`，也可选 `stage2_0.5B`），以及 Qwen2.5-Omni 音频编码器、SenseVoice、FlexiCodec、流匹配解码器与声码器文件到 `models/`。之后运行会复用本地副本。
+将 `auto_download=True` 后，首次运行会下载所选模型权重（默认 `stage2_7B`，也可选 `stage3_7B` / `stage2_0.5B`），以及 Qwen2.5-Omni 音频编码器、SenseVoice、FlexiCodec、流匹配解码器与声码器文件到 `models/`。之后运行会复用本地副本。
 
 ```python
 from pathlib import Path
@@ -78,7 +79,7 @@ from src.inference_flexislm import (
 
 config = FlexiSLMInferenceConfig(
     auto_download=True,
-    checkpoint="stage2_7B",  # or "stage2_0.5B"
+    checkpoint="stage2_7B",  # or "stage3_7B" / "stage2_0.5B"
     use_flow_matching_decoder=True,
     flow_matching_prompt_audio_path=str(
         Path("examples/input.wav").resolve()
@@ -146,8 +147,10 @@ save_audio(result, "s2s.wav")
 ```bash
 MODEL_ROOT="$PWD/models"
 
-# if you want to run stage2_7B
+# if you want to run stage2_7B (default; faster inference)
 hf download FlexiSLM/FlexiSLM-7B-Stage2 --local-dir "$MODEL_ROOT/FlexiSLM-7B-Stage2"
+# if you want to run stage3_7B
+hf download FlexiSLM/FlexiSLM-7B-Stage3 --local-dir "$MODEL_ROOT/FlexiSLM-7B-Stage3"
 # if you want to run stage2_0.5B
 hf download FlexiSLM/FlexiSLM-0_5B-Stage2 --local-dir "$MODEL_ROOT/FlexiSLM-0_5B-Stage2"
 
@@ -168,8 +171,8 @@ hf download amphion/dualcodec-tts vocos_emilia.safetensors \
 ```python
 model_root = Path.cwd() / "models"
 config = FlexiSLMInferenceConfig(
-    checkpoint="stage2_7B",  # or "stage2_0.5B" → models/FlexiSLM-0_5B-Stage2
-    model_path=str(model_root / "FlexiSLM-7B-Stage2"),  # or model_root / "FlexiSLM-0_5B-Stage2"
+    checkpoint="stage2_7B",  # or "stage3_7B" / "stage2_0.5B"
+    model_path=str(model_root / "FlexiSLM-7B-Stage2"),  # or FlexiSLM-7B-Stage3 / FlexiSLM-0_5B-Stage2
     qwen25o_encoder_path=str(model_root / "Qwen2_5-Omni-Audio_Encoder"),
     qwen25o_encoder_config_path=str(
         model_root / "Qwen2_5-Omni-Audio_Encoder/config.json"
@@ -215,8 +218,8 @@ config = FlexiSLMInferenceConfig(
 ```yaml
 engine:
   config:
-    checkpoint: stage2_7B  # or stage2_0.5B
-    model_path: models/FlexiSLM-7B-Stage2  # or models/FlexiSLM-0_5B-Stage2
+    checkpoint: stage2_7B  # or stage3_7B / stage2_0.5B
+    model_path: models/FlexiSLM-7B-Stage2  # or models/FlexiSLM-7B-Stage3 / models/FlexiSLM-0_5B-Stage2
     qwen25o_encoder_path: models/Qwen2_5-Omni-Audio_Encoder
     # ... encoder / FlexiCodec / SenseVoice / flow-matching paths ...
     use_flow_matching_decoder: true
@@ -253,7 +256,7 @@ runtime:
 python -m src.infer examples/infer_7b.yaml
 ```
 
-`input` / `output` 路径相对于仓库根目录解析。`engine.config` 中的模型路径与 JSONL 中的 `audio_path` 相对于工作目录（请在仓库根目录运行）。`engine.config.checkpoint` 用于选择 `stage2_7B` 或 `stage2_0.5B`。`inference.checkpoint` 是写入 traces 的本地权重路径。若希望自动拉取权重而不设置 `model_path`，可使用 `engine.config.auto_download: true`，并将 `engine.config.checkpoint` 设为 `stage2_7B` 或 `stage2_0.5B`。可选的 `inference.transcribe_model_path`（例如 `models/whisper-large-v3`）会对生成的 s2s 音频做 ASR 转写；若启用，请先下载 Whisper。
+`input` / `output` 路径相对于仓库根目录解析。`engine.config` 中的模型路径与 JSONL 中的 `audio_path` 相对于工作目录（请在仓库根目录运行）。`engine.config.checkpoint` 用于选择 `stage2_7B`（默认）、`stage3_7B` 或 `stage2_0.5B`。`inference.checkpoint` 是写入 traces 的本地权重路径。若希望自动拉取权重而不设置 `model_path`，可使用 `engine.config.auto_download: true`，并设置所需的 `engine.config.checkpoint`。可选的 `inference.transcribe_model_path`（例如 `models/whisper-large-v3`）会对生成的 s2s 音频做 ASR 转写；若启用，请先下载 Whisper。
 
 运行器会写入一份统一的 JSONL trace，并将生成的语音存到 `output.audio_dir`。
 
@@ -310,12 +313,12 @@ export SWANLAB_API_KEY="your_swanlab_api_key"
 | --- | --- | --- | --- | --- |
 | Stage 1（7B） | `config/train_stage1_7B.yaml` | `config/datasets/train_stage1.yaml` | `scripts/train_stage1_7B.sh` | Qwen2.5-7B Instruct 模型 |
 | Stage 2（7B） | `config/train_stage2_7B.yaml` | `config/datasets/train_stage2_3.yaml` | `scripts/train_stage2_7B.sh` | 已发布的 Stage 1（[Hub](https://huggingface.co/FlexiSLM/FlexiSLM-7B-Stage1)） |
-| Stage 3（7B） | `config/train_stage3_7B.yaml` | `config/datasets/train_stage2_3.yaml` | `scripts/train_stage3_7B.sh` | 合并后的 Stage 2 模型权重 |
+| Stage 3（7B） | `config/train_stage3_7B.yaml` | `config/datasets/train_stage2_3.yaml` | `scripts/train_stage3_7B.sh` | 已发布 Stage 2，先 merge LoRA（[Hub](https://huggingface.co/FlexiSLM/FlexiSLM-7B-Stage2)） |
 | Stage 1（0.5B） | `config/train_stage1_0_5B.yaml` | `config/datasets/train_stage1.yaml` | `scripts/train_stage1_0_5B.sh` | Qwen2.5-0.5B Instruct 模型 |
 | Stage 2（0.5B） | `config/train_stage2_0_5B.yaml` | `config/datasets/train_stage2_3.yaml` | `scripts/train_stage2_0_5B.sh` | 已发布的 Stage 1（[Hub](https://huggingface.co/FlexiSLM/FlexiSLM-0_5B-Stage1)） |
 | Stage 3（0.5B） | `config/train_stage3_0_5B.yaml` | `config/datasets/train_stage2_3.yaml` | `scripts/train_stage3_0_5B.sh` | 合并后的 0.5B Stage 2 模型权重 |
 
-Stage 2 将 `resume_from_checkpoint` 设为已发布的 Stage 1 Hub 仓库（若不存在会下载到 `models/`）。更新对应 YAML 后即可启动各阶段：
+Stage 2 将 `resume_from_checkpoint` 设为已发布的 Stage 1 Hub 仓库（若不存在会下载到 `models/`）。Stage 3 从 Stage 2 继续：启动脚本会先把已发布 Stage 2 Hub 仓库中的 LoRA 合并进 `models/FlexiSLM-7B-Stage2-merged`，再按 `config/train_stage3_7B.yaml`（与已发布 Stage 3 配方一致）做无 LoRA 的全参数训练。更新对应 YAML 后即可启动各阶段：
 
 ```bash
 bash scripts/train_stage1_7B.sh
@@ -334,6 +337,10 @@ bash scripts/train_stage2_7B.sh \
   --resume_from_checkpoint FlexiSLM/FlexiSLM-7B-Stage1 \
   --output_dir outputs/train_stage2_7B \
   --learning_rate 2e-5
+
+bash scripts/train_stage3_7B.sh \
+  --output_dir outputs/train_stage3_7B \
+  --max_steps 30000
 ```
 
 ## 使用 Kimi-Audio-Evalkit 评测
@@ -411,9 +418,7 @@ python -m src.eval config/eval_benchmarks_6_25hz.yaml
 
 ## 评测结果
 
-我们使用 Deepseek-V4-Flash-0731 作为裁判模型，并基于已发布模型权重评测。输入与输出帧率设为相同。
-
-下表数字与上文指南中的 DeepSeek 裁判设置一致。对于 FlexiSLM 的 **s2s** traces，**s2t** 是模型直接文本通道（`output.text`），**s2s** 是对生成口语回答做 Whisper ASR 的结果。Qwen2.5-Omni 作为同一裁判下的基线。FlexiSLM-7B Stage 2 分别报告 12.5 Hz 与 6.25 Hz。
+下表使用 **DeepSeek-V4-Flash**（4 Flash / `Deepseek-V4-Flash-0731`）作为裁判，并基于已发布模型权重评测；输入与输出帧率设为相同。对于 FlexiSLM 的 **s2s** traces，**s2t** 是模型直接文本通道（`output.text`），**s2s** 是对生成口语回答做 Whisper ASR 的结果。Qwen2.5-Omni 作为同一裁判下的基线。FlexiSLM-7B Stage 2 分别报告 12.5 Hz 与 6.25 Hz。
 
 | Benchmark | Metric | Qwen2.5-Omni s2t | Qwen2.5-Omni s2s | FlexiSLM-7B-Stage2 12.5 Hz s2t | FlexiSLM-7B-Stage2 12.5 Hz s2s | FlexiSLM-7B-Stage2 6.25 Hz s2t | FlexiSLM-7B-Stage2 6.25 Hz s2s |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -426,6 +431,20 @@ python -m src.eval config/eval_benchmarks_6_25hz.yaml
 | | CommonEval (Score ↑) | 3.67 | 3.63 | 4.97 | 4.98 | 4.95 | 4.92 |
 | | SD-QA (Acc ↑) | 55.88 | 50.99 | 61.84 | 55.88 | 59.67 | 54.07 |
 | | AdvBench (Acc ↑) | - | 98.65 | — | 94.04 | — | 94.42 |
+
+下表改用 **DeepSeek-V4.1-Flash**（4.1 Flash / `deepseek-flash`）裁判，在同一批 12.5 Hz s2s traces 上对比已发布 Stage 2 与 Stage 3（`checkpoint-15000`，[FlexiSLM-7B-Stage3](https://huggingface.co/FlexiSLM/FlexiSLM-7B-Stage3)）。不同裁判下的绝对分数不可直接比较。
+
+| Benchmark | Metric | FlexiSLM-7B-Stage2 12.5 Hz s2t | FlexiSLM-7B-Stage2 12.5 Hz s2s | FlexiSLM-7B-Stage3 12.5 Hz s2t | FlexiSLM-7B-Stage3 12.5 Hz s2s |
+| --- | --- | ---: | ---: | ---: | ---: |
+| LibriSpeech | test-clean (WER ↓) | 2.14 | — | 2.75 | — |
+| | test-other (WER ↓) | 5.75 | — | 5.95 | — |
+| OpenAudioBench | Llama Questions (Acc ↑) | 80.47 | 72.73 | 82.15 | 74.58 |
+| | Web Questions (Acc ↑) | 60.33 | 57.64 | 61.39 | 58.63 |
+| | TriviaQA (Acc ↑) | 63.89 | 53.23 | 65.69 | 58.97 |
+| VoiceBench | AlpacaEval (Score ↑) | 3.89 | 3.16 | 3.91 | 3.31 |
+| | CommonEval (Score ↑) | 3.79 | 3.52 | 3.95 | 3.78 |
+| | SD-QA (Acc ↑) | 61.84 | 55.88 | 60.94 | 54.79 |
+| | AdvBench (Acc ↑) | — | 94.04 | — | 97.88 |
 
 
 ## 引用

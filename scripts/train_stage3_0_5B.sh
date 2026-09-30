@@ -4,6 +4,9 @@
 
 set -euo pipefail
 
+# train.sh also defaults SWANLAB_PROJECT to RUN_NAME; set early for clarity.
+export SWANLAB_PROJECT="${SWANLAB_PROJECT:-train_stage3_0_5B}"
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export FLEXISLM_LAUNCHER="${FLEXISLM_LAUNCHER:-deepspeed}"
 export DEEPSPEED_CONFIG="${DEEPSPEED_CONFIG:-$SCRIPT_DIR/../config/ds_config_zero2.json}"

@@ -164,7 +164,9 @@ DEFAULT_CHECKPOINT = "stage2_7B"
 FLEXICODEC_OUTPUT_SAMPLE_RATE = 16_000
 FLOW_MATCHING_OUTPUT_SAMPLE_RATE = 24_000
 DEFAULT_OUTPUT_SAMPLE_RATE = FLOW_MATCHING_OUTPUT_SAMPLE_RATE  # FM is the default decoder
-STAGE2_CHECKPOINTS = {
+# Released Hub checkpoints. Default remains Stage 2 (faster inference); Stage 3
+# is optional for higher quality after continued training without LoRA.
+RELEASED_CHECKPOINTS = {
     "stage2_7B": {
         "repo_id": "FlexiSLM/FlexiSLM-7B-Stage2",
         "local_name": "FlexiSLM-7B-Stage2",
@@ -173,7 +175,12 @@ STAGE2_CHECKPOINTS = {
         "repo_id": "FlexiSLM/FlexiSLM-0_5B-Stage2",
         "local_name": "FlexiSLM-0_5B-Stage2",
     },
+    "stage3_7B": {
+        "repo_id": "FlexiSLM/FlexiSLM-7B-Stage3",
+        "local_name": "FlexiSLM-7B-Stage3",
+    },
 }
+STAGE2_CHECKPOINTS = RELEASED_CHECKPOINTS  # backward-compatible alias
 CHECKPOINT_ALIASES = {
     "stage2_7B": "stage2_7B",
     "stage2_7b": "stage2_7B",
@@ -186,9 +193,11 @@ CHECKPOINT_ALIASES = {
     "0.5B": "stage2_0.5B",
     "0.5b": "stage2_0.5B",
     "0_5B": "stage2_0.5B",
+    "stage3_7B": "stage3_7B",
+    "stage3_7b": "stage3_7B",
 }
 DEFAULT_INFERENCE_REPOS = {
-    "model": STAGE2_CHECKPOINTS[DEFAULT_CHECKPOINT],
+    "model": RELEASED_CHECKPOINTS[DEFAULT_CHECKPOINT],
     "qwen25o_encoder": {
         "repo_id": "FlexiSLM/Qwen2_5-Omni-Audio_Encoder",
         "local_name": "Qwen2_5-Omni-Audio_Encoder",
@@ -240,14 +249,14 @@ def _sensevoice_dir_ready(path: Path) -> bool:
 
 
 def normalize_checkpoint_name(checkpoint: str) -> str:
-    """Map a checkpoint flag to the canonical ``stage2_7B`` / ``stage2_0.5B`` name."""
+    """Map a checkpoint flag to a canonical released-checkpoint name."""
     key = str(checkpoint).strip()
     canonical = CHECKPOINT_ALIASES.get(key)
     if canonical is None:
-        known = ", ".join(STAGE2_CHECKPOINTS)
+        known = ", ".join(RELEASED_CHECKPOINTS)
         raise ValueError(
             f"Unknown checkpoint {checkpoint!r}. Expected one of: {known} "
-            "(aliases: stage2_0_5B, 7B, 0.5B)."
+            "(aliases: stage2_0_5B, 7B, 0.5B, stage3_7b)."
         )
     return canonical
 
@@ -387,7 +396,8 @@ def resolve_output_sample_rate(
 
 
 def get_stage2_checkpoint_spec(checkpoint: str = DEFAULT_CHECKPOINT) -> Dict[str, str]:
-    return STAGE2_CHECKPOINTS[normalize_checkpoint_name(checkpoint)]
+    """Return Hub ``repo_id`` / ``local_name`` for a released checkpoint flag."""
+    return RELEASED_CHECKPOINTS[normalize_checkpoint_name(checkpoint)]
 
 
 def _snapshot_download(
@@ -432,11 +442,11 @@ def download_inference_checkpoints(
 ) -> Dict[str, str]:
     """Download Python-API inference checkpoints with ``snapshot_download``.
 
-    ``checkpoint`` selects the Stage 2 SLM weights (``stage2_7B`` or
-    ``stage2_0.5B``). Auxiliary encoder / codec files are shared. Files are
-    written under the repo ``models/`` directory by default, matching the
-    manual ``hf download --local-dir`` layout. Existing complete local
-    directories are reused. Returns local paths suitable for
+    ``checkpoint`` selects released SLM weights (``stage2_7B`` default,
+    ``stage2_0.5B``, or ``stage3_7B``). Auxiliary encoder / codec files are
+    shared. Files are written under the repo ``models/`` directory by default,
+    matching the manual ``hf download --local-dir`` layout. Existing complete
+    local directories are reused. Returns local paths suitable for
     :class:`FlexiSLMInferenceConfig`.
     """
     root = _resolve_inference_download_dir(download_dir)
@@ -632,7 +642,7 @@ class FlexiSLMInferenceConfig:
     flexicodec_ckpt_path: Optional[str] = None
     flexicodec_config_path: Optional[str] = None
     sensevoice_path: Optional[str] = None
-    # Released Stage 2 weights: "stage2_7B" (default) or "stage2_0.5B".
+    # Released weights: "stage2_7B" (default), "stage2_0.5B", or "stage3_7B".
     checkpoint: str = DEFAULT_CHECKPOINT
     # When True, missing paths are filled with huggingface_hub.snapshot_download.
     auto_download: bool = False
@@ -3058,9 +3068,10 @@ def main():
         "--checkpoint",
         type=str,
         default=DEFAULT_CHECKPOINT,
-        help="Released Stage 2 checkpoint: 'stage2_7B' (default) or 'stage2_0.5B'. "
-             "Selects which Hugging Face repo auto-download fetches, or which "
-             "models/<local_name> directory to use when --model_path is omitted.",
+        help="Released checkpoint: 'stage2_7B' (default), 'stage2_0.5B', or "
+             "'stage3_7B'. Selects which Hugging Face repo auto-download fetches, "
+             "or which models/<local_name> directory to use when --model_path is "
+             "omitted. Stage 2 remains the default for faster inference.",
     )
     parser.add_argument(
         "--auto_download",

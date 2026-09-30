@@ -6,7 +6,7 @@ model_name: FlexiSLM-7B-Stage2-12.5Hz
 voicebench_summary_path: outputs/evaluation/results/12_5hz/voicebench_summary.json
 log_dir: logs/evaluation/benchmarks/12_5hz
 
-judge_model: deepseek-chat
+judge_model: deepseek-flash
 judge_api_base: https://api.deepseek.com/v1/chat/completions
 judge_api_key_env: DEEPSEEK_API_KEY
 

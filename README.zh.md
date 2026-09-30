@@ -19,6 +19,7 @@ FlexiSLM 是首个在语音输入与输出两端均支持**动态**且**可控**
 
 ## 新闻
 
+- **2026 年 9 月 30 日：Stage 3 模型权重发布。** 我们发布了 [FlexiSLM-7B Stage 3](https://huggingface.co/FlexiSLM/FlexiSLM-7B-Stage3)。推理默认仍使用 Stage 2（更快）；如需 Stage 3，请设置 `checkpoint="stage3_7B"`。
 - **2026 年 8 月 21 日：** FlexiSLM 被 EMNLP 2026 主会接收！
 - **2026 年 8 月 20 日：模型权重发布。** 我们发布了基于本代码库复现的 [FlexiSLM-7B Stage 2](https://huggingface.co/FlexiSLM/FlexiSLM-7B-Stage2) 模型权重与 [FlexiSLM-0.5B Stage 2](https://huggingface.co/FlexiSLM/FlexiSLM-0_5B-Stage2) 模型权重。
 - **2026 年 8 月 6 日：数据发布。** 我们发布了 [FlexiSLM-Data-4M-s2s](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-4M-s2s)、[FlexiSLM-Data-2M-s2s-compact](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-2M-s2s-compact) 与 [FlexiSLM-Data-5M-t2t](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-5M-t2t)。
@@ -55,16 +56,17 @@ pip install -r requirements.txt
 
 ## 推理
 
-使用 `checkpoint` 参数选择推理模型权重。默认值为 **`stage2_7B`**。
+使用 `checkpoint` 参数选择推理模型权重。默认值为 **`stage2_7B`**（推理更快）。若使用 Stage 3 全参数微调的 7B 权重，请设置 **`stage3_7B`**。
 
 | 参数 | Hugging Face 仓库 | 下载目录 |
 | --- | --- | --- |
 | `stage2_7B`（默认） | [FlexiSLM/FlexiSLM-7B-Stage2](https://huggingface.co/FlexiSLM/FlexiSLM-7B-Stage2) | `models/FlexiSLM-7B-Stage2` |
+| `stage3_7B` | [FlexiSLM/FlexiSLM-7B-Stage3](https://huggingface.co/FlexiSLM/FlexiSLM-7B-Stage3) | `models/FlexiSLM-7B-Stage3` |
 | `stage2_0.5B` | [FlexiSLM/FlexiSLM-0_5B-Stage2](https://huggingface.co/FlexiSLM/FlexiSLM-0_5B-Stage2) | `models/FlexiSLM-0_5B-Stage2` |
 
 ### 1. Python API（自动下载）
 
-将 `auto_download=True` 后，首次运行会下载所选 Stage 2 模型权重（默认 `stage2_7B`，也可选 `stage2_0.5B`），以及 Qwen2.5-Omni 音频编码器、SenseVoice、FlexiCodec、流匹配解码器与声码器文件到 `models/`。之后运行会复用本地副本。
+将 `auto_download=True` 后，首次运行会下载所选模型权重（默认 `stage2_7B`，也可选 `stage3_7B` / `stage2_0.5B`），以及 Qwen2.5-Omni 音频编码器、SenseVoice、FlexiCodec、流匹配解码器与声码器文件到 `models/`。之后运行会复用本地副本。
 
 ```python
 from pathlib import Path
@@ -78,7 +80,7 @@ from src.inference_flexislm import (
 
 config = FlexiSLMInferenceConfig(
     auto_download=True,
-    checkpoint="stage2_7B",  # or "stage2_0.5B"
+    checkpoint="stage2_7B",  # or "stage3_7B" / "stage2_0.5B"
     use_flow_matching_decoder=True,
     flow_matching_prompt_audio_path=str(
         Path("examples/input.wav").resolve()
@@ -146,8 +148,10 @@ save_audio(result, "s2s.wav")
 ```bash
 MODEL_ROOT="$PWD/models"
 
-# if you want to run stage2_7B
+# if you want to run stage2_7B (default; faster inference)
 hf download FlexiSLM/FlexiSLM-7B-Stage2 --local-dir "$MODEL_ROOT/FlexiSLM-7B-Stage2"
+# if you want to run stage3_7B
+hf download FlexiSLM/FlexiSLM-7B-Stage3 --local-dir "$MODEL_ROOT/FlexiSLM-7B-Stage3"
 # if you want to run stage2_0.5B
 hf download FlexiSLM/FlexiSLM-0_5B-Stage2 --local-dir "$MODEL_ROOT/FlexiSLM-0_5B-Stage2"
 
@@ -168,8 +172,8 @@ hf download amphion/dualcodec-tts vocos_emilia.safetensors \
 ```python
 model_root = Path.cwd() / "models"
 config = FlexiSLMInferenceConfig(
-    checkpoint="stage2_7B",  # or "stage2_0.5B" → models/FlexiSLM-0_5B-Stage2
-    model_path=str(model_root / "FlexiSLM-7B-Stage2"),  # or model_root / "FlexiSLM-0_5B-Stage2"
+    checkpoint="stage2_7B",  # or "stage3_7B" / "stage2_0.5B"
+    model_path=str(model_root / "FlexiSLM-7B-Stage2"),  # or FlexiSLM-7B-Stage3 / FlexiSLM-0_5B-Stage2
     qwen25o_encoder_path=str(model_root / "Qwen2_5-Omni-Audio_Encoder"),
     qwen25o_encoder_config_path=str(
         model_root / "Qwen2_5-Omni-Audio_Encoder/config.json"
@@ -215,8 +219,8 @@ config = FlexiSLMInferenceConfig(
 ```yaml
 engine:
   config:
-    checkpoint: stage2_7B  # or stage2_0.5B
-    model_path: models/FlexiSLM-7B-Stage2  # or models/FlexiSLM-0_5B-Stage2
+    checkpoint: stage2_7B  # or stage3_7B / stage2_0.5B
+    model_path: models/FlexiSLM-7B-Stage2  # or models/FlexiSLM-7B-Stage3 / models/FlexiSLM-0_5B-Stage2
     qwen25o_encoder_path: models/Qwen2_5-Omni-Audio_Encoder
     # ... encoder / FlexiCodec / SenseVoice / flow-matching paths ...
     use_flow_matching_decoder: true
@@ -253,7 +257,7 @@ runtime:
 python -m src.infer examples/infer_7b.yaml
 ```
 
-`input` / `output` 路径相对于仓库根目录解析。`engine.config` 中的模型路径与 JSONL 中的 `audio_path` 相对于工作目录（请在仓库根目录运行）。`engine.config.checkpoint` 用于选择 `stage2_7B` 或 `stage2_0.5B`。`inference.checkpoint` 是写入 traces 的本地权重路径。若希望自动拉取权重而不设置 `model_path`，可使用 `engine.config.auto_download: true`，并将 `engine.config.checkpoint` 设为 `stage2_7B` 或 `stage2_0.5B`。可选的 `inference.transcribe_model_path`（例如 `models/whisper-large-v3`）会对生成的 s2s 音频做 ASR 转写；若启用，请先下载 Whisper。
+`input` / `output` 路径相对于仓库根目录解析。`engine.config` 中的模型路径与 JSONL 中的 `audio_path` 相对于工作目录（请在仓库根目录运行）。`engine.config.checkpoint` 用于选择 `stage2_7B`（默认）、`stage3_7B` 或 `stage2_0.5B`。`inference.checkpoint` 是写入 traces 的本地权重路径。若希望自动拉取权重而不设置 `model_path`，可使用 `engine.config.auto_download: true`，并设置所需的 `engine.config.checkpoint`。可选的 `inference.transcribe_model_path`（例如 `models/whisper-large-v3`）会对生成的 s2s 音频做 ASR 转写；若启用，请先下载 Whisper。
 
 运行器会写入一份统一的 JSONL trace，并将生成的语音存到 `output.audio_dir`。
 
@@ -315,7 +319,7 @@ export SWANLAB_API_KEY="your_swanlab_api_key"
 | Stage 2（0.5B） | `config/train_stage2_0_5B.yaml` | `config/datasets/train_stage2_3.yaml` | `scripts/train_stage2_0_5B.sh` | 已发布的 Stage 1（[Hub](https://huggingface.co/FlexiSLM/FlexiSLM-0_5B-Stage1)） |
 | Stage 3（0.5B） | `config/train_stage3_0_5B.yaml` | `config/datasets/train_stage2_3.yaml` | `scripts/train_stage3_0_5B.sh` | 合并后的 0.5B Stage 2 模型权重 |
 
-Stage 2 将 `resume_from_checkpoint` 设为已发布的 Stage 1 Hub 仓库（若不存在会下载到 `models/`）。Stage 3 会先把已发布 Stage 2 Hub 仓库中的 LoRA 合并进 `models/FlexiSLM-7B-Stage2-merged`，再以无 LoRA 的全参数方式训练。更新对应 YAML 后即可启动各阶段：
+Stage 2 将 `resume_from_checkpoint` 设为已发布的 Stage 1 Hub 仓库（若不存在会下载到 `models/`）。Stage 3 从 Stage 2 继续：启动脚本会先把已发布 Stage 2 Hub 仓库中的 LoRA 合并进 `models/FlexiSLM-7B-Stage2-merged`，再按 `config/train_stage3_7B.yaml`（与已发布 Stage 3 配方一致）做无 LoRA 的全参数训练。更新对应 YAML 后即可启动各阶段：
 
 ```bash
 bash scripts/train_stage1_7B.sh

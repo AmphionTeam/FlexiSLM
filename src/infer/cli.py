@@ -66,7 +66,7 @@ def load_config(config_path: Path) -> CliConfig:
     ):
         raise ValueError(
             "engine.config.model_path is required unless auto_download is true "
-            "or checkpoint is set to stage2_7B / stage2_0.5B"
+            "or checkpoint is set to stage2_7B / stage2_0.5B / stage3_7B"
         )
 
     runtime = _mapping(raw.get("runtime", {}), "runtime")

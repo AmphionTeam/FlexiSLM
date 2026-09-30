@@ -1,6 +1,8 @@
 # Stage 3 (7B): initialize from a merged Stage 2 checkpoint (LoRA already folded
 # into full Thinker weights) and fully fine-tune the Thinker, Talker, input
-# modules, and Talker-to-Thinker connection. Paths are relative to the repository root.
+# modules, and Talker-to-Thinker connection. Matches the settings used for the
+# released FlexiSLM-7B-Stage3 weights (train_stage_3_moreframesv2 / ckpt-15000).
+# Paths are relative to the repository root.
 
 # Model
 model_name_or_path: models/Qwen2.5-7B-Instruct
@@ -11,6 +13,8 @@ freeze_llm: false
 freeze_talker: false
 only_train_talker: false
 only_train_llm: false
+# Do not set only_train_modules: Stage 3 trains the full Thinker plus the
+# Talker, input modules, and newly enabled Talker-to-Thinker connection.
 
 # Audio encoder and codec
 use_sensevoice_feature: false
@@ -20,6 +24,8 @@ qwen25omni_encoder_config_path: models/Qwen2_5-Omni-Audio_Encoder/config.json
 flexicodec_config_path: models/FlexiCodec/12hz_v1_half_config.yaml
 flexicodec_ckpt_path: models/FlexiCodec/nartts_flexicodec_only.safetensors
 sensevoice_small_path: models/SenseVoiceSmall
+flow_matching_decoder_ckpt_path: models/FlexiCodec/nartts.safetensors
+flow_matching_vocoder_path: models/FlexiCodec/vocos_emilia.safetensors
 finetune_speech_encoder: false
 enable_flexible_framerate: true
 training_framerate_options: "0.86,0.87,0.88,0.90,0.91,1.0,1.0"
@@ -42,6 +48,9 @@ text_loss_weight: 2.0
 use_mlp_for_audio_embed: true
 use_omni_token: true
 no_pad: false
+# Stage 2 has this connection disabled. Feeding the combined text/audio/length/
+# frame-rate representation to the main LM enables Talker-to-Thinker feedback;
+# combined_embed_proj is trainable and receives its own LR below.
 use_combined_embedding: true
 force_use_combined_embedding: true
 use_input_merging_transformer: true
@@ -56,28 +65,21 @@ learning_rate: 1.0e-6
 talker_learning_rate: 1.0e-4
 combine_proj_learning_rate: 2.0e-5
 
-# Data and merged Stage 2 initialization
+# Data and merged Stage 2 initialization (Stage 3 resumes from Stage 2)
 dataset_name: config/datasets/train_stage2_3.yaml
-checkpoint_load_mode: weights_only
-resume_from_checkpoint: models/FlexiSLM-7B-Stage2-merged
-
-# Training
 do_train: true
 output_dir: outputs/train_stage3_7B
 run_name: train_stage3_7B
 num_train_epochs: 1
-# Stop after 30,000 optimizer steps. Trainer.save_model() writes the last
-# weights into output_dir; numbered checkpoint-30000 is skipped to avoid a
-# duplicate dump.
+# Stop after 30,000 optimizer steps. Intermediate save at 15k is the released
+# FlexiSLM-7B-Stage3 checkpoint; final weights are written to output_dir.
 max_steps: 30000
-per_device_train_batch_size: 2
-max_tokens_per_batch: 2200
-# ceil(~5,865,000 logical samples / (8 GPUs * 2 samples per GPU))
-webdataset_steps_per_epoch: 366563
-gradient_accumulation_steps: 2
+per_device_train_batch_size: 3
+max_tokens_per_batch: 2000
+gradient_accumulation_steps: 4
 auto_find_batch_size: false
 save_strategy: steps
-save_steps: 15000
+save_steps: 5000
 save_total_limit: 10
 # Keep 16-bit model weights; do not write AdamW / ZeRO optimizer dumps.
 save_only_model: true
@@ -105,3 +107,6 @@ trust_remote_code: true
 attn_implementation: flash_attention_2
 seed: 42
 data_seed: 42
+# Load Stage 2 weights only and start a new optimizer/scheduler/step/RNG state.
+checkpoint_load_mode: weights_only
+resume_from_checkpoint: models/FlexiSLM-7B-Stage2-merged

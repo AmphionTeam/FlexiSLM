@@ -1,7 +1,7 @@
 engine:
   config:
-    checkpoint: stage2_7B  # or stage2_0.5B
-    model_path: models/FlexiSLM-7B-Stage2  # or models/FlexiSLM-0_5B-Stage2
+    checkpoint: stage2_7B  # or stage2_0.5B / stage3_7B
+    model_path: models/FlexiSLM-7B-Stage2  # or models/FlexiSLM-0_5B-Stage2 / models/FlexiSLM-7B-Stage3
     qwen25o_encoder_path: models/Qwen2_5-Omni-Audio_Encoder
     qwen25o_encoder_config_path: models/Qwen2_5-Omni-Audio_Encoder/config.json
     flexicodec_ckpt_path: models/FlexiCodec/nartts_flexicodec_only.safetensors

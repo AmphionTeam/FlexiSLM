@@ -316,7 +316,15 @@ def _transcribe_audio(audio_path: str, *, model_path: str, device: str) -> str:
             import torchaudio
             import torchaudio.transforms as T
 
-            audio, source_rate = torchaudio.load(path)
+            # torchaudio 2.9+ may route through torchcodec/FFmpeg, which is often
+            # broken in constrained environments. Fall back to soundfile.
+            try:
+                audio, source_rate = torchaudio.load(path)
+            except Exception:
+                import soundfile as sf
+
+                waveform, source_rate = sf.read(path, dtype="float32", always_2d=True)
+                audio = torch.from_numpy(waveform.T)
             if audio.shape[0] > 1:
                 audio = audio.mean(dim=0, keepdim=True)
             if source_rate != 16_000:

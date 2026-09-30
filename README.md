@@ -420,8 +420,7 @@ Results are written under `outputs/evaluation/results/{12_5,6_25}hz/`. LibriSpee
 
 ## Evaluation Results
 
-We use Deepseek-V4-Flash-0731 as the judge. Our released checkpoints were used to evaluate. We set input=output frame rate.
-They are evaluated using the scripts above.
+The table below uses **DeepSeek-V4-Flash** (4 Flash / `Deepseek-V4-Flash-0731`) as the judge. Released checkpoints were evaluated with matching input/output frame rates via the scripts above. For FlexiSLM **s2s** traces, **s2t** is the model text channel (`output.text`) and **s2s** is Whisper ASR of the spoken response.
 
 | Benchmark | Metric | Qwen2.5-Omni s2t | Qwen2.5-Omni s2s | FlexiSLM-7B-Stage2 12.5 Hz s2t | FlexiSLM-7B-Stage2 12.5 Hz s2s | FlexiSLM-7B-Stage2 6.25 Hz s2t | FlexiSLM-7B-Stage2 6.25 Hz s2s |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -434,6 +433,20 @@ They are evaluated using the scripts above.
 | | CommonEval (Score ↑) | 3.67 | 3.63 | 4.97 | 4.98 | 4.95 | 4.92 |
 | | SD-QA (Acc ↑) | 55.88 | 50.99 | 61.84 | 55.88 | 59.67 | 54.07 |
 | | AdvBench (Acc ↑) | - | 98.65 | — | 94.04 | — | 94.42 |
+
+The next table uses **DeepSeek-V4.1-Flash** (4.1 Flash / `deepseek-flash`) as the judge on the same 12.5 Hz s2s traces, comparing released Stage 2 with Stage 3 (`checkpoint-15000`, [FlexiSLM-7B-Stage3](https://huggingface.co/FlexiSLM/FlexiSLM-7B-Stage3)). Absolute scores are not comparable across judges.
+
+| Benchmark | Metric | FlexiSLM-7B-Stage2 12.5 Hz s2t | FlexiSLM-7B-Stage2 12.5 Hz s2s | FlexiSLM-7B-Stage3 12.5 Hz s2t | FlexiSLM-7B-Stage3 12.5 Hz s2s |
+| --- | --- | ---: | ---: | ---: | ---: |
+| LibriSpeech | test-clean (WER ↓) | 2.14 | — | 2.75 | — |
+| | test-other (WER ↓) | 5.75 | — | 5.95 | — |
+| OpenAudioBench | Llama Questions (Acc ↑) | 80.47 | 72.73 | 82.15 | 74.58 |
+| | Web Questions (Acc ↑) | 60.33 | 57.64 | 61.39 | 58.63 |
+| | TriviaQA (Acc ↑) | 63.89 | 53.23 | 65.69 | 58.97 |
+| VoiceBench | AlpacaEval (Score ↑) | 3.89 | 3.16 | 3.91 | 3.31 |
+| | CommonEval (Score ↑) | 3.79 | 3.52 | 3.95 | 3.78 |
+| | SD-QA (Acc ↑) | 61.84 | 55.88 | 60.94 | 54.79 |
+| | AdvBench (Acc ↑) | — | 94.04 | — | 97.88 |
 
 
 ## Citation

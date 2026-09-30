@@ -418,9 +418,7 @@ python -m src.eval config/eval_benchmarks_6_25hz.yaml
 
 ## 评测结果
 
-我们使用 Deepseek-V4-Flash-0731 作为裁判模型，并基于已发布模型权重评测。输入与输出帧率设为相同。
-
-下表数字与上文指南中的 DeepSeek 裁判设置一致。对于 FlexiSLM 的 **s2s** traces，**s2t** 是模型直接文本通道（`output.text`），**s2s** 是对生成口语回答做 Whisper ASR 的结果。Qwen2.5-Omni 作为同一裁判下的基线。FlexiSLM-7B Stage 2 分别报告 12.5 Hz 与 6.25 Hz。
+下表使用 **DeepSeek-V4-Flash**（4 Flash / `Deepseek-V4-Flash-0731`）作为裁判，并基于已发布模型权重评测；输入与输出帧率设为相同。对于 FlexiSLM 的 **s2s** traces，**s2t** 是模型直接文本通道（`output.text`），**s2s** 是对生成口语回答做 Whisper ASR 的结果。Qwen2.5-Omni 作为同一裁判下的基线。FlexiSLM-7B Stage 2 分别报告 12.5 Hz 与 6.25 Hz。
 
 | Benchmark | Metric | Qwen2.5-Omni s2t | Qwen2.5-Omni s2s | FlexiSLM-7B-Stage2 12.5 Hz s2t | FlexiSLM-7B-Stage2 12.5 Hz s2s | FlexiSLM-7B-Stage2 6.25 Hz s2t | FlexiSLM-7B-Stage2 6.25 Hz s2s |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -433,6 +431,20 @@ python -m src.eval config/eval_benchmarks_6_25hz.yaml
 | | CommonEval (Score ↑) | 3.67 | 3.63 | 4.97 | 4.98 | 4.95 | 4.92 |
 | | SD-QA (Acc ↑) | 55.88 | 50.99 | 61.84 | 55.88 | 59.67 | 54.07 |
 | | AdvBench (Acc ↑) | - | 98.65 | — | 94.04 | — | 94.42 |
+
+下表改用 **DeepSeek-V4.1-Flash**（4.1 Flash / `deepseek-flash`）裁判，在同一批 12.5 Hz s2s traces 上对比已发布 Stage 2 与 Stage 3（`checkpoint-15000`，[FlexiSLM-7B-Stage3](https://huggingface.co/FlexiSLM/FlexiSLM-7B-Stage3)）。不同裁判下的绝对分数不可直接比较。
+
+| Benchmark | Metric | FlexiSLM-7B-Stage2 12.5 Hz s2t | FlexiSLM-7B-Stage2 12.5 Hz s2s | FlexiSLM-7B-Stage3 12.5 Hz s2t | FlexiSLM-7B-Stage3 12.5 Hz s2s |
+| --- | --- | ---: | ---: | ---: | ---: |
+| LibriSpeech | test-clean (WER ↓) | 2.14 | — | 2.75 | — |
+| | test-other (WER ↓) | 5.75 | — | 5.95 | — |
+| OpenAudioBench | Llama Questions (Acc ↑) | 80.47 | 72.73 | 82.15 | 74.58 |
+| | Web Questions (Acc ↑) | 60.33 | 57.64 | 61.39 | 58.63 |
+| | TriviaQA (Acc ↑) | 63.89 | 53.23 | 65.69 | 58.97 |
+| VoiceBench | AlpacaEval (Score ↑) | 3.89 | 3.16 | 3.91 | 3.31 |
+| | CommonEval (Score ↑) | 3.79 | 3.52 | 3.95 | 3.78 |
+| | SD-QA (Acc ↑) | 61.84 | 55.88 | 60.94 | 54.79 |
+| | AdvBench (Acc ↑) | — | 94.04 | — | 97.88 |
 
 
 ## 引用

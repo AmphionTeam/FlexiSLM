@@ -19,7 +19,6 @@ FlexiSLM 是首个在语音输入与输出两端均支持**动态**且**可控**
 
 ## 新闻
 
-- **2026 年 9 月 30 日：Stage 3 模型权重发布。** 我们发布了 [FlexiSLM-7B Stage 3](https://huggingface.co/FlexiSLM/FlexiSLM-7B-Stage3)。推理默认仍使用 Stage 2（更快）；如需 Stage 3，请设置 `checkpoint="stage3_7B"`。
 - **2026 年 8 月 21 日：** FlexiSLM 被 EMNLP 2026 主会接收！
 - **2026 年 8 月 20 日：模型权重发布。** 我们发布了基于本代码库复现的 [FlexiSLM-7B Stage 2](https://huggingface.co/FlexiSLM/FlexiSLM-7B-Stage2) 模型权重与 [FlexiSLM-0.5B Stage 2](https://huggingface.co/FlexiSLM/FlexiSLM-0_5B-Stage2) 模型权重。
 - **2026 年 8 月 6 日：数据发布。** 我们发布了 [FlexiSLM-Data-4M-s2s](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-4M-s2s)、[FlexiSLM-Data-2M-s2s-compact](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-2M-s2s-compact) 与 [FlexiSLM-Data-5M-t2t](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-5M-t2t)。

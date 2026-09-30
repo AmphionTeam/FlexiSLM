@@ -21,7 +21,6 @@ FlexiSLM is the first spoken language model that supports *dynamic* and *control
 
 ## News
 
-- **September 30, 2026: Stage 3 checkpoint release.** We released the [FlexiSLM-7B Stage 3](https://huggingface.co/FlexiSLM/FlexiSLM-7B-Stage3) checkpoint. Inference still defaults to Stage 2 for speed; pass `checkpoint="stage3_7B"` for the Stage 3 weights.
 - **August 21, 2026:** FlexiSLM is accepted to EMNLP 2026 Main Conference!
 - **August 20, 2026: Checkpoint release.** We released the [FlexiSLM-7B Stage 2](https://huggingface.co/FlexiSLM/FlexiSLM-7B-Stage2) checkpoint and [FlexiSLM-0.5B Stage 2](https://huggingface.co/FlexiSLM/FlexiSLM-0_5B-Stage2) checkpoint reproduced with this codebase.
 - **August 6, 2026: Data release.** We released [FlexiSLM-Data-4M-s2s](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-4M-s2s), [FlexiSLM-Data-2M-s2s-compact](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-2M-s2s-compact), and [FlexiSLM-Data-5M-t2t](https://huggingface.co/datasets/FlexiSLM/FlexiSLM-Data-5M-t2t).

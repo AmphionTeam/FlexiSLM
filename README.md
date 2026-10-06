@@ -273,6 +273,8 @@ FlexiSLM training has three stages:
 
 Our released checkpoints are trained with the same settings using 8 A100 GPUs. The configs here are also adapted for 8 A100 GPUs.
 
+Our training uses on-the-fly data extraction, so it is very convenient to use.
+
 ### 1. Download additional checkpoints and dataset
 ```bash
 MODEL_ROOT="$PWD/models"
